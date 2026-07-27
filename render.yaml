@@ -88,4 +88,4 @@ databases:
   # ── PostgreSQL Database ──────────────────────────────────────────
   - name: mlb-postgres
     databaseName: mlb_model
-    plan: starter
+    plan: basic-256mb
