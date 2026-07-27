@@ -43,14 +43,13 @@ services:
       mountPath: /data
       sizeGB: 1
 
-  # ── Background Worker (cron service) ─────────────────────────────
-  - type: cron
+  # ── Background Worker (long-running service) ─────────────────────
+  - type: worker
     name: mlb-vip-worker
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    schedule: "30 8 * * *"  # Daily 8:30 AM ET (base schedule; worker handles sub-daily)
-    startCommand: python -m src.worker --run-once
+    startCommand: python -m src.worker
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.5"
@@ -77,6 +76,6 @@ services:
       - key: MLB_SHADOW_MODE
         value: "true"
     disk:
-      name: mlb-data
+      name: mlb-data-worker
       mountPath: /data
       sizeGB: 1
