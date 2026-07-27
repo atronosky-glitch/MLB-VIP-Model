@@ -32,6 +32,7 @@ from typing import Any
 
 from src.production_config import load_config, ProductionConfig
 from src.structured_logging import setup_logging, set_job_context
+from database.db_manager import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -208,9 +209,8 @@ def _handle_backup(config: ProductionConfig, *, job_id: str = "", **kw: Any) -> 
 def _handle_calibrate(config: ProductionConfig, *, job_id: str = "", **kw: Any) -> int:
     """Run calibration analysis."""
     from src.calibration import analyze_calibration
-    import sqlite3
 
-    conn = sqlite3.connect(config.database_path)
+    conn = get_connection(config.database_path)
     try:
         result = analyze_calibration(conn)
         logger.info("Calibration analysis complete: %d buckets analyzed", result.get("bucket_count", 0))
@@ -292,7 +292,6 @@ def _persist_job_run(run: JobRun, config: ProductionConfig) -> None:
     """Persist job run record to the database."""
     try:
         from database.db_manager import get_connection
-        import sqlite3
 
         conn = get_connection()
         try:

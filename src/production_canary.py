@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from src.production_config import load_config, ProductionConfig
+from database.db_manager import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +149,11 @@ def run_canary(
 
 def _validate_schema(config: ProductionConfig) -> str | None:
     """Validate database has required tables."""
-    import sqlite3
     db_path = Path(config.database_path)
     if not db_path.exists():
         return f"Database not found: {db_path}"
     try:
-        conn = sqlite3.connect(str(db_path), timeout=5)
+        conn = get_connection(config.database_path)
         try:
             tables = {r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"

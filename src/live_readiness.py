@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
+from database.db_manager import get_connection
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -180,7 +180,7 @@ def _check_database(config: ProductionConfig) -> ReadinessCheck:
         return ReadinessCheck(name="database", status="fail",
                               message=f"Database not found: {db_path}")
     try:
-        conn = sqlite3.connect(str(db_path), timeout=5)
+        conn = get_connection(str(db_path))
         try:
             tables = {r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -367,7 +367,7 @@ def _check_sheets_config(config: ProductionConfig) -> ReadinessCheck:
 
 def _check_last_job_runs(config: ProductionConfig) -> ReadinessCheck:
     try:
-        conn = sqlite3.connect(config.database_path, timeout=5)
+        conn = get_connection(config.database_path)
         try:
             row = conn.execute("""
                 SELECT job_type, status, completed_at

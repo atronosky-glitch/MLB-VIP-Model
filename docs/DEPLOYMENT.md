@@ -2,7 +2,21 @@
 
 ## Platform: Render
 
-**Why Render**: Native Streamlit support, persistent disk, background workers, environment secrets, automatic restarts, $7/mo starter plan.
+**Why Render**: Native Streamlit support, managed PostgreSQL, background workers, environment secrets, automatic restarts.
+
+## Architecture
+
+```
+Render PostgreSQL (Starter $7/mo)
+  ↕ DATABASE_URL (auto-wired)
+Web Service (Streamlit dashboard) — Starter $7/mo
+Worker Service (background jobs) — Starter $7/mo
+Persistent Disk (cache, output, backups) — 1GB included
+```
+
+- **Production**: PostgreSQL via `DATABASE_URL` env var (auto-provided by Render)
+- **Local/Tests**: SQLite via `MLB_DB_PATH` or default `database/mlb_model.db`
+- The `DB` wrapper in `database/connection.py` auto-detects and converts SQL
 
 ## Prerequisites
 
@@ -23,7 +37,7 @@ Set these in Render Dashboard → Environment:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SPORTSODDS_API_KEY` | Yes | SportsGameOdds API key |
-| `MLB_DB_PATH` | No | Database path (default: `/data/mlb_model.db`) |
+| `DATABASE_URL` | Auto | PostgreSQL connection string (auto-provided by Render) |
 | `MLB_CACHE_PATH` | No | Cache path (default: `/data/cache`) |
 | `MLB_OUTPUT_DIR` | No | Output path (default: `/data/output`) |
 | `MLB_BACKUP_DIR` | No | Backup path (default: `/data/backups`) |
@@ -44,6 +58,11 @@ Render provides a 1GB persistent disk mounted at `/data`. This stores:
 
 ## Services
 
+### PostgreSQL Database
+- **Plan**: Starter ($7/mo)
+- **Auto-provided**: `DATABASE_URL` env var wired to web and worker
+- **Database**: `mlb_model`
+
 ### Web Service (Dashboard)
 - **Command**: `streamlit run src/control_panel.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
 - **Port**: Auto-assigned by Render
@@ -59,9 +78,14 @@ Render provides a 1GB persistent disk mounted at `/data`. This stores:
 1. Push repository to GitHub
 2. In Render Dashboard, click **New** → **Blueprint**
 3. Select the repository
-4. Render reads `render.yaml` and creates both services
-5. Set environment variables in the Dashboard
+4. Render reads `render.yaml` and creates all 3 services (web, worker, PostgreSQL)
+5. Set environment variables in the Dashboard (SPORTSODDS_API_KEY)
 6. Deploy
+7. On first deploy, run migration to populate PostgreSQL:
+   ```bash
+   # SSH into the web service or run locally with DATABASE_URL set
+   python scripts/migrate_sqlite_to_postgres.py
+   ```
 
 ## Health Verification
 
@@ -103,8 +127,9 @@ restore_database("backups/mlb_backup_YYYYMMDD.db", "/data/mlb_model.db", confirm
 |---------|------|------|
 | Web (Streamlit) | Starter | $7/mo |
 | Worker | Starter | $7/mo |
+| PostgreSQL | Starter | $7/mo |
 | Persistent Disk | 1GB | Included |
-| **Total** | | **~$14/mo** |
+| **Total** | | **~$21/mo** |
 
 ## Local Development
 

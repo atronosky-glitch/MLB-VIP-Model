@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
+from database.db_manager import get_connection
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -115,7 +115,7 @@ def is_yn_review_complete() -> bool:
 def _check_consecutive_operational_days(config: ProductionConfig) -> PromotionCriterion:
     """Check 14 consecutive operational days."""
     try:
-        conn = sqlite3.connect(config.database_path, timeout=5)
+        conn = get_connection(str(config.database_path))
         try:
             rows = conn.execute("""
                 SELECT DISTINCT date(completed_at) as day
@@ -160,7 +160,7 @@ def _check_consecutive_operational_days(config: ProductionConfig) -> PromotionCr
 def _check_job_success_rate(config: ProductionConfig) -> PromotionCriterion:
     """Check 98%+ job success rate."""
     try:
-        conn = sqlite3.connect(config.database_path, timeout=5)
+        conn = get_connection(str(config.database_path))
         try:
             row = conn.execute("""
                 SELECT COUNT(*) as total,
@@ -200,7 +200,7 @@ def _check_job_success_rate(config: ProductionConfig) -> PromotionCriterion:
 def _check_no_db_integrity_failures(config: ProductionConfig) -> PromotionCriterion:
     """Check no database integrity failures in last 30 days."""
     try:
-        conn = sqlite3.connect(config.database_path, timeout=5)
+        conn = get_connection(str(config.database_path))
         try:
             row = conn.execute("""
                 SELECT COUNT(*) FROM job_runs

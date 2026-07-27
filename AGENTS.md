@@ -20,7 +20,8 @@ SportsGameOdds API (v2)
   → src/odds_parser.py         (MLB event odds, validation, audit)
   → src/player_prop_parser.py  (player prop parser — O/U + YN for 21 market types)
   → src/validation_constants.py (shared status codes)
-  → database/db_manager.py     (SQLite storage, migrations, recommendations, grading)
+  → database/db_manager.py     (dual-mode storage — PostgreSQL prod / SQLite local, migrations, recommendations, grading)
+  → database/connection.py     (dialect-aware DB wrapper — auto SQL conversion, psycopg2/sqlite3)
   → src/market_analysis.py     (consensus, EV, CLV, slow-book)
   → src/player_prop_analysis.py (LOO consensus, dual-status, YN price comparison)
   → src/prop_config.py         (centralised thresholds, MarketConfig registry)
@@ -57,10 +58,10 @@ SportsGameOdds API (v2)
   → src/adaptive_learning.py   (adaptive learning engine — grade analysis, score calibration, learning recommendations, champion/challenger, versioning, safety)
   → src/worker.py              (background worker — persistent/one-shot/specific-job, heartbeat, scheduling, stale-job recovery)
   → main.py                    (CLI entry point)
-  → tests/                     (1367 tests, isolated in-memory DB)
+  → tests/                     (1389 tests, isolated in-memory DB)
 ```
 
-Phase 17 is complete — cloud deployment on Render with persistent automation.
+Phase 17B is complete — PostgreSQL migration for production (dual-mode with SQLite for local/tests).
 Future stages: alt-line scanning, website, multi-league support.
 
 ## Non-negotiable engineering rules

@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import subprocess
+from database.db_manager import get_connection
 import sys
 import threading
 import time
@@ -116,8 +117,7 @@ def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]
     if not Path(db_path).exists():
         return []
     try:
-        conn = sqlite3.connect(db_path, timeout=5)
-        conn.row_factory = sqlite3.Row
+        conn = get_connection(str(db_path))
         try:
             cols = (
                 "recommendation_id, event_id, player_name, market_type, "
@@ -175,7 +175,7 @@ def _get_latest_run_id(db_path: str) -> str:
     if not Path(db_path).exists():
         return ""
     try:
-        conn = sqlite3.connect(db_path, timeout=3)
+        conn = get_connection(str(db_path))
         row = conn.execute(
             "SELECT scan_run_id FROM historical_recommendations "
             "WHERE scan_run_id IS NOT NULL AND scan_run_id != '' "
@@ -206,7 +206,7 @@ def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict
     if not Path(db_path).exists():
         return result
     try:
-        conn = sqlite3.connect(db_path, timeout=3)
+        conn = get_connection(str(db_path))
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         total = conn.execute(
             "SELECT COUNT(*) FROM games WHERE date(start_time) = ?", (today,)
@@ -277,8 +277,7 @@ def _get_live_game_warnings(db_path: str, run_id: str) -> list[dict]:
     if not Path(db_path).exists() or not run_id:
         return warnings
     try:
-        conn = sqlite3.connect(db_path, timeout=3)
-        conn.row_factory = sqlite3.Row
+        conn = get_connection(str(db_path))
         rows = conn.execute(
             "SELECT recommendation_id, matchup, event_status, player_name, "
             "market_type, sportsbook FROM historical_recommendations "
@@ -640,8 +639,7 @@ with tabs[1]:
 
     try:
         import pandas as pd
-        conn = sqlite3.connect(db_path, timeout=5)
-        conn.row_factory = sqlite3.Row
+        conn = get_connection(str(db_path))
         try:
             op_rows = conn.execute("""
                 SELECT op.*, hr.player_name, hr.market_type, hr.market_form,
@@ -705,8 +703,7 @@ with tabs[1]:
     st.subheader("Why No Official Picks Today")
     try:
         import pandas as pd
-        conn_why = sqlite3.connect(db_path, timeout=5)
-        conn_why.row_factory = sqlite3.Row
+        conn_why = get_connection(str(db_path))
         try:
             today_recs = conn_why.execute(
                 "SELECT * FROM historical_recommendations "
@@ -774,7 +771,7 @@ with tabs[1]:
         try:
             import pandas as pd
             from src.tracker import grade_pending_picks
-            conn = sqlite3.connect(db_path, timeout=5)
+            conn = get_connection(str(db_path))
             try:
                 graded = grade_pending_picks(conn)
                 st.success(f"Graded {graded} official pick(s)")
@@ -877,8 +874,7 @@ with tabs[3]:
 
     try:
         import pandas as pd
-        conn = sqlite3.connect(db_path, timeout=5)
-        conn.row_factory = sqlite3.Row
+        conn = get_connection(str(db_path))
         try:
             official_rows = conn.execute("""
                 SELECT op.recommendation_id, hr.player_name, hr.market_type, hr.side,
@@ -900,8 +896,7 @@ with tabs[3]:
                 label = f"{op.get('player_name', '?')} — {op.get('market_type', '?')} ({op.get('side', '?')}) @ {op.get('sportsbook', '?')}"
                 with st.expander(label, expanded=False):
                     try:
-                        conn2 = sqlite3.connect(db_path, timeout=5)
-                        conn2.row_factory = sqlite3.Row
+                        conn2 = get_connection(str(db_path))
                         try:
                             obs_rows = conn2.execute("""
                                 SELECT * FROM pick_observations
@@ -931,8 +926,7 @@ with tabs[3]:
                             st.dataframe(pd.DataFrame(obs_table), use_container_width=True, hide_index=True)
 
                             if len(observations) >= 2:
-                                conn_mv = sqlite3.connect(db_path, timeout=5)
-                                conn_mv.row_factory = sqlite3.Row
+                                conn_mv = get_connection(str(db_path))
                                 try:
                                     from src.observations import compute_movement
                                     movement = compute_movement(conn_mv, rid)
@@ -958,8 +952,7 @@ with tabs[4]:
         import pandas as pd
         from src.tracker import compute_performance, breakdown_by_field, get_official_picks
 
-        conn_perf = sqlite3.connect(db_path, timeout=5)
-        conn_perf.row_factory = sqlite3.Row
+        conn_perf = get_connection(str(db_path))
         try:
             official_all = get_official_picks(conn_perf)
             metrics = compute_performance(conn_perf)
@@ -983,8 +976,7 @@ with tabs[4]:
         breakdown_fields = ["market_type", "sportsbook", "market_form"]
         for field in breakdown_fields:
             try:
-                conn_bd = sqlite3.connect(db_path, timeout=5)
-                conn_bd.row_factory = sqlite3.Row
+                conn_bd = get_connection(str(db_path))
                 try:
                     bd = breakdown_by_field(conn_bd, field)
                 finally:
@@ -1006,8 +998,7 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Market Intelligence")
 
-    import sqlite3 as _sqlite3
-    _conn_mi = _sqlite3.connect(db_path, timeout=5)
+    _conn_mi = get_connection(str(db_path))
     try:
         _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -1160,8 +1151,7 @@ with tabs[6]:
     try:
         from src.automation import get_automation_status, schedule_pregame_checks, schedule_grading, trigger_morning_run, trigger_grading, get_pending_jobs, get_failed_jobs, retry_failed_jobs
 
-        conn = sqlite3.connect(db_path, timeout=5)
-        conn.row_factory = sqlite3.Row
+        conn = get_connection(str(db_path))
         try:
             status = get_automation_status(conn)
         finally:
@@ -1185,8 +1175,7 @@ with tabs[6]:
 
         # ── Worker heartbeat ──────────────────────────────────────
         try:
-            hb_conn = sqlite3.connect(db_path, timeout=3)
-            hb_conn.row_factory = sqlite3.Row
+            hb_conn = get_connection(str(db_path))
             try:
                 hb_row = hb_conn.execute(
                     "SELECT last_heartbeat, worker_pid FROM worker_heartbeat WHERE id = 1"
@@ -1251,7 +1240,7 @@ with tabs[6]:
         with trig_cols[0]:
             if st.button("🌅 Run Full Slate Now", use_container_width=True):
                 if st.session_state.get("_confirm_morning"):
-                    conn3 = sqlite3.connect(db_path, timeout=5)
+                    conn3 = get_connection(str(db_path))
                     try:
                         jid = trigger_morning_run(conn3)
                         st.success(f"Morning run job created: {jid[:8]}")
@@ -1263,7 +1252,7 @@ with tabs[6]:
                     st.warning("Click again to confirm full-slate run")
         with trig_cols[1]:
             if st.button("📈 Schedule Pregame Checks", use_container_width=True):
-                conn3 = sqlite3.connect(db_path, timeout=5)
+                conn3 = get_connection(str(db_path))
                 try:
                     count = schedule_pregame_checks(conn3)
                     st.success(f"Scheduled {count} pregame check(s)")
@@ -1272,7 +1261,7 @@ with tabs[6]:
         with trig_cols[2]:
             if st.button("✅ Run Grading Now", use_container_width=True):
                 if st.session_state.get("_confirm_grading"):
-                    conn3 = sqlite3.connect(db_path, timeout=5)
+                    conn3 = get_connection(str(db_path))
                     try:
                         count = schedule_grading(conn3)
                         st.success(f"Grading jobs created: {count}")
@@ -1284,7 +1273,7 @@ with tabs[6]:
                     st.warning("Click again to confirm grading")
         with trig_cols[3]:
             if st.button("🔄 Retry Failed Jobs", use_container_width=True):
-                conn3 = sqlite3.connect(db_path, timeout=5)
+                conn3 = get_connection(str(db_path))
                 try:
                     count = retry_failed_jobs(conn3)
                     st.success(f"Reset {count} failed job(s) to pending")
@@ -1309,8 +1298,7 @@ with tabs[6]:
 
         # ── Pending jobs ──────────────────────────────────────────
         st.subheader("Pending Jobs")
-        conn4 = sqlite3.connect(db_path, timeout=5)
-        conn4.row_factory = sqlite3.Row
+        conn4 = get_connection(str(db_path))
         try:
             pending = get_pending_jobs(conn4)
             failed = get_failed_jobs(conn4)
@@ -1397,7 +1385,7 @@ with tabs[7]:
     if st.button("📊 Run Data Quality Check", use_container_width=False):
         try:
             from src.data_quality import run_data_quality_checks
-            conn5 = sqlite3.connect(db_path, timeout=5)
+            conn5 = get_connection(str(db_path))
             try:
                 findings = run_data_quality_checks(conn5)
                 if findings:
@@ -1492,7 +1480,7 @@ with tabs[7]:
                         st.code(result_box5["output"], language=None)
             if st.button("📋 View Traces", use_container_width=True, key="view_traces_btn"):
                 try:
-                    conn6 = sqlite3.connect(db_path, timeout=3)
+                    conn6 = get_connection(str(db_path))
                     try:
                         traces = conn6.execute(
                             "SELECT recommendation_id, step, message, timestamp FROM recommendation_traces ORDER BY timestamp DESC LIMIT 20"
@@ -1524,9 +1512,7 @@ with tabs[7]:
 with tabs[8]:
     st.subheader("Adaptive Learning & Model Calibration")
 
-    import sqlite3 as _sqlite3
-    _conn_al = _sqlite3.connect(db_path, timeout=5)
-    _conn_al.row_factory = _sqlite3.Row
+    _conn_al = get_connection(str(db_path))
 
     try:
         from src.adaptive_learning import (

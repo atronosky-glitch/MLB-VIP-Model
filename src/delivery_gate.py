@@ -17,7 +17,7 @@ import hashlib
 import json
 import logging
 import os
-import sqlite3
+from database.db_manager import get_connection
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -166,7 +166,7 @@ def _check_critical_data_quality(config: ProductionConfig) -> bool:
     """Check for critical data-quality findings."""
     try:
         from src.data_quality import get_critical_findings
-        conn = sqlite3.connect(config.database_path, timeout=5)
+        conn = get_connection(str(config.database_path))
         try:
             findings = get_critical_findings(conn, since_hours=24)
             return len(findings) == 0

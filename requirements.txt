@@ -3,6 +3,7 @@ pandas>=2.2.0
 python-dotenv>=1.0.0
 gspread>=6.1.0
 streamlit>=1.35.0,<2.0.0
+psycopg2-binary>=2.9.9
 
 # Testing (dev only)
 pytest>=8.0.0

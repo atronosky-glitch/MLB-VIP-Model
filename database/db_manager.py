@@ -1,7 +1,10 @@
-"""SQLite database manager.
+"""Database manager.
 
 Centralises all database operations so the rest of the codebase never
 touches raw SQL outside this module.
+
+Supports both SQLite (local/tests) and PostgreSQL (production) via
+the DATABASE_URL environment variable.
 """
 
 import hashlib
@@ -14,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from database.connection import DB, get_connection as _get_db_connection, get_database_url
 
 load_dotenv()
 
@@ -35,8 +40,27 @@ _ODDS_MIGRATIONS = [
 ]
 
 
-def get_connection() -> sqlite3.Connection:
-    """Return a connection to the project SQLite database."""
+def get_connection(db_path: str | None = None) -> DB:
+    """Return a database connection.
+
+    If DATABASE_URL is set, connects to PostgreSQL.
+    Otherwise, connects to the local SQLite database.
+
+    Parameters
+    ----------
+    db_path : str or None
+        Explicit path to an SQLite database file.  Only used when
+        ``DATABASE_URL`` is not set.  Falls back to ``DB_PATH`` if None.
+    """
+    db_url = get_database_url()
+    if db_url:
+        return _get_db_connection(url=db_url)
+    path = db_path or str(DB_PATH)
+    return _get_db_connection(db_path=path)
+
+
+def _get_raw_sqlite_connection() -> sqlite3.Connection:
+    """Return a raw sqlite3 connection (for SQLite-only operations like backup)."""
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -44,21 +68,35 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def _safe_migrate_odds(conn: sqlite3.Connection) -> None:
+def _safe_migrate_odds(conn) -> None:
     """Add columns to ``odds`` table if they don't exist yet.
 
     Safe to run against both new and existing databases.
     Never drops or modifies existing data.
     """
-    cursor = conn.execute("PRAGMA table_info(odds)")
-    existing = {row[1] for row in cursor.fetchall()}
-    for col_name, col_def in _ODDS_MIGRATIONS:
-        if col_name not in existing:
-            conn.execute(f"ALTER TABLE odds ADD COLUMN {col_name} {col_def}")
-            logger.info("Added column '%s' to odds table", col_name)
+    dialect = getattr(conn, "dialect", "sqlite")
+    if dialect == "postgresql":
+        for col_name, col_def in _ODDS_MIGRATIONS:
+            pg_type = col_def.split("DEFAULT")[0].strip() if "DEFAULT" in col_def else col_def
+            pg_type = pg_type.replace("TEXT", "TEXT").replace("INTEGER", "INTEGER").replace("REAL", "REAL")
+            try:
+                conn.execute(f"ALTER TABLE odds ADD COLUMN {col_name} {col_def}")
+            except Exception:
+                pass  # Column already exists
+    else:
+        cursor = conn.execute("PRAGMA table_info(odds)")
+        rows = cursor.fetchall()
+        if rows and isinstance(rows[0], dict):
+            existing = {row["name"] for row in rows}
+        else:
+            existing = {row[1] for row in rows}
+        for col_name, col_def in _ODDS_MIGRATIONS:
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE odds ADD COLUMN {col_name} {col_def}")
+                logger.info("Added column '%s' to odds table", col_name)
 
 
-def _create_audit_table(conn: sqlite3.Connection) -> None:
+def _create_audit_table(conn: DB) -> None:
     """Create ``odds_mapping_audit`` table if it doesn't exist."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS odds_mapping_audit (
@@ -87,17 +125,29 @@ _PLAYER_PROP_MIGRATIONS = [
 ]
 
 
-def _safe_migrate_player_prop(conn: sqlite3.Connection) -> None:
+def _safe_migrate_player_prop(conn) -> None:
     """Add columns to ``player_prop_odds`` if they don't exist yet."""
-    cursor = conn.execute("PRAGMA table_info(player_prop_odds)")
-    existing = {row[1] for row in cursor.fetchall()}
-    for col_name, col_def in _PLAYER_PROP_MIGRATIONS:
-        if col_name not in existing:
-            conn.execute(f"ALTER TABLE player_prop_odds ADD COLUMN {col_name} {col_def}")
-            logger.info("Added column '%s' to player_prop_odds table", col_name)
+    dialect = getattr(conn, "dialect", "sqlite")
+    if dialect == "postgresql":
+        for col_name, col_def in _PLAYER_PROP_MIGRATIONS:
+            try:
+                conn.execute(f"ALTER TABLE player_prop_odds ADD COLUMN {col_name} {col_def}")
+            except Exception:
+                pass  # Column already exists
+    else:
+        cursor = conn.execute("PRAGMA table_info(player_prop_odds)")
+        rows = cursor.fetchall()
+        if rows and isinstance(rows[0], dict):
+            existing = {row["name"] for row in rows}
+        else:
+            existing = {row[1] for row in rows}
+        for col_name, col_def in _PLAYER_PROP_MIGRATIONS:
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE player_prop_odds ADD COLUMN {col_name} {col_def}")
+                logger.info("Added column '%s' to player_prop_odds table", col_name)
 
 
-def _create_player_prop_audit_table(conn: sqlite3.Connection) -> None:
+def _create_player_prop_audit_table(conn: DB) -> None:
     """Create ``player_prop_mapping_audit`` table if it doesn't exist."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS player_prop_mapping_audit (
@@ -132,9 +182,7 @@ def _create_player_prop_audit_table(conn: sqlite3.Connection) -> None:
 def init_db() -> None:
     """Create all tables if they don't exist yet.  Runs schema migrations."""
     conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.executescript("""
+    conn.executescript("""
         -- Games / events
         CREATE TABLE IF NOT EXISTS games (
             event_id        TEXT PRIMARY KEY,
@@ -427,7 +475,7 @@ def init_db() -> None:
             conn.execute(
                 f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
             )
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # column already exists
 
     # Phase 14: Add model score columns
@@ -442,7 +490,7 @@ def init_db() -> None:
             conn.execute(
                 f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
             )
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # column already exists
 
     # Phase 15: Add official pick qualification columns
@@ -462,7 +510,7 @@ def init_db() -> None:
             conn.execute(
                 f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
             )
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # column already exists
 
     # Phase 16: Add qualification_timestamp, official_rank columns
@@ -474,7 +522,7 @@ def init_db() -> None:
             conn.execute(
                 f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
             )
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # column already exists
 
     # Phase 16A: Add score diagnostics columns
@@ -490,7 +538,7 @@ def init_db() -> None:
             conn.execute(
                 f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
             )
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # column already exists
 
     # Phase 16: Official picks frozen snapshot table
@@ -649,7 +697,7 @@ def init_db() -> None:
     logger.info("Database initialised at %s", DB_PATH)
 
 
-def save_game(conn: sqlite3.Connection, game: dict) -> None:
+def save_game(conn: DB, game: dict) -> None:
     """Insert or update a game record."""
     conn.execute("""
         INSERT INTO games (event_id, league, away_team, home_team, start_time, status, sport_id, league_id)
@@ -661,7 +709,7 @@ def save_game(conn: sqlite3.Connection, game: dict) -> None:
     conn.commit()
 
 
-def save_raw_response(conn: sqlite3.Connection, endpoint: str, params: dict | None, data: dict) -> None:
+def save_raw_response(conn: DB, endpoint: str, params: dict | None, data: dict) -> None:
     """Store the full raw API response for later reprocessing."""
     import json
     conn.execute(
@@ -671,7 +719,7 @@ def save_raw_response(conn: sqlite3.Connection, endpoint: str, params: dict | No
     conn.commit()
 
 
-def record_pull(conn: sqlite3.Connection, event_id: str, pull_type: str) -> None:
+def record_pull(conn: DB, event_id: str, pull_type: str) -> None:
     """Record that a data pull happened for a game."""
     conn.execute(
         "INSERT INTO data_pulls (event_id, pull_type) VALUES (?, ?)",
@@ -689,7 +737,7 @@ _REQUIRED_ODDS_KEYS = frozenset({
 
 
 def save_odds_batch(
-    conn: sqlite3.Connection,
+    conn: DB,
     odds_rows: list[dict],
     audit_rows: list[dict] | None = None,
 ) -> int:
@@ -697,7 +745,7 @@ def save_odds_batch(
 
     Parameters
     ----------
-    conn : sqlite3.Connection
+    conn : DB
         Open database connection.
     odds_rows : list[dict]
         Normal odds rows (must include all columns including validation fields).
@@ -775,7 +823,7 @@ _PP_REQUIRED_KEYS = frozenset({
 
 
 def save_player_prop_batch(
-    conn: sqlite3.Connection,
+    conn: DB,
     rows: list[dict],
     audit_rows: list[dict] | None = None,
 ) -> int:
@@ -783,7 +831,7 @@ def save_player_prop_batch(
 
     Parameters
     ----------
-    conn : sqlite3.Connection
+    conn : DB
         Open database connection.
     rows : list[dict]
         Approved odds rows.
@@ -861,7 +909,7 @@ def save_player_prop_batch(
 # ==================================================================
 
 def create_run(
-    conn: sqlite3.Connection,
+    conn: DB,
     run_type: str = "scan",
     mode: str | None = None,
     market_filter: str | None = None,
@@ -885,7 +933,7 @@ def create_run(
 
 
 def finish_run(
-    conn: sqlite3.Connection,
+    conn: DB,
     run_id: str,
     *,
     n_events: int = 0,
@@ -913,7 +961,7 @@ def finish_run(
 
 
 def log_ingestion(
-    conn: sqlite3.Connection,
+    conn: DB,
     run_id: str | None,
     event_id: str,
     odds_rows: int = 0,
@@ -930,7 +978,7 @@ def log_ingestion(
 
 
 def persist_scan_error(
-    conn: sqlite3.Connection,
+    conn: DB,
     run_id: str | None,
     error_type: str,
     error_message: str,
@@ -1001,7 +1049,7 @@ def generate_recommendation_id() -> str:
     return str(uuid.uuid4())
 
 
-def save_recommendation(conn: sqlite3.Connection, rec: dict) -> str | None:
+def save_recommendation(conn: DB, rec: dict) -> str | None:
     """Insert a recommendation snapshot. Idempotent via fingerprint UNIQUE.
 
     Returns the recommendation_id if inserted, or None if the exact
@@ -1012,7 +1060,7 @@ def save_recommendation(conn: sqlite3.Connection, rec: dict) -> str | None:
 
     try:
         cursor = conn.execute(
-            """INSERT OR IGNORE INTO historical_recommendations
+            """INSERT INTO historical_recommendations
                (recommendation_id, fingerprint, scan_run_id, ingestion_run_id,
                 event_id, event_start_time, player_id, player_name,
                 market_type, market_form, period, line, side, sportsbook,
@@ -1030,7 +1078,8 @@ def save_recommendation(conn: sqlite3.Connection, rec: dict) -> str | None:
                 contributing_book_count, contributing_books,
                 applicable_edge_metric, applicable_edge_threshold,
                 model_score_threshold, qualification_rules_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (fingerprint) DO NOTHING""",
             (rec_id, fingerprint,
              rec.get("scan_run_id"), rec.get("ingestion_run_id"),
              rec["event_id"], rec.get("event_start_time"),
@@ -1069,13 +1118,13 @@ def save_recommendation(conn: sqlite3.Connection, rec: dict) -> str | None:
         if cursor.rowcount == 0:
             return None
         return rec_id
-    except sqlite3.IntegrityError:
+    except Exception:
         conn.rollback()
         return None
 
 
 def freeze_official_pick(
-    conn: sqlite3.Connection,
+    conn: DB,
     recommendation_id: str,
     tier: str = "OFFICIAL_TRACKED",
     official_rank: int | None = None,
@@ -1086,18 +1135,19 @@ def freeze_official_pick(
     Returns True if inserted, False if already exists (idempotent).
     """
     try:
-        conn.execute("""
-            INSERT OR IGNORE INTO official_picks (
+        cursor = conn.execute("""
+            INSERT INTO official_picks (
                 recommendation_id, tier, official_rank, rules_version
             ) VALUES (?, ?, ?, ?)
+            ON CONFLICT (recommendation_id) DO NOTHING
         """, (recommendation_id, tier, official_rank, rules_version))
         conn.commit()
-        return conn.total_changes > 0
-    except sqlite3.IntegrityError:
+        return cursor.rowcount > 0
+    except Exception:
         return False
 
 
-def get_official_picks_today(conn: sqlite3.Connection) -> list[dict]:
+def get_official_picks_today(conn: DB) -> list[dict]:
     """Get today's official picks."""
     rows = conn.execute("""
         SELECT op.*, hr.player_name, hr.market_type, hr.market_form,
@@ -1113,7 +1163,7 @@ def get_official_picks_today(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_research_picks_today(conn: sqlite3.Connection) -> list[dict]:
+def get_research_picks_today(conn: DB) -> list[dict]:
     """Get today's research-only recommendations."""
     rows = conn.execute("""
         SELECT recommendation_id, event_id, player_name, market_type, market_form,
@@ -1131,7 +1181,7 @@ def get_research_picks_today(conn: sqlite3.Connection) -> list[dict]:
 
 
 def save_event_result(
-    conn: sqlite3.Connection,
+    conn: DB,
     event_id: str,
     *,
     final_status: str = "UNRESOLVED",
@@ -1162,7 +1212,7 @@ def save_event_result(
 
 
 def save_player_stat_result(
-    conn: sqlite3.Connection,
+    conn: DB,
     event_id: str,
     player_id: str,
     market_type: str,
@@ -1197,7 +1247,7 @@ def save_player_stat_result(
 
 
 def settle_recommendation(
-    conn: sqlite3.Connection,
+    conn: DB,
     recommendation_id: str,
     settlement_status: str,
     *,
@@ -1272,7 +1322,7 @@ def compute_units(settlement_status: str, american_odds: int) -> tuple[float, fl
 
 
 def save_bet_units(
-    conn: sqlite3.Connection,
+    conn: DB,
     recommendation_id: str,
     settlement_status: str,
     american_odds: int,
@@ -1281,17 +1331,23 @@ def save_bet_units(
     risk, profit, ret = compute_units(settlement_status, american_odds)
     settlement_id = str(uuid.uuid4())
     conn.execute(
-        """INSERT OR REPLACE INTO bet_units
+        """INSERT INTO bet_units
            (settlement_id, recommendation_id, risk_units, profit_units,
             return_units, odds_at_settle)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (settlement_id) DO UPDATE SET
+                recommendation_id = excluded.recommendation_id,
+                risk_units = excluded.risk_units,
+                profit_units = excluded.profit_units,
+                return_units = excluded.return_units,
+                odds_at_settle = excluded.odds_at_settle""",
         (settlement_id, recommendation_id, risk, profit, ret, american_odds),
     )
     conn.commit()
 
 
 def save_closing_price(
-    conn: sqlite3.Connection,
+    conn: DB,
     recommendation_id: str,
     *,
     closing_american: int | None = None,
@@ -1322,7 +1378,7 @@ def save_closing_price(
 
 
 def apply_manual_override(
-    conn: sqlite3.Connection,
+    conn: DB,
     recommendation_id: str,
     new_status: str,
     override_reason: str,
@@ -1384,7 +1440,7 @@ def apply_manual_override(
 # Query helpers for grading and performance
 # ==================================================================
 
-def get_unsettled_recommendations(conn: sqlite3.Connection) -> list[dict]:
+def get_unsettled_recommendations(conn: DB) -> list[dict]:
     """Return all recommendations without a settled status."""
     cur = conn.execute(
         """SELECT hr.*, ms.settlement_status
@@ -1396,7 +1452,7 @@ def get_unsettled_recommendations(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in cur.fetchall()]
 
 
-def get_settled_recommendations(conn: sqlite3.Connection) -> list[dict]:
+def get_settled_recommendations(conn: DB) -> list[dict]:
     """Return all settled (non-UNRESOLVED) recommendations with units."""
     cur = conn.execute(
         """SELECT hr.*, ms.settlement_status, ms.final_stat_value,
@@ -1411,7 +1467,7 @@ def get_settled_recommendations(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in cur.fetchall()]
 
 
-def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict | None:
+def get_recommendation_by_id(conn: DB, rec_id: str) -> dict | None:
     """Return a single recommendation by ID."""
     cur = conn.execute(
         "SELECT * FROM historical_recommendations WHERE recommendation_id = ?",
@@ -1422,7 +1478,7 @@ def get_recommendation_by_id(conn: sqlite3.Connection, rec_id: str) -> dict | No
 
 
 def get_player_stat_result(
-    conn: sqlite3.Connection, event_id: str, player_id: str, market_type: str,
+    conn: DB, event_id: str, player_id: str, market_type: str,
 ) -> dict | None:
     """Return a player stat result if it exists."""
     cur = conn.execute(
@@ -1439,7 +1495,7 @@ def get_player_stat_result(
 # ==================================================================
 
 def capture_closing_prices(
-    conn: sqlite3.Connection,
+    conn: DB,
     recommendations: list[dict],
 ) -> int:
     """Capture closing prices for recommendations from current odds data.
@@ -1532,7 +1588,7 @@ def capture_closing_prices(
     return captured
 
 
-def get_all_recommendations_with_settlement(conn: sqlite3.Connection) -> list[dict]:
+def get_all_recommendations_with_settlement(conn: DB) -> list[dict]:
     """Return all recommendations with settlement status and units for analytics."""
     cur = conn.execute("""
         SELECT hr.*, ms.settlement_status, ms.final_stat_value,
@@ -1547,16 +1603,17 @@ def get_all_recommendations_with_settlement(conn: sqlite3.Connection) -> list[di
     return [dict(row) for row in cur.fetchall()]
 
 
-def save_learning_recommendation(conn: sqlite3.Connection, rec: dict) -> None:
+def save_learning_recommendation(conn: DB, rec: dict) -> None:
     """Persist a learning recommendation (advisory only)."""
     ci = rec.get("confidence_interval")
     conn.execute("""
-        INSERT OR IGNORE INTO learning_recommendations
+        INSERT INTO learning_recommendations
         (recommendation_id, category, proposed_change, current_value,
          proposed_value, reason, sample_size, historical_roi_diff,
          historical_clv_diff, confidence_low, confidence_high,
          expected_volume, overfitting_risk, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (recommendation_id) DO NOTHING
     """, (
         rec.get("recommendation_id"),
         rec.get("category"),
@@ -1578,7 +1635,7 @@ def save_learning_recommendation(conn: sqlite3.Connection, rec: dict) -> None:
 
 
 def get_learning_recommendations(
-    conn: sqlite3.Connection,
+    conn: DB,
     status: str | None = None,
 ) -> list[dict]:
     """Retrieve learning recommendations, optionally filtered by status."""
@@ -1594,7 +1651,7 @@ def get_learning_recommendations(
     return [dict(r) for r in rows]
 
 
-def get_experiments(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
+def get_experiments(conn: DB, limit: int = 20) -> list[dict]:
     """Retrieve recent experiments."""
     rows = conn.execute(
         "SELECT * FROM experiments ORDER BY created_at DESC LIMIT ?",
@@ -1603,7 +1660,7 @@ def get_experiments(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_active_config_version(conn: sqlite3.Connection) -> dict | None:
+def get_active_config_version(conn: DB) -> dict | None:
     """Get the currently active configuration version."""
     row = conn.execute(
         "SELECT * FROM config_versions WHERE deactivated_at = '' ORDER BY activated_at DESC LIMIT 1"

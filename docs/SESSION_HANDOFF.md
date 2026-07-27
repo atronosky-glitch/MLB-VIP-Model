@@ -2,6 +2,50 @@
 
 > Future OpenCode session: read `AGENTS.md`, `PROJECT_STATUS.md`, `TODO.md`, and this file before modifying code.
 
+## Session: 2026-07-27 — Phase 17B: PostgreSQL Migration for Production
+
+### What was done
+
+Completed Phase 17B — migrated the database layer from SQLite-only to dual-mode PostgreSQL/SQLite for production deployment.
+
+**New source modules (1):**
+1. `database/connection.py` — Dialect-aware `DB` wrapper class wrapping sqlite3 or psycopg2. Auto SQL conversion (`?`→`%s`, `datetime('now')`→`NOW()`, `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, `AUTOINCREMENT`→`SERIAL`, `sqlite_master`→`information_schema`, `GROUP_CONCAT`→`STRING_AGG`, `BEGIN IMMEDIATE`→`BEGIN`, PRAGMA removal). `DBResult` uniform cursor. `get_connection()` factory auto-detects from `DATABASE_URL` env var.
+
+**New scripts (1):**
+1. `scripts/migrate_sqlite_to_postgres.py` — One-time SQLite→PostgreSQL data migration. Dynamic table discovery, batch inserts (500 rows), `--dry-run`, `--drop-existing`, error resilience.
+
+**New tests (1):**
+1. `tests/test_phase17b_postgres.py` — 22 tests across 4 test classes: SQL conversion (9 tests), DB wrapper (6 tests), dual-mode db_manager (5 tests), migration script (2 tests).
+
+**Updated source files (16):**
+1. `database/db_manager.py` — Complete dual-mode rewrite. `get_connection(db_path=None)` auto-detects PostgreSQL vs SQLite. All `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`. All `INSERT OR REPLACE`→`ON CONFLICT DO UPDATE`. `sqlite3.IntegrityError`→`Exception`. All type hints updated to `DB`. PRAGMA migration functions handle both dict-like and tuple-like rows.
+2. `src/control_panel.py` — 23 `sqlite3.connect()` → `get_connection()`, 13 `row_factory` lines removed, 2 local `import sqlite3` removed
+3. `src/worker.py` — 3 `sqlite3.connect()` → `get_connection()`, `sqlite3.IntegrityError` → `Exception`
+4. `src/production_jobs.py` — 2 `sqlite3.connect()` → `get_connection()`, 2 local imports removed
+5. `src/health_check.py` — 3 `sqlite3.connect()` → `get_connection()`, import added
+6. `src/promotion.py` — 3 `sqlite3.connect()` → `get_connection()`, `import sqlite3` replaced
+7. `src/delivery_gate.py` — 1 `sqlite3.connect()` → `get_connection()`, `import sqlite3` replaced
+8. `src/discord_delivery.py` — 1 `sqlite3.connect()` → `get_connection()`, `row_factory` removed
+9. `src/export_sheets.py` — 1 `sqlite3.connect()` → `get_connection()`
+10. `src/live_readiness.py` — 2 `sqlite3.connect()` → `get_connection()`, `import sqlite3` replaced
+11. `src/production_canary.py` — 1 `sqlite3.connect()` → `get_connection()`
+12. `src/shadow_dashboard.py` — 1 `sqlite3.connect()` → `get_connection()`, import added
+13. `tests/test_phase11_readiness.py` — Updated mock from `sqlite3` to `get_connection`
+14. `render.yaml` — Added PostgreSQL database service (`mlb-postgres`, Starter $7/mo), `DATABASE_URL` wired via `fromDatabase`, retained disk for cache/output/backups
+15. `requirements.txt` — Added `psycopg2-binary>=2.9.9`
+16. `database/connection.py` — Fixed `_replace_datetime_offset` lambda syntax error (line 52)
+
+**Key architectural decisions:**
+- `DATABASE_URL` env var triggers PostgreSQL mode; unset = SQLite
+- `DB` wrapper auto-converts SQLite SQL to PostgreSQL on execute
+- For SQLite, `DBResult` preserves raw `sqlite3.Row` objects (supports both integer and string indexing)
+- `backup_database.py` left SQLite-only (uses `.backup()` API; PostgreSQL uses `pg_dump`)
+- Render cost: $21/mo (web $7 + worker $7 + PostgreSQL $7)
+
+**Test results:** 1389/1389 passing (1367 original + 22 new)
+
+---
+
 ## Session: 2026-07-27 — Phase 17: Cloud Deployment, Phone Access, and Production Automation
 
 ### What was done

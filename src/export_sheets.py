@@ -140,9 +140,9 @@ def export_recommendations(
 
 def _load_recommendations(db_path: str | Path) -> list[list[Any]]:
     """Load recommendations from DB as sheet-ready rows."""
-    import sqlite3
+    from database.db_manager import get_connection
 
-    conn = sqlite3.connect(str(db_path))
+    conn = get_connection(str(db_path))
     try:
         # Check if table exists
         tables = {

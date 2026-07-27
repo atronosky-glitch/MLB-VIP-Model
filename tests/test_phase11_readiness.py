@@ -399,11 +399,9 @@ class TestPromotion:
     def test_check_job_success_rate_no_data(self):
         from src.promotion import _check_job_success_rate
         from src.production_config import ProductionConfig
-        with patch("src.promotion.sqlite3") as mock_sql:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchone.return_value = (0, 0)
-            mock_sql.connect.return_value.__enter__ = lambda s: mock_conn
-            mock_sql.connect.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = (0, 0)
+        with patch("src.promotion.get_connection", return_value=mock_conn):
             result = _check_job_success_rate(ProductionConfig(database_path=":memory:"))
             assert result.met is False
 

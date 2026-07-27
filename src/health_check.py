@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 import time
+from database.db_manager import get_connection
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -155,7 +156,7 @@ def _check_database(db_path: str | Path) -> HealthCheck:
         )
 
     try:
-        conn = sqlite3.connect(str(db_path), timeout=5)
+        conn = get_connection(str(db_path))
         try:
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -232,7 +233,7 @@ def _check_disk_space(output_dir: str | Path, min_mb: int) -> HealthCheck:
 def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
     """Check if the latest pipeline run was within the freshness window."""
     try:
-        conn = sqlite3.connect(str(db_path), timeout=5)
+        conn = get_connection(str(db_path))
         try:
             row = conn.execute(
                 "SELECT completed_at, status FROM job_runs "
@@ -375,7 +376,7 @@ def _check_discord() -> HealthCheck:
 def _check_worker_heartbeat(db_path: str | Path) -> HealthCheck:
     """Check if the background worker has sent a recent heartbeat."""
     try:
-        conn = sqlite3.connect(str(db_path), timeout=5)
+        conn = get_connection(str(db_path))
         try:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS worker_heartbeat (

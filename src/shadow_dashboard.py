@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from database.db_manager import get_connection
 from src.production_config import load_config, ProductionConfig
 from src.shadow_mode import load_shadow_config, ShadowConfig
 
@@ -89,7 +90,7 @@ def build_dashboard(
     # Query database
     db_path = Path(config.database_path)
     if db_path.exists():
-        conn = sqlite3.connect(str(db_path), timeout=5)
+        conn = get_connection(str(db_path))
         try:
             _fill_recommendations(conn, dash)
             _fill_delivery(conn, dash)

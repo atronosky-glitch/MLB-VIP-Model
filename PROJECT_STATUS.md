@@ -28,7 +28,7 @@
 
 ## Current test status
 
-Full suite: **1367/1367 passing, 0 skipped, 0 failed** (last full run 2026-07-27)
+Full suite: **1389/1389 passing, 0 skipped, 0 failed** (last full run 2026-07-27)
 
 Breakdown:
 - `tests/test_stage1.py` — 7 tests (project structure, env, DB init, games, raw responses, API structure)
@@ -112,7 +112,17 @@ Cache-dependent fixtures were replaced with synthetic inline fixtures in `tests/
 
 ## Current stage
 
-**Completed**: Phase 17 — Cloud Deployment, Phone Access, and Production Automation. 1367/1367 passing.
+**Completed**: Phase 17B — PostgreSQL Migration for Production. 1389/1389 passing.
+
+Phase 17B deliverables:
+- **Database Connection Layer** (`database/connection.py`): Dialect-aware `DB` wrapper class, auto SQL conversion (`?`→`%s`, `datetime('now')`→`NOW()`, `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, `AUTOINCREMENT`→`SERIAL`, `sqlite_master`→`information_schema`, `GROUP_CONCAT`→`STRING_AGG`), uniform `DBResult` cursor
+- **Dual-mode db_manager** (`database/db_manager.py`): `get_connection()` auto-detects PostgreSQL (`DATABASE_URL`) vs SQLite; all `INSERT OR IGNORE/REPLACE`→`ON CONFLICT`; `sqlite3.IntegrityError`→`Exception`; all type hints updated to `DB`
+- **Src file migration** (15 files): All `sqlite3.connect()` calls replaced with `get_connection()` from db_manager across `control_panel.py`, `worker.py`, `production_jobs.py`, `health_check.py`, `promotion.py`, `delivery_gate.py`, `discord_delivery.py`, `export_sheets.py`, `live_readiness.py`, `production_canary.py`, `shadow_dashboard.py`
+- **Render Blueprint** (`render.yaml`): Added PostgreSQL database service (`mlb-postgres`, Starter $7/mo); `DATABASE_URL` auto-wired to web+worker via `fromDatabase`; persistent disk retained for cache/output/backups
+- **Requirements** (`requirements.txt`): Added `psycopg2-binary>=2.9.9`
+- **Migration Script** (`scripts/migrate_sqlite_to_postgres.py`): One-time SQLite→PostgreSQL data migration with `--dry-run`, `--drop-existing`, batch inserts (500 rows), auto table discovery
+- **Tests**: 22 new tests in `tests/test_phase17b_postgres.py` (SQL conversion, DB wrapper, dual-mode, idempotent operations, migration script import)
+- **Cost**: $21/mo total (web $7 + worker $7 + PostgreSQL $7)
 
 Phase 17 deliverables:
 - **Background Worker** (`src/worker.py`, ~350 lines): Persistent mode (signal handling, heartbeat, stale-job recovery, sub-daily scheduling), one-shot mode (cron), specific-job mode. Handles morning scan, pregame checks, grading, backup, adaptive learning, health checks. Job locking with idempotency keys, timezone-aware scheduling.

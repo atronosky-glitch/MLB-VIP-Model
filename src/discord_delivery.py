@@ -220,10 +220,9 @@ def _load_actionable_recommendations(
     min_ev_pct: float = 2.0,
 ) -> list[dict[str, Any]]:
     """Load actionable recommendations from DB."""
-    import sqlite3
+    from database.db_manager import get_connection
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = get_connection(str(db_path))
     try:
         # Check table exists
         tables = {

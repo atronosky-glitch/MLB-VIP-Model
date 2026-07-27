@@ -23,7 +23,6 @@ import argparse
 import logging
 import os
 import signal
-import sqlite3
 import sys
 import time
 import traceback
@@ -91,7 +90,7 @@ def _acquire_lock(conn: sqlite3.Connection, job_type: str) -> str | None:
         )
         conn.commit()
         return lock_key
-    except sqlite3.IntegrityError:
+    except Exception:
         return None
 
 
@@ -319,7 +318,7 @@ def run_worker_persistent(config) -> None:
     """Run the worker as a persistent background process."""
     logger.info("Starting persistent worker (pid=%d, tz=%s)", os.getpid(), TZ_NAME)
 
-    conn = sqlite3.connect(config.database_path, timeout=10)
+    conn = get_connection(config.database_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
 
@@ -393,7 +392,7 @@ def run_worker_once(config) -> None:
     """Run the worker once (for cron-style execution)."""
     logger.info("Running worker once (one-shot mode)")
 
-    conn = sqlite3.connect(config.database_path, timeout=10)
+    conn = get_connection(config.database_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
 
@@ -417,7 +416,7 @@ def run_specific_job(job_type: str, config) -> None:
     """Run a single specific job type."""
     logger.info("Running specific job: %s", job_type)
 
-    conn = sqlite3.connect(config.database_path, timeout=10)
+    conn = get_connection(config.database_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
 
