@@ -1,0 +1,45 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Database
+*.db
+*.sqlite
+database/*.db
+database/*.sqlite
+
+# Logs
+logs/*.log
+
+# Backups
+backups/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Distribution
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+venv/
+.env/
+
+# Cache
+data/_api_cache/
+
+# Output (generated)
+output/*.csv
+output/*.json
+output/*.txt

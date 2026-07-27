@@ -1,0 +1,82 @@
+services:
+  # ── Streamlit Dashboard (web service) ────────────────────────────
+  - type: web
+    name: mlb-vip-dashboard
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: >
+      streamlit run src/control_panel.py
+      --server.port $PORT
+      --server.address 0.0.0.0
+      --server.headless true
+      --browser.gatherUsageStats false
+      --theme.base light
+      --theme.primaryColor "#1f77b4"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.5"
+      - key: SPORTSODDS_API_KEY
+        sync: false
+      - key: MLB_DB_PATH
+        value: /data/mlb_model.db
+      - key: MLB_CACHE_PATH
+        value: /data/cache
+      - key: MLB_OUTPUT_DIR
+        value: /data/output
+      - key: MLB_BACKUP_DIR
+        value: /data/backups
+      - key: MLB_TIMEZONE
+        value: America/New_York
+      - key: MLB_LOG_LEVEL
+        value: INFO
+      - key: MLB_LOG_FORMAT
+        value: json
+      - key: MLB_ENVIRONMENT
+        value: production
+      - key: MLB_SCHEDULER_ENABLED
+        value: "true"
+      - key: MLB_SHADOW_MODE
+        value: "true"
+    disk:
+      name: mlb-data
+      mountPath: /data
+      sizeGB: 1
+
+  # ── Background Worker (cron service) ─────────────────────────────
+  - type: cron
+    name: mlb-vip-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    schedule: "30 8 * * *"  # Daily 8:30 AM ET (base schedule; worker handles sub-daily)
+    startCommand: python -m src.worker --run-once
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.5"
+      - key: SPORTSODDS_API_KEY
+        sync: false
+      - key: MLB_DB_PATH
+        value: /data/mlb_model.db
+      - key: MLB_CACHE_PATH
+        value: /data/cache
+      - key: MLB_OUTPUT_DIR
+        value: /data/output
+      - key: MLB_BACKUP_DIR
+        value: /data/backups
+      - key: MLB_TIMEZONE
+        value: America/New_York
+      - key: MLB_LOG_LEVEL
+        value: INFO
+      - key: MLB_LOG_FORMAT
+        value: json
+      - key: MLB_ENVIRONMENT
+        value: production
+      - key: MLB_SCHEDULER_ENABLED
+        value: "true"
+      - key: MLB_SHADOW_MODE
+        value: "true"
+    disk:
+      name: mlb-data
+      mountPath: /data
+      sizeGB: 1

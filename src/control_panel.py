@@ -1,0 +1,1733 @@
+"""Local one-click control panel for the MLB VIP Model.
+
+Launch with:
+    python -m streamlit run src/control_panel.py
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import streamlit as st
+
+# ── Path setup ─────────────────────────────────────────────────────
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
+
+# ── Page config (must be first Streamlit call) ─────────────────────
+st.set_page_config(
+    page_title="MLB VIP Model",
+    page_icon="⚾",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ── Lazy imports (after page config) ───────────────────────────────
+
+def _import_config():
+    from src.production_config import load_config
+    return load_config()
+
+def _import_shadow():
+    from src.shadow_mode import load_shadow_config
+    return load_shadow_config()
+
+def _import_health():
+    from src.health_check import run_health_checks
+    return run_health_checks
+
+def _import_dashboard():
+    from src.shadow_dashboard import build_dashboard
+    return build_dashboard
+
+def _import_backup():
+    from src.backup_database import backup_database, list_backups
+    return backup_database, list_backups
+
+def _import_db_manager():
+    from database.db_manager import get_connection, init_db
+    return get_connection, init_db
+
+
+# ==================================================================
+# Helpers
+# ==================================================================
+
+def _now_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _get_config():
+    try:
+        return _import_config()
+    except Exception:
+        return None
+
+
+def _get_shadow():
+    try:
+        return _import_shadow()
+    except Exception:
+        return None
+
+
+def _redact(value: str, show: int = 4) -> str:
+    if not value or len(value) <= show:
+        return "****"
+    return value[:show] + "*" * min(8, len(value) - show)
+
+
+def _status_color(status: str) -> str:
+    return {
+        "ok": "green", "healthy": "green", "pass": "green", "success": "green",
+        "warning": "orange", "degraded": "orange",
+        "error": "red", "unhealthy": "red", "fail": "red", "failed": "red",
+    }.get(status, "gray")
+
+
+def _format_market_type(mt: str) -> str:
+    return mt.replace("_", " ").title() if mt else ""
+
+
+def _load_todays_recs(db_path: str) -> list[dict[str, Any]]:
+    """Load today's frozen recommendations from the database."""
+    return _load_recs(db_path, "today")
+
+
+def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]]:
+    """Load recommendations with flexible filtering.
+
+    filter_mode:
+        "latest" — only the most recent scan_run_id
+        "today"  — all recs with today's scan_timestamp
+        "all"    — all recs in the database
+    """
+    if not Path(db_path).exists():
+        return []
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            cols = (
+                "recommendation_id, event_id, player_name, market_type, "
+                "market_form, period, line, side, sportsbook, "
+                "offered_american_odds, offered_decimal_odds, "
+                "ev_pct, yn_implied_prob_adv, yn_reference_prob, "
+                "rec_status, observation_timestamp, scan_timestamp, "
+                "freshness_status, fingerprint, scan_run_id, "
+                "matchup, event_status, event_start_time, "
+                "model_score, score_version, score_explanation, "
+                "recommendation_tier, qualification_passed, "
+                "qualification_reasons, disqualification_reasons, "
+                "n_consensus_books, market_quality, "
+                "points_to_7, price_outlier_capped, true_ev_unavailable, "
+                "one_sided_market, insufficient_books_failure, "
+                "market_quality_score, score_components"
+            )
+
+            def _run_query(where_clause: str, params: tuple = ()) -> list[sqlite3.Row]:
+                for col_list in (cols, "*"):
+                    try:
+                        return conn.execute(
+                            f"SELECT {col_list} FROM historical_recommendations {where_clause}",
+                            params,
+                        ).fetchall()
+                    except sqlite3.OperationalError:
+                        continue
+                return []
+
+            if filter_mode == "latest":
+                rows = _run_query(
+                    "WHERE scan_run_id = ("
+                    "  SELECT scan_run_id FROM historical_recommendations "
+                    "  WHERE scan_run_id IS NOT NULL AND scan_run_id != '' "
+                    "  ORDER BY scan_timestamp DESC LIMIT 1"
+                    ") ORDER BY ev_pct DESC"
+                )
+            elif filter_mode == "today":
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                rows = _run_query(
+                    "WHERE scan_timestamp LIKE ? ORDER BY ev_pct DESC",
+                    (f"{today}%",),
+                )
+            else:  # "all"
+                rows = _run_query("ORDER BY scan_timestamp DESC, ev_pct DESC")
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
+def _get_latest_run_id(db_path: str) -> str:
+    """Get the most recent scan_run_id."""
+    if not Path(db_path).exists():
+        return ""
+    try:
+        conn = sqlite3.connect(db_path, timeout=3)
+        row = conn.execute(
+            "SELECT scan_run_id FROM historical_recommendations "
+            "WHERE scan_run_id IS NOT NULL AND scan_run_id != '' "
+            "ORDER BY scan_timestamp DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return row[0] if row else ""
+    except Exception:
+        return ""
+
+
+def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict[str, Any]:
+    """Get today's game schedule summary from the games table.
+
+    Validates that Total = Upcoming + Live + Completed + Postponed + Cancelled,
+    and that Analyzed + Skipped = Eligible (total minus postponed/cancelled).
+
+    Analyzed and Skipped are always counted by unique event_id from the
+    latest completed pipeline run, never by recommendation/prop rows.
+    Skipped is derived as eligible - analyzed so the invariant always holds.
+    """
+    result: dict[str, Any] = {
+        "total": 0, "upcoming": 0, "live": 0, "completed": 0,
+        "postponed": 0, "cancelled": 0,
+        "analyzed": 0, "skipped": 0, "recommendations": 0,
+        "eligible": 0, "valid": True,
+    }
+    if not Path(db_path).exists():
+        return result
+    try:
+        conn = sqlite3.connect(db_path, timeout=3)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        total = conn.execute(
+            "SELECT COUNT(*) FROM games WHERE date(start_time) = ?", (today,)
+        ).fetchone()[0]
+        result["total"] = total
+
+        for status_val, key in [
+            ("scheduled", "upcoming"),
+            ("live", "live"),
+            ("final", "completed"),
+            ("postponed", "postponed"),
+            ("cancelled", "cancelled"),
+        ]:
+            result[key] = conn.execute(
+                "SELECT COUNT(*) FROM games WHERE date(start_time) = ? AND status = ?",
+                (today, status_val),
+            ).fetchone()[0]
+
+        result["eligible"] = max(
+            0, total - result["postponed"] - result["cancelled"]
+        )
+
+        latest_run = conn.execute(
+            "SELECT scan_run_id FROM historical_recommendations "
+            "WHERE scan_run_id IS NOT NULL AND scan_run_id != '' "
+            "ORDER BY scan_timestamp DESC LIMIT 1"
+        ).fetchone()
+        if latest_run:
+            run_id = latest_run[0]
+            result["recommendations"] = conn.execute(
+                "SELECT COUNT(*) FROM historical_recommendations WHERE scan_run_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+            result["analyzed"] = conn.execute(
+                "SELECT COUNT(DISTINCT event_id) FROM historical_recommendations WHERE scan_run_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+
+        result["skipped"] = max(0, result["eligible"] - result["analyzed"])
+        result["valid"] = True
+
+        conn.close()
+    except Exception:
+        pass
+    return result
+
+
+def _get_deduplicated_skipped_games(run_summary: dict | None) -> list[dict]:
+    """Return skipped games from the latest run, deduplicated by event_id."""
+    if not run_summary:
+        return []
+    skipped = run_summary.get("skipped_games") or []
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for sg in skipped:
+        eid = sg.get("event_id", "")
+        if eid and eid in seen:
+            continue
+        if eid:
+            seen.add(eid)
+        deduped.append(sg)
+    return deduped
+
+
+def _get_live_game_warnings(db_path: str, run_id: str) -> list[dict]:
+    """Check if any recommendations in the given run belong to live/completed games."""
+    warnings: list[dict] = []
+    if not Path(db_path).exists() or not run_id:
+        return warnings
+    try:
+        conn = sqlite3.connect(db_path, timeout=3)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT recommendation_id, matchup, event_status, player_name, "
+            "market_type, sportsbook FROM historical_recommendations "
+            "WHERE scan_run_id = ? AND event_status IN "
+            "('live','inprogress','in_progress','started','in-progress',"
+            "'final','finished','completed','closed','ended')",
+            (run_id,),
+        ).fetchall()
+        conn.close()
+        warnings = [dict(r) for r in rows]
+    except Exception:
+        pass
+    return warnings
+
+
+def _load_latest_run_summary(output_dir: str) -> dict | None:
+    """Load the most recent run_summary.json from output_dir."""
+    p = Path(output_dir) / "run_summary.json"
+    if not p.exists():
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _get_latest_report(output_dir: str) -> str | None:
+    """Find the most recent report file."""
+    out = Path(output_dir)
+    if not out.exists():
+        return None
+    reports = sorted(out.glob("recommendations.*"), reverse=True)
+    if reports:
+        return str(reports[0])
+    return None
+
+
+def _get_backup_dir(config) -> Path:
+    return Path(config.output_dir) / "backups"
+
+
+# ==================================================================
+# Session state defaults
+# ==================================================================
+
+if "run_active" not in st.session_state:
+    st.session_state.run_active = False
+if "run_log" not in st.session_state:
+    st.session_state.run_log = []
+if "run_result" not in st.session_state:
+    st.session_state.run_result = None
+if "last_run_time" not in st.session_state:
+    st.session_state.last_run_time = None
+if "last_run_steps" not in st.session_state:
+    st.session_state.last_run_steps = []
+
+
+# ==================================================================
+# Pipeline runner (background thread)
+# ==================================================================
+
+def _run_pipeline_background(output_dir: str, result_container: dict) -> None:
+    """Run the pipeline in a background thread, capturing output."""
+    try:
+        result_container["status"] = "running"
+        result_container["steps"] = []
+        result_container["exit_code"] = None
+        result_container["output"] = ""
+        result_container["error"] = ""
+
+        cmd = [sys.executable, "-m", "src.daily_pipeline", "--output-dir", output_dir]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=str(_ROOT),
+        )
+        result_container["exit_code"] = proc.returncode
+        result_container["output"] = proc.stdout + proc.stderr
+        result_container["status"] = "success" if proc.returncode in (0, 1) else "failed"
+    except subprocess.TimeoutExpired:
+        result_container["status"] = "failed"
+        result_container["error"] = "Pipeline timed out after 10 minutes"
+        result_container["exit_code"] = -1
+    except Exception as exc:
+        result_container["status"] = "failed"
+        result_container["error"] = str(exc)
+        result_container["exit_code"] = -1
+
+
+def _run_subprocess_command(label: str, cmd: list[str], result_container: dict, timeout: int = 120) -> None:
+    """Run a subprocess command and capture output."""
+    try:
+        result_container["status"] = "running"
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, cwd=str(_ROOT)
+        )
+        result_container["exit_code"] = proc.returncode
+        result_container["output"] = proc.stdout + proc.stderr
+        result_container["status"] = "success" if proc.returncode == 0 else "failed"
+    except subprocess.TimeoutExpired:
+        result_container["status"] = "failed"
+        result_container["error"] = f"{label} timed out"
+        result_container["exit_code"] = -1
+    except Exception as exc:
+        result_container["status"] = "failed"
+        result_container["error"] = str(exc)
+        result_container["exit_code"] = -1
+
+
+# ==================================================================
+# Main layout
+# ==================================================================
+
+config = _get_config()
+shadow = _get_shadow()
+db_path = config.database_path if config else "database/mlb_model.db"
+output_dir_val = config.output_dir if config else "output"
+
+# ── Header ─────────────────────────────────────────────────────────
+st.markdown("# ⚾ MLB VIP MODEL")
+header_cols = st.columns(4)
+with header_cols[0]:
+    st.caption("Date")
+    st.write(datetime.now(timezone.utc).strftime("%A, %B %d, %Y"))
+with header_cols[1]:
+    st.caption("Timezone")
+    st.write(config.timezone if config else "America/New_York")
+with header_cols[2]:
+    st.caption("Mode")
+    if shadow and shadow.shadow_mode:
+        st.success("🔒 SHADOW")
+    else:
+        st.warning("⚡ LIVE")
+with header_cols[3]:
+    st.caption("Database")
+    st.write(Path(db_path).name)
+
+st.divider()
+
+# ── 9-Tab Layout ───────────────────────────────────────────────────
+tabs = st.tabs([
+    "📅 Today",
+    "⭐ Official Picks",
+    "🔬 Research",
+    "📈 Line Movement",
+    "📊 Performance",
+    "📊 Market Intelligence",
+    "⚙️ Automation",
+    "🏥 System Health",
+    "🧠 Adaptive Learning",
+])
+
+# ==================================================================
+# Tab 1: Today
+# ==================================================================
+with tabs[0]:
+    st.subheader("Schedule")
+
+    run_summary_for_sched = _load_latest_run_summary(output_dir_val)
+    schedule = _get_schedule_summary(db_path, run_summary_for_sched)
+
+    sched_cols = st.columns(8)
+    for i, (label, key) in enumerate([
+        ("Total MLB Games", "total"), ("Upcoming", "upcoming"),
+        ("Live", "live"), ("Completed", "completed"),
+        ("Postponed", "postponed"), ("Cancelled", "cancelled"),
+        ("Analyzed", "analyzed"), ("Skipped", "skipped"),
+    ]):
+        with sched_cols[i]:
+            st.caption(label)
+            st.metric(label, schedule[key])
+
+    parts_sum = (
+        schedule["upcoming"] + schedule["live"] + schedule["completed"]
+        + schedule["postponed"] + schedule["cancelled"]
+    )
+    if schedule["total"] > 0 and parts_sum != schedule["total"]:
+        st.warning(
+            f"Schedule count mismatch: Total ({schedule['total']}) ≠ "
+            f"Upcoming + Live + Completed + Postponed + Cancelled ({parts_sum})"
+        )
+    if schedule["eligible"] > 0 and not schedule["valid"]:
+        st.warning(
+            f"Analysis count mismatch: Analyzed ({schedule['analyzed']}) + "
+            f"Skipped ({schedule['skipped']}) ≠ Eligible ({schedule['eligible']})"
+        )
+
+    # Status cards
+    st.subheader("Status")
+    card_cols = st.columns(6)
+    with card_cols[0]:
+        st.caption("System Health")
+        if "health_report" not in st.session_state:
+            st.session_state.health_report = None
+        if st.session_state.health_report is None:
+            try:
+                health_fn = _import_health()
+                report = health_fn(
+                    db_path=db_path, api_key=config.api_key if config else "",
+                    output_dir=output_dir_val,
+                    environment=config.environment if config else "",
+                    timezone_name=config.timezone if config else "",
+                    backup_dir=config.backup_dir if config else "backups",
+                    scheduler_enabled=config.scheduler_enabled if config else True,
+                )
+                st.session_state.health_report = report
+            except Exception as exc:
+                st.session_state.health_report = "UNKNOWN"
+        health_report = st.session_state.health_report
+        if health_report == "UNKNOWN":
+            st.markdown(":gray[UNKNOWN]")
+            st.caption("Health check not yet run")
+        else:
+            color = _status_color(health_report.overall_status)
+            st.markdown(f":{color}[**{health_report.overall_status.upper()}**]")
+            # Show specific failing reasons
+            failing = [c for c in health_report.checks if c.status != "ok"]
+            if failing:
+                st.caption("; ".join(c.name for c in failing))
+            else:
+                st.caption(f"{health_report.ok_count} checks passed")
+    with card_cols[1]:
+        st.caption("Last Run")
+        st.write(st.session_state.last_run_time or "Not yet run")
+    with card_cols[2]:
+        st.caption("Latest Run ID")
+        latest_rid = _get_latest_run_id(db_path)
+        st.code(latest_rid[:12] if latest_rid else "None", language=None)
+    with card_cols[3]:
+        st.caption("API Key")
+        if config and config.api_key:
+            st.success(f"Set ({_redact(config.api_key)})")
+        else:
+            st.write("Not set")
+    with card_cols[4]:
+        st.caption("Last Backup")
+        try:
+            _, list_backups_fn = _import_backup()
+            backups = list_backups(_get_backup_dir(config) if config else Path("output/backups"))
+            if backups:
+                st.write(backups[0].get("name", "Unknown"))
+            else:
+                st.write("No backups")
+        except Exception:
+            st.write("Unknown")
+    with card_cols[5]:
+        st.caption("Data Freshness")
+        recs_fresh = _load_recs(db_path, "latest")
+        if recs_fresh:
+            st.success("Fresh")
+        else:
+            st.write("No data")
+
+    st.divider()
+
+    # Pipeline run
+    st.subheader("Pipeline")
+    can_run = True
+    if st.session_state.last_run_time and not st.session_state.run_active:
+        try:
+            last = datetime.fromisoformat(st.session_state.last_run_time.replace(" UTC", " +00:00"))
+            elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+            if elapsed < 900:
+                remaining = int((900 - elapsed) / 60) + 1
+                st.warning(f"Last run was {int(elapsed / 60)} min ago. Wait {remaining} min before rerunning.")
+                can_run = False
+        except Exception:
+            pass
+    if st.session_state.run_active:
+        st.info("⏳ Pipeline is running... please wait.")
+        can_run = False
+
+    btn_col1, btn_col2, btn_col3 = st.columns([3, 1, 1])
+    with btn_col1:
+        run_clicked = st.button("▶️  RUN TODAY'S MLB MODEL", type="primary", disabled=not can_run, use_container_width=True)
+    with btn_col2:
+        if st.session_state.run_active:
+            st.button("⏹ Stop", disabled=True, use_container_width=True)
+    with btn_col3:
+        if st.button("🔄 Refresh", use_container_width=True):
+            st.rerun()
+
+    if run_clicked and can_run:
+        st.session_state.run_active = True
+        st.session_state.run_log = []
+        st.session_state.run_result = None
+        result: dict[str, Any] = {"status": "running", "steps": [], "exit_code": None, "output": "", "error": ""}
+        st.session_state.run_result = result
+        thread = threading.Thread(target=_run_pipeline_background, args=(output_dir_val, result), daemon=True)
+        thread.start()
+        thread.join(timeout=600)
+        st.session_state.run_active = False
+        st.session_state.last_run_time = _now_str()
+        st.rerun()
+
+    if st.session_state.run_result:
+        r = st.session_state.run_result
+        status = r.get("status", "unknown")
+        exit_code = r.get("exit_code")
+        output = r.get("output", "")
+        error = r.get("error", "")
+        if status == "success":
+            st.success(f"Pipeline completed (exit code {exit_code})")
+        elif status == "failed":
+            st.error(f"Pipeline failed (exit code {exit_code})")
+            if error:
+                st.error(error)
+        if output:
+            with st.expander("📋 Pipeline Output", expanded=(status == "failed")):
+                st.code(output, language=None)
+        with st.expander("🔧 Technical Details", expanded=False):
+            st.json({"exit_code": exit_code, "status": status, "timestamp": _now_str(), "database_path": db_path, "output_dir": output_dir_val, "error": error or None})
+
+    st.divider()
+
+    # Safety warnings
+    live_warnings = _get_live_game_warnings(db_path, latest_rid)
+    if live_warnings:
+        st.error(f"⚠️ VALIDATION WARNING: {len(live_warnings)} recommendation(s) from live or completed games.")
+        with st.expander("Live-game recommendations", expanded=True):
+            import pandas as pd
+            warn_data = [{"Player": w.get("player_name", ""), "Market": w.get("market_type", ""), "Sportsbook": w.get("sportsbook", ""), "Matchup": w.get("matchup", ""), "Status": w.get("event_status", "")} for w in live_warnings]
+            st.dataframe(pd.DataFrame(warn_data), use_container_width=True, hide_index=True)
+
+    # Recommendations summary
+    st.subheader("Latest Run Recommendations")
+    recs = _load_recs(db_path, "latest")
+    if not recs:
+        st.info("No recommendations yet. Run the pipeline first.")
+    else:
+        official = [r for r in recs if r.get("recommendation_tier") == "OFFICIAL_TRACKED"]
+        research_recs = [r for r in recs if r.get("recommendation_tier") != "OFFICIAL_TRACKED"]
+        tier_cols = st.columns(3)
+        tier_cols[0].metric("Official", len(official))
+        tier_cols[1].metric("Research Only", len(research_recs))
+        tier_cols[2].metric("Total", len(recs))
+
+    # Skipped games
+    st.subheader("Skipped Games")
+    run_summary_skipped = _load_latest_run_summary(output_dir_val)
+    skipped_games = _get_deduplicated_skipped_games(run_summary_skipped)
+    if skipped_games:
+        import pandas as pd
+        sg_data = [{"Matchup": sg.get("matchup", ""), "Start Time": sg.get("start_time", "")[:16], "Status": sg.get("status", ""), "Reason": sg.get("reason", "")} for sg in skipped_games]
+        st.dataframe(pd.DataFrame(sg_data), use_container_width=True, hide_index=True)
+        st.caption(f"{len(skipped_games)} game(s) skipped")
+    else:
+        st.info("No skipped games.")
+
+# ==================================================================
+# Tab 2: Official Picks
+# ==================================================================
+with tabs[1]:
+    st.subheader("Official Picks (Frozen Snapshots)")
+    st.caption("Official picks meet all qualification thresholds and are frozen as immutable records. Flat 1.0 unit stake.")
+
+    try:
+        import pandas as pd
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            op_rows = conn.execute("""
+                SELECT op.*, hr.player_name, hr.market_type, hr.market_form,
+                       hr.side, hr.line, hr.sportsbook, hr.offered_american_odds,
+                       hr.ev_pct, hr.yn_implied_prob_adv, hr.n_consensus_books,
+                       hr.matchup, hr.event_status, hr.event_start_time,
+                       hr.model_score, hr.score_explanation
+                FROM official_picks op
+                JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
+                ORDER BY op.official_rank
+            """).fetchall()
+            official_picks = [dict(r) for r in op_rows]
+        finally:
+            conn.close()
+
+        if official_picks:
+            op_table = []
+            for op in official_picks:
+                mform = op.get("market_form", "")
+                is_yn = mform == "yn"
+                ev_d = round(op["ev_pct"], 2) if not is_yn and op.get("ev_pct") is not None else ""
+                pa_d = round(op["yn_implied_prob_adv"], 2) if is_yn and op.get("yn_implied_prob_adv") is not None else ""
+                outcome = op.get("outcome", "pending")
+                profit = op.get("profit_units")
+                op_table.append({
+                    "Rank": op.get("official_rank", ""),
+                    "Player": op.get("player_name", ""),
+                    "Market": _format_market_type(op.get("market_type", "")),
+                    "Side": op.get("side", ""),
+                    "Line": op.get("line", ""),
+                    "Sportsbook": op.get("sportsbook", ""),
+                    "Odds": op.get("offered_american_odds", ""),
+                    "EV %": ev_d,
+                    "Price Adv (pp)": pa_d,
+                    "Model Score": round(op["model_score"], 1) if op.get("model_score") is not None else "N/A",
+                    "Outcome": outcome,
+                    "Profit (u)": profit if profit is not None else "",
+                    "Frozen At": (op.get("selected_at") or "")[:16],
+                })
+
+            metrics = st.columns(5)
+            pending = sum(1 for o in official_picks if o.get("outcome") == "pending")
+            wins = sum(1 for o in official_picks if o.get("outcome") == "win")
+            losses = sum(1 for o in official_picks if o.get("outcome") == "loss")
+            pushes = sum(1 for o in official_picks if o.get("outcome") == "push")
+            total_profit = sum(o.get("profit_units") or 0 for o in official_picks if o.get("outcome") != "pending")
+            metrics[0].metric("Total", len(official_picks))
+            metrics[1].metric("Pending", pending)
+            metrics[2].metric("Wins", wins)
+            metrics[3].metric("Losses", losses)
+            metrics[4].metric("Profit (u)", round(total_profit, 2))
+
+            st.dataframe(pd.DataFrame(op_table), use_container_width=True, hide_index=True)
+        else:
+            st.info("No official picks yet. Run the pipeline to generate them.")
+    except Exception as e:
+        st.error(f"Error loading official picks: {e}")
+
+    # Why No Official Picks Today
+    st.divider()
+    st.subheader("Why No Official Picks Today")
+    try:
+        import pandas as pd
+        conn_why = sqlite3.connect(db_path, timeout=5)
+        conn_why.row_factory = sqlite3.Row
+        try:
+            today_recs = conn_why.execute(
+                "SELECT * FROM historical_recommendations "
+                "WHERE date(scan_timestamp) = date('now') "
+                "AND event_status NOT IN ('live','inprogress','in_progress','started','in-progress',"
+                "'final','finished','completed','closed','ended') "
+                "ORDER BY model_score DESC LIMIT 20"
+            ).fetchall()
+
+            official_today = [r for r in today_recs if dict(r).get("recommendation_tier") == "OFFICIAL_TRACKED"]
+
+            if official_today:
+                st.success(f"{len(official_today)} official pick(s) qualified today.")
+            elif today_recs:
+                why_data = []
+                for row in today_recs:
+                    r = dict(row)
+                    score = r.get("model_score")
+                    disq = r.get("disqualification_reasons", "")
+                    pts_to_7 = r.get("points_to_7", 0.0)
+                    price_cap = r.get("price_outlier_capped", 0)
+                    true_ev = r.get("true_ev_unavailable", 0)
+                    one_sided = r.get("one_sided_market", 0)
+                    insuff = r.get("insufficient_books_failure", 0)
+
+                    # Parse score components
+                    comps = {}
+                    try:
+                        comps = json.loads(r.get("score_components") or "{}")
+                    except Exception:
+                        pass
+
+                    why_data.append({
+                        "Player": r.get("player_name", ""),
+                        "Market": _format_market_type(r.get("market_type", "")),
+                        "Score": round(score, 1) if score else 0,
+                        "Pts to 7.0": round(pts_to_7, 2) if pts_to_7 else 0,
+                        "Value": round(comps.get("value", 0) * 8.8, 1),
+                        "Market Q": round(comps.get("market_quality", 0) * 8.8, 1),
+                        "Reliability": round(comps.get("reliability", 0) * 8.8, 1),
+                        "Freshness": round(comps.get("freshness", 0) * 8.8, 1),
+                        "Confidence": round(comps.get("confidence", 0) * 8.8, 1),
+                        "Risk": round(comps.get("risk", 0) * 8.8, 1),
+                        "Books": r.get("n_consensus_books", 0),
+                        "Price Cap": "Yes" if price_cap else "",
+                        "No True EV": "Yes" if true_ev else "",
+                        "One-Sided": "Yes" if one_sided else "",
+                        "Insuff. Books": "Yes" if insuff else "",
+                        "Failed Gates": disq[:80] if disq else "",
+                    })
+
+                st.dataframe(pd.DataFrame(why_data), use_container_width=True, hide_index=True)
+                st.caption("Showing top 20 research picks by Model Score. Failed gates explain why they did not reach 7.0.")
+            else:
+                st.info("No recommendations generated today yet.")
+        finally:
+            conn_why.close()
+    except Exception as e:
+        st.error(f"Error loading diagnostics: {e}")
+
+    # Manual grading
+    st.divider()
+    st.subheader("Manual Grading")
+    if st.button("✅ Grade Pending Official Picks", use_container_width=False):
+        try:
+            import pandas as pd
+            from src.tracker import grade_pending_picks
+            conn = sqlite3.connect(db_path, timeout=5)
+            try:
+                graded = grade_pending_picks(conn)
+                st.success(f"Graded {graded} official pick(s)")
+            finally:
+                conn.close()
+        except Exception as e:
+            st.error(f"Grading failed: {e}")
+
+# ==================================================================
+# Tab 3: Research
+# ==================================================================
+with tabs[2]:
+    st.subheader("Research Recommendations")
+    st.caption("Discovery picks (score >= 6.0, private research) and Research-only picks are for threshold calibration.")
+    st.caption("Model Score is a quality metric — not a guaranteed win probability. It does not predict game outcomes.")
+
+    recs_all = _load_recs(db_path, "today")
+    discovery_recs = [r for r in recs_all if r.get("recommendation_tier") == "DISCOVERY_TRACKED"]
+    research_only = [r for r in recs_all if r.get("recommendation_tier") == "RESEARCH_ONLY"]
+
+    # Discovery tier summary
+    if discovery_recs:
+        st.subheader("Discovery Picks (Private Research)")
+        st.caption(f"{len(discovery_recs)} pick(s) scored >= 6.0 — does not count toward official record.")
+        disc_cols = st.columns(3)
+        disc_cols[0].metric("Discovery", len(discovery_recs))
+        disc_cols[1].metric("Research Only", len(research_only))
+        disc_cols[2].metric("Total Non-Official", len(discovery_recs) + len(research_only))
+
+    all_non_official = discovery_recs + research_only
+
+    if not all_non_official:
+        st.info("No research-only recommendations today.")
+    else:
+        try:
+            import pandas as pd
+            filter_cols = st.columns(4)
+            with filter_cols[0]:
+                markets = sorted(set(r.get("market_type", "") for r in all_non_official if r.get("market_type")))
+                sel_market = st.selectbox("Market", ["All"] + markets, key="research_filter_market")
+            with filter_cols[1]:
+                books = sorted(set(r.get("sportsbook", "") for r in all_non_official if r.get("sportsbook")))
+                sel_book = st.selectbox("Sportsbook", ["All"] + books, key="research_filter_book")
+            with filter_cols[2]:
+                score_filter = st.selectbox("Model Score", ["All", "6.0+", "5.5+", "Below 6.0"], key="research_filter_score")
+            with filter_cols[3]:
+                tier_filter = st.selectbox("Tier", ["All", "DISCOVERY_TRACKED", "RESEARCH_ONLY"], key="research_filter_tier")
+
+            filtered = all_non_official
+            if sel_market != "All":
+                filtered = [r for r in filtered if r.get("market_type") == sel_market]
+            if sel_book != "All":
+                filtered = [r for r in filtered if r.get("sportsbook") == sel_book]
+            if score_filter == "6.0+":
+                filtered = [r for r in filtered if (r.get("model_score") or 0) >= 6.0]
+            elif score_filter == "5.5+":
+                filtered = [r for r in filtered if (r.get("model_score") or 0) >= 5.5]
+            elif score_filter == "Below 6.0":
+                filtered = [r for r in filtered if (r.get("model_score") or 0) < 6.0]
+            if tier_filter != "All":
+                filtered = [r for r in filtered if r.get("recommendation_tier") == tier_filter]
+
+            filtered.sort(key=lambda r: -(r.get("model_score") or 0))
+
+            table_data = []
+            for r in filtered:
+                mform = r.get("market_form", "")
+                is_yn = mform == "yn"
+                ev_d = round(r["ev_pct"], 2) if not is_yn and r.get("ev_pct") is not None else ""
+                pa_d = round(r["yn_implied_prob_adv"], 2) if is_yn and r.get("yn_implied_prob_adv") is not None else ""
+                table_data.append({
+                    "Player": r.get("player_name", ""),
+                    "Market": _format_market_type(r.get("market_type", "")),
+                    "Side": r.get("side", ""),
+                    "Line": r.get("line", ""),
+                    "Sportsbook": r.get("sportsbook", ""),
+                    "Odds": r.get("offered_american_odds", ""),
+                    "EV %": ev_d,
+                    "Price Adv (pp)": pa_d,
+                    "Model Score": round(r["model_score"], 1) if r.get("model_score") is not None else "N/A",
+                    "Status": r.get("rec_status", ""),
+                    "Matchup": r.get("matchup", ""),
+                    "Reason": (r.get("disqualification_reasons") or "")[:80],
+                })
+
+            if table_data:
+                st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
+                st.caption(f"Showing {len(filtered)} of {len(research_only)} research picks")
+            else:
+                st.info("No research picks match filters.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+# ==================================================================
+# Tab 4: Line Movement
+# ==================================================================
+with tabs[3]:
+    st.subheader("Odds Observations & Line Movement")
+    st.caption("Track odds changes from morning → pregame → closing for official picks.")
+
+    try:
+        import pandas as pd
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            official_rows = conn.execute("""
+                SELECT op.recommendation_id, hr.player_name, hr.market_type, hr.side,
+                       hr.line, hr.sportsbook, hr.matchup, op.selected_at
+                FROM official_picks op
+                JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
+                WHERE date(op.selected_at) = date('now')
+                ORDER BY op.official_rank
+            """).fetchall()
+            official_picks_list = [dict(r) for r in official_rows]
+        finally:
+            conn.close()
+
+        if not official_picks_list:
+            st.info("No official picks today to track observations for.")
+        else:
+            for op in official_picks_list:
+                rid = op["recommendation_id"]
+                label = f"{op.get('player_name', '?')} — {op.get('market_type', '?')} ({op.get('side', '?')}) @ {op.get('sportsbook', '?')}"
+                with st.expander(label, expanded=False):
+                    try:
+                        conn2 = sqlite3.connect(db_path, timeout=5)
+                        conn2.row_factory = sqlite3.Row
+                        try:
+                            obs_rows = conn2.execute("""
+                                SELECT * FROM pick_observations
+                                WHERE official_pick_id = ?
+                                ORDER BY observed_at
+                            """, (rid,)).fetchall()
+                            observations = [dict(r) for r in obs_rows]
+                        finally:
+                            conn2.close()
+
+                        if not observations:
+                            st.info("No observations recorded yet.")
+                        else:
+                            obs_table = []
+                            for obs in observations:
+                                obs_table.append({
+                                    "Type": obs.get("observation_type", ""),
+                                    "Sportsbook": obs.get("sportsbook", ""),
+                                    "Odds": obs.get("american_odds", ""),
+                                    "Line": obs.get("line", ""),
+                                    "Implied Prob": round(obs.get("implied_prob", 0), 4) if obs.get("implied_prob") else "",
+                                    "Unique Books": obs.get("unique_book_count", ""),
+                                    "Freshness": obs.get("freshness_status", ""),
+                                    "Observed At": (obs.get("observed_at") or "")[:16],
+                                })
+
+                            st.dataframe(pd.DataFrame(obs_table), use_container_width=True, hide_index=True)
+
+                            if len(observations) >= 2:
+                                conn_mv = sqlite3.connect(db_path, timeout=5)
+                                conn_mv.row_factory = sqlite3.Row
+                                try:
+                                    from src.observations import compute_movement
+                                    movement = compute_movement(conn_mv, rid)
+                                    if movement.get("odds_movement_morning_to_pregame") is not None:
+                                        st.info(f"Odds movement (morning→pregame): {movement['odds_movement_morning_to_pregame']:+d} cents")
+                                    if movement.get("odds_movement_pregame_to_closing") is not None:
+                                        st.info(f"Odds movement (pregame→closing): {movement['odds_movement_pregame_to_closing']:+d} cents")
+                                finally:
+                                    conn_mv.close()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+    except Exception as e:
+        st.error(f"Error loading observations: {e}")
+
+# ==================================================================
+# Tab 5: Performance
+# ==================================================================
+with tabs[4]:
+    st.subheader("Tracker & Performance")
+    st.caption("Flat 1.0 unit stake. P/L in units.")
+
+    try:
+        import pandas as pd
+        from src.tracker import compute_performance, breakdown_by_field, get_official_picks
+
+        conn_perf = sqlite3.connect(db_path, timeout=5)
+        conn_perf.row_factory = sqlite3.Row
+        try:
+            official_all = get_official_picks(conn_perf)
+            metrics = compute_performance(conn_perf)
+        finally:
+            conn_perf.close()
+
+        m_cols = st.columns(5)
+        m_cols[0].metric("Total Picks", metrics.total)
+        m_cols[1].metric("Wins", metrics.wins)
+        m_cols[2].metric("Losses", metrics.losses)
+        m_cols[3].metric("Pushes", metrics.pushes)
+        m_cols[4].metric("Total Profit (u)", round(metrics.units_won, 2))
+
+        b_cols = st.columns(3)
+        b_cols[0].metric("Win Rate", f"{metrics.win_rate:.1%}")
+        b_cols[1].metric("ROI", f"{metrics.roi:.1%}")
+        b_cols[2].metric("Avg EV", f"{metrics.avg_ev:.2f}%")
+
+        st.divider()
+
+        breakdown_fields = ["market_type", "sportsbook", "market_form"]
+        for field in breakdown_fields:
+            try:
+                conn_bd = sqlite3.connect(db_path, timeout=5)
+                conn_bd.row_factory = sqlite3.Row
+                try:
+                    bd = breakdown_by_field(conn_bd, field)
+                finally:
+                    conn_bd.close()
+                if bd:
+                    st.subheader(f"Breakdown by {field.replace('_', ' ').title()}")
+                    st.dataframe(pd.DataFrame(bd), use_container_width=True, hide_index=True)
+            except Exception:
+                pass
+
+        if not official_all:
+            st.info("No official picks with outcomes yet.")
+    except Exception as e:
+        st.error(f"Error loading performance data: {e}")
+
+# ==================================================================
+# Tab 6: Market Intelligence
+# ==================================================================
+with tabs[5]:
+    st.subheader("Market Intelligence")
+
+    import sqlite3 as _sqlite3
+    _conn_mi = _sqlite3.connect(db_path, timeout=5)
+    try:
+        _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Load all odds rows from today
+        _mi_rows = _conn_mi.execute(
+            "SELECT market_type, event_id, player_id, player_name, sportsbook, "
+            "validation_status, mapping_confidence, is_alt_line, available, "
+            "captured_at, line, side "
+            "FROM player_prop_odds WHERE date(captured_at) = ?",
+            (_today_str,),
+        ).fetchall()
+
+        # Load today's recommendations
+        _mi_recs = _conn_mi.execute(
+            "SELECT market_type, recommendation_tier, model_score, event_id, "
+            "player_id, sportsbook, n_consensus_books "
+            "FROM historical_recommendations WHERE date(scan_timestamp) = ?",
+            (_today_str,),
+        ).fetchall()
+
+        if not _mi_rows:
+            st.info("No market data available for today.")
+        else:
+            # Aggregate by market_type
+            from collections import defaultdict
+            market_stats: dict[str, dict] = defaultdict(lambda: {
+                "total_odds_rows": 0,
+                "unique_events": set(),
+                "unique_players": set(),
+                "unique_sportsbooks": set(),
+                "books_per_market": defaultdict(set),
+                "stale_count": 0,
+                "mapping_failures": 0,
+                "official_count": 0,
+                "discovery_count": 0,
+                "research_count": 0,
+            })
+
+            for row in _mi_rows:
+                mt = row[0] or "unknown"
+                s = market_stats[mt]
+                s["total_odds_rows"] += 1
+                s["unique_events"].add(row[1])
+                s["unique_players"].add(row[2])
+                s["unique_sportsbooks"].add(row[4])
+                # Track books per exact market (event+player+line+side)
+                exact_key = f"{row[1]}|{row[2]}|{row[9]}|{row[10]}"
+                s["books_per_market"][exact_key].add(row[4])
+                if row[5] == "STALE":
+                    s["stale_count"] += 1
+                if row[6] in ("LOW", "NONE", "FAILED", "REJECTED"):
+                    s["mapping_failures"] += 1
+
+            for rec in _mi_recs:
+                mt = rec[0] or "unknown"
+                tier = rec[1] or "RESEARCH_ONLY"
+                s = market_stats[mt]
+                if tier == "OFFICIAL_TRACKED":
+                    s["official_count"] += 1
+                elif tier == "DISCOVERY_TRACKED":
+                    s["discovery_count"] += 1
+                else:
+                    s["research_count"] += 1
+
+            # Build display rows
+            mi_display = []
+            for mt, s in sorted(market_stats.items()):
+                n_exact = len(s["books_per_market"])
+                books_list = [len(v) for v in s["books_per_market"].values()]
+                avg_books = round(sum(books_list) / max(1, len(books_list)), 1)
+                median_books = sorted(books_list)[len(books_list) // 2] if books_list else 0
+                pct_4plus = round(100.0 * sum(1 for b in books_list if b >= 4) / max(1, len(books_list)), 1)
+                # Complete two-sided: markets with both over and under represented
+                two_sided = sum(1 for v in s["books_per_market"].values() if len(v) >= 2)
+
+                # Look up display name from registry
+                from src.prop_config import get_market_by_ou_type, get_market_by_yn_type
+                cfg = get_market_by_ou_type(mt) or get_market_by_yn_type(mt)
+                display_name = cfg.display_name if cfg else mt
+
+                mi_display.append({
+                    "Market": display_name,
+                    "Type": mt,
+                    "Odds Rows": s["total_odds_rows"],
+                    "Events": len(s["unique_events"]),
+                    "Players": len(s["unique_players"]),
+                    "Books": len(s["unique_sportsbooks"]),
+                    "Avg Books/Market": avg_books,
+                    "Median Books": median_books,
+                    "4+ Books %": pct_4plus,
+                    "Two-Sided": two_sided,
+                    "Stale": s["stale_count"],
+                    "Map Fail": s["mapping_failures"],
+                    "Official": s["official_count"],
+                    "Discovery": s["discovery_count"],
+                    "Research": s["research_count"],
+                })
+
+            # Sort by average sportsbook coverage desc, then discovery count desc
+            mi_display.sort(key=lambda x: (-x["Avg Books/Market"], -x["Discovery"], -x["Research"]))
+
+            import pandas as pd
+            st.dataframe(pd.DataFrame(mi_display), use_container_width=True, hide_index=True)
+
+            # Summary
+            total_official = sum(s["official_count"] for s in market_stats.values())
+            total_discovery = sum(s["discovery_count"] for s in market_stats.values())
+            total_research = sum(s["research_count"] for s in market_stats.values())
+            st.caption(
+                f"Total: {len(market_stats)} markets | "
+                f"Official: {total_official} | Discovery: {total_discovery} | Research: {total_research}"
+            )
+
+            # Top markets by Market Quality Score
+            st.subheader("Top Markets by Market Quality Score")
+            _mqs_rows = _conn_mi.execute(
+                "SELECT market_type, market_quality_score, model_score, "
+                "n_consensus_books, recommendation_tier "
+                "FROM historical_recommendations "
+                "WHERE date(scan_timestamp) = ? AND market_quality_score > 0 "
+                "ORDER BY market_quality_score DESC LIMIT 20",
+                (_today_str,),
+            ).fetchall()
+            if _mqs_rows:
+                mqs_display = []
+                for row in _mqs_rows:
+                    from src.prop_config import get_market_by_ou_type as _gou, get_market_by_yn_type as _gyn
+                    cfg2 = _gou(row[0]) or _gyn(row[0])
+                    mqs_display.append({
+                        "Market": cfg2.display_name if cfg2 else row[0],
+                        "MQS": round(row[1], 2),
+                        "Model Score": round(row[2], 1) if row[2] else 0,
+                        "Books": row[3],
+                        "Tier": row[4] or "RESEARCH_ONLY",
+                    })
+                st.dataframe(pd.DataFrame(mqs_display), use_container_width=True, hide_index=True)
+            else:
+                st.info("No Market Quality Score data available yet.")
+
+    finally:
+        _conn_mi.close()
+
+# ==================================================================
+# Tab 7: Automation
+# ==================================================================
+with tabs[6]:
+    st.subheader("Automation & Scheduling")
+    st.caption("Morning run at 9 AM ET, pregame at start-60min, postgame grading.")
+
+    try:
+        from src.automation import get_automation_status, schedule_pregame_checks, schedule_grading, trigger_morning_run, trigger_grading, get_pending_jobs, get_failed_jobs, retry_failed_jobs
+
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            status = get_automation_status(conn)
+        finally:
+            conn.close()
+
+        # ── Deployment status ─────────────────────────────────────
+        deploy_cols = st.columns(4)
+        with deploy_cols[0]:
+            env_label = config.environment if config else "local"
+            st.metric("Environment", env_label.upper())
+        with deploy_cols[1]:
+            sched_status = "ENABLED" if (config and config.scheduler_enabled) else "DISABLED"
+            st.metric("Scheduler", sched_status)
+        with deploy_cols[2]:
+            shadow_label = "SHADOW" if (config and config.shadow_mode) else "LIVE"
+            st.metric("Mode", shadow_label)
+        with deploy_cols[3]:
+            st.metric("Timezone", config.timezone if config else "UTC")
+
+        st.divider()
+
+        # ── Worker heartbeat ──────────────────────────────────────
+        try:
+            hb_conn = sqlite3.connect(db_path, timeout=3)
+            hb_conn.row_factory = sqlite3.Row
+            try:
+                hb_row = hb_conn.execute(
+                    "SELECT last_heartbeat, worker_pid FROM worker_heartbeat WHERE id = 1"
+                ).fetchone()
+            finally:
+                hb_conn.close()
+
+            hb_cols = st.columns(3)
+            with hb_cols[0]:
+                if hb_row:
+                    st.metric("Worker Heartbeat", hb_row["last_heartbeat"][:19] if hb_row["last_heartbeat"] else "Never")
+                else:
+                    st.metric("Worker Heartbeat", "Not started")
+            with hb_cols[1]:
+                st.metric("Worker PID", hb_row["worker_pid"] if hb_row and hb_row["worker_pid"] else "—")
+            with hb_cols[2]:
+                # Check if heartbeat is stale
+                if hb_row and hb_row["last_heartbeat"]:
+                    from datetime import datetime as _dt, timezone as _tz
+                    hb_time = _dt.fromisoformat(hb_row["last_heartbeat"])
+                    if hb_time.tzinfo is None:
+                        hb_time = hb_time.replace(tzinfo=_tz.utc)
+                    age_s = (_dt.now(_tz.utc) - hb_time).total_seconds()
+                    if age_s > 300:
+                        st.metric("Worker Status", "STALE")
+                    else:
+                        st.metric("Worker Status", "ACTIVE")
+                else:
+                    st.metric("Worker Status", "UNKNOWN")
+        except Exception:
+            st.info("Worker heartbeat not available")
+
+        st.divider()
+
+        # ── Job metrics ───────────────────────────────────────────
+        auto_cols = st.columns(4)
+        auto_cols[0].metric("Next Morning Run", status.get("next_morning_run", "Not scheduled")[:16] if status.get("next_morning_run") else "Not scheduled")
+        auto_cols[1].metric("Last Morning Run", status.get("last_morning_run", "Never")[:16] if status.get("last_morning_run") else "Never")
+        auto_cols[2].metric("Pending Pregame", status.get("pending_pregame_checks", 0))
+        auto_cols[3].metric("Failed Jobs", status.get("failed_jobs", 0))
+
+        st.divider()
+
+        # ── Database persistence status ───────────────────────────
+        st.subheader("Database & Storage")
+        db_cols = st.columns(3)
+        with db_cols[0]:
+            st.metric("Database Path", Path(db_path).name)
+        with db_cols[1]:
+            st.metric("DB Size", f"{Path(db_path).stat().st_size / 1024:.0f} KB" if Path(db_path).exists() else "N/A")
+        with db_cols[2]:
+            backup_dir = config.backup_dir if config else "backups"
+            backup_count = len(list(Path(backup_dir).glob("mlb_backup_*"))) if Path(backup_dir).exists() else 0
+            st.metric("Backups", backup_count)
+
+        st.divider()
+
+        # ── Manual triggers ───────────────────────────────────────
+        st.subheader("Manual Triggers")
+        st.caption("Manual actions require confirmation.")
+        trig_cols = st.columns(4)
+        with trig_cols[0]:
+            if st.button("🌅 Run Full Slate Now", use_container_width=True):
+                if st.session_state.get("_confirm_morning"):
+                    conn3 = sqlite3.connect(db_path, timeout=5)
+                    try:
+                        jid = trigger_morning_run(conn3)
+                        st.success(f"Morning run job created: {jid[:8]}")
+                    finally:
+                        conn3.close()
+                    st.session_state["_confirm_morning"] = False
+                else:
+                    st.session_state["_confirm_morning"] = True
+                    st.warning("Click again to confirm full-slate run")
+        with trig_cols[1]:
+            if st.button("📈 Schedule Pregame Checks", use_container_width=True):
+                conn3 = sqlite3.connect(db_path, timeout=5)
+                try:
+                    count = schedule_pregame_checks(conn3)
+                    st.success(f"Scheduled {count} pregame check(s)")
+                finally:
+                    conn3.close()
+        with trig_cols[2]:
+            if st.button("✅ Run Grading Now", use_container_width=True):
+                if st.session_state.get("_confirm_grading"):
+                    conn3 = sqlite3.connect(db_path, timeout=5)
+                    try:
+                        count = schedule_grading(conn3)
+                        st.success(f"Grading jobs created: {count}")
+                    finally:
+                        conn3.close()
+                    st.session_state["_confirm_grading"] = False
+                else:
+                    st.session_state["_confirm_grading"] = True
+                    st.warning("Click again to confirm grading")
+        with trig_cols[3]:
+            if st.button("🔄 Retry Failed Jobs", use_container_width=True):
+                conn3 = sqlite3.connect(db_path, timeout=5)
+                try:
+                    count = retry_failed_jobs(conn3)
+                    st.success(f"Reset {count} failed job(s) to pending")
+                finally:
+                    conn3.close()
+
+        st.divider()
+
+        # ── Production schedule ───────────────────────────────────
+        st.subheader("Production Schedule (America/New_York)")
+        sched_data = [
+            {"Time": "8:30 AM", "Job": "Schedule Refresh", "Type": "pregame-check"},
+            {"Time": "9:00 AM", "Job": "Full-Slate Model Run", "Type": "morning-run"},
+            {"Time": "Game-60min", "Job": "Pre-Game Check", "Type": "pregame-check"},
+            {"Time": "Game-15min", "Job": "Final Odds Snapshot", "Type": "pregame-check"},
+            {"Time": "Post-Game", "Job": "Grading Checks", "Type": "grading"},
+            {"Time": "3:30 AM", "Job": "Backup & Maintenance", "Type": "backup"},
+        ]
+        st.dataframe(pd.DataFrame(sched_data), use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ── Pending jobs ──────────────────────────────────────────
+        st.subheader("Pending Jobs")
+        conn4 = sqlite3.connect(db_path, timeout=5)
+        conn4.row_factory = sqlite3.Row
+        try:
+            pending = get_pending_jobs(conn4)
+            failed = get_failed_jobs(conn4)
+        finally:
+            conn4.close()
+
+        if pending:
+            pj_table = [{"Job ID": p["job_id"][:8], "Type": p["job_type"], "Scheduled": (p.get("scheduled_at") or "")[:16], "Event": p.get("event_id", "")[:12] if p.get("event_id") else "—"} for p in pending[:20]]
+            st.dataframe(pd.DataFrame(pj_table), use_container_width=True, hide_index=True)
+        else:
+            st.info("No pending jobs.")
+
+        if failed:
+            st.subheader("Failed Jobs")
+            fj_table = [{"Job ID": f["job_id"][:8], "Type": f["job_type"], "Error": (f.get("error_message") or "")[:60], "Scheduled": (f.get("scheduled_at") or "")[:16]} for f in failed[:10]]
+            st.dataframe(pd.DataFrame(fj_table), use_container_width=True, hide_index=True)
+        else:
+            st.info("No failed jobs.")
+
+    except Exception as e:
+        st.error(f"Error loading automation data: {e}")
+
+# ==================================================================
+# Tab 7: System Health
+# ==================================================================
+with tabs[7]:
+    st.subheader("System Health & Diagnostics")
+
+    # Auto-run health check and show status with specific reasons
+    if st.button("🔍 Refresh Health Status", use_container_width=False):
+        st.session_state.health_report = None
+
+    if "health_report" not in st.session_state:
+        st.session_state.health_report = None
+    if st.session_state.health_report is None:
+        try:
+            health_fn = _import_health()
+            report = health_fn(
+                db_path=db_path, api_key=config.api_key if config else "",
+                output_dir=output_dir_val,
+                environment=config.environment if config else "",
+                timezone_name=config.timezone if config else "",
+                backup_dir=config.backup_dir if config else "backups",
+                scheduler_enabled=config.scheduler_enabled if config else True,
+            )
+            st.session_state.health_report = report
+        except Exception:
+            st.session_state.health_report = "UNKNOWN"
+
+    health_report = st.session_state.health_report
+    if health_report == "UNKNOWN":
+        st.markdown(":gray[**UNKNOWN** — Health check has not been run yet.]")
+    else:
+        color = _status_color(health_report.overall_status)
+        st.markdown(f":{color}[**{health_report.overall_status.upper()}**]")
+        # Show specific reasons under the status
+        for chk in health_report.checks:
+            chk_color = "green" if chk.status == "ok" else ("orange" if chk.status == "warning" else "red")
+            st.markdown(f":{chk_color}[{chk.name}: {chk.message}]")
+
+    # Health check
+    st.markdown("**Health Check**")
+    if st.button("🔍 Run Health Check", use_container_width=False):
+        with st.spinner("Running health check..."):
+            try:
+                health_fn = _import_health()
+                report = health_fn(
+                    db_path=db_path, api_key=config.api_key if config else "",
+                    output_dir=output_dir_val,
+                    environment=config.environment if config else "",
+                    timezone_name=config.timezone if config else "",
+                    backup_dir=config.backup_dir if config else "backups",
+                    scheduler_enabled=config.scheduler_enabled if config else True,
+                )
+                st.session_state.health_report = report
+                st.json(report.to_dict())
+            except Exception as exc:
+                st.error(f"Health check failed: {exc}")
+
+    st.divider()
+
+    # Data quality
+    st.markdown("**Data Quality**")
+    if st.button("📊 Run Data Quality Check", use_container_width=False):
+        try:
+            from src.data_quality import run_data_quality_checks
+            conn5 = sqlite3.connect(db_path, timeout=5)
+            try:
+                findings = run_data_quality_checks(conn5)
+                if findings:
+                    import pandas as pd
+                    st.dataframe(pd.DataFrame([f.__dict__ for f in findings]), use_container_width=True, hide_index=True)
+                else:
+                    st.success("No data quality issues found.")
+            finally:
+                conn5.close()
+        except Exception as exc:
+            st.error(f"Data quality check failed: {exc}")
+
+    st.divider()
+
+    # Backup
+    st.markdown("**Backup**")
+    bk_cols = st.columns(2)
+    with bk_cols[0]:
+        if st.button("💾 Create Backup", use_container_width=True):
+            try:
+                backup_fn, _ = _import_backup()
+                backup_dir = _get_backup_dir(config) if config else Path("output/backups")
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                bp = backup_fn(db_path=db_path, backup_dir=backup_dir, retention_count=config.backup_retention_count if config else 7, compress=config.backup_compression if config else False)
+                st.success(f"Backup created: {bp.name}")
+            except Exception as exc:
+                st.error(f"Backup failed: {exc}")
+    with bk_cols[1]:
+        if st.button("📂 Open Output", use_container_width=True):
+            output_path = Path(output_dir_val)
+            st.write(f"Output directory: `{output_path.resolve()}`" if output_path.exists() else "Output directory does not exist")
+
+    st.divider()
+
+    # Advanced controls
+    with st.expander("⚙️ Advanced Controls", expanded=False):
+        adv_cols = st.columns(3)
+
+        with adv_cols[0]:
+            st.markdown("**Canary Tests**")
+            if st.button("🐤 No-Write Canary", use_container_width=True, key="canary_nw"):
+                result_box: dict[str, Any] = {"status": "running", "exit_code": None, "output": "", "error": ""}
+                _run_subprocess_command("Canary (no-write)", [sys.executable, "-m", "src.production_canary", "--no-write"], result_box)
+                if result_box["status"] == "success":
+                    st.success("Canary passed (no-write)")
+                else:
+                    st.error(f"Canary failed: {result_box.get('error', '')}")
+            if st.button("🐤 Full Canary", use_container_width=True, key="canary_full"):
+                result_box_f: dict[str, Any] = {"status": "running", "exit_code": None, "output": "", "error": ""}
+                _run_subprocess_command("Canary (full)", [sys.executable, "-m", "src.production_canary"], result_box_f)
+                if result_box_f["status"] == "success":
+                    st.success("Canary passed")
+                else:
+                    st.error(f"Canary failed: {result_box_f.get('error', '')}")
+
+        with adv_cols[1]:
+            st.markdown("**Operations**")
+            if st.button("🔄 Pregame Run", use_container_width=True, key="pregame_run_btn"):
+                result_box_p: dict[str, Any] = {"status": "running", "exit_code": None, "output": "", "error": ""}
+                _run_subprocess_command("Pregame Run", [sys.executable, "-m", "src.production_jobs", "pregame-run"], result_box_p)
+                if result_box_p["status"] == "success":
+                    st.success("Pregame run completed")
+                else:
+                    st.error(f"Pregame failed: {result_box_p.get('error', '')}")
+            if st.button("💰 Capture Closing Prices", use_container_width=True, key="closing_prices_btn"):
+                result_box4: dict[str, Any] = {"status": "running", "exit_code": None, "output": "", "error": ""}
+                _run_subprocess_command(
+                    "Closing Prices",
+                    [sys.executable, "-c",
+                     "from src.grading import capture_closing_prices; "
+                     "from database.db_manager import get_connection; "
+                     "conn = get_connection(); capture_closing_prices(conn, 'LIVE'); "
+                     "print('Closing prices captured')"],
+                    result_box4,
+                )
+                if result_box4["status"] == "success":
+                    st.success("Closing prices captured")
+                else:
+                    st.error(f"Failed: {result_box4.get('error', '')}")
+
+        with adv_cols[2]:
+            st.markdown("**Grading**")
+            if st.button("✅ Grade All Recommendations", use_container_width=True, key="grade_all_btn"):
+                result_box5: dict[str, Any] = {"status": "running", "exit_code": None, "output": "", "error": ""}
+                _run_subprocess_command("Grade all", [sys.executable, "-m", "src.grade_recommendations", "--grade-all"], result_box5)
+                if result_box5["status"] == "success":
+                    st.success("Grading completed")
+                else:
+                    st.error(f"Grading failed: {result_box5.get('error', '')}")
+                if result_box5.get("output"):
+                    with st.expander("Output"):
+                        st.code(result_box5["output"], language=None)
+            if st.button("📋 View Traces", use_container_width=True, key="view_traces_btn"):
+                try:
+                    conn6 = sqlite3.connect(db_path, timeout=3)
+                    try:
+                        traces = conn6.execute(
+                            "SELECT recommendation_id, step, message, timestamp FROM recommendation_traces ORDER BY timestamp DESC LIMIT 20"
+                        ).fetchall()
+                        if traces:
+                            trace_data = [{"ID": t[0][:12], "Step": t[1], "Message": t[2], "Time": t[3]} for t in traces]
+                            import pandas as pd
+                            st.dataframe(pd.DataFrame(trace_data), use_container_width=True, hide_index=True)
+                        else:
+                            st.info("No traces found")
+                    finally:
+                        conn6.close()
+                except Exception as exc:
+                    st.info(f"Traces unavailable: {exc}")
+
+    st.divider()
+
+    # Delivery status
+    st.markdown("**Delivery Status**")
+    del_cols = st.columns(4)
+    del_cols[0].metric("Shadow Delivery", "Blocked")
+    del_cols[1].metric("VIP Delivery", "Blocked")
+    del_cols[2].metric("Shadow Mode", "Enabled" if shadow and shadow.shadow_mode else "Disabled")
+    del_cols[3].metric("Recommendations", schedule.get("recommendations", 0))
+
+# ==================================================================
+# Tab 9: Adaptive Learning
+# ==================================================================
+with tabs[8]:
+    st.subheader("Adaptive Learning & Model Calibration")
+
+    import sqlite3 as _sqlite3
+    _conn_al = _sqlite3.connect(db_path, timeout=5)
+    _conn_al.row_factory = _sqlite3.Row
+
+    try:
+        from src.adaptive_learning import (
+            compute_grade_summary,
+            compute_score_calibration,
+            compute_performance_segments,
+            generate_learning_recommendations,
+            can_auto_change,
+            run_holdout_validation,
+            ADAPTIVE_LEARNING_VERSION,
+        )
+
+        _allowed, _reason = can_auto_change(_conn_al)
+
+        # ── Safety Gate ──
+        st.markdown("**System Status**")
+        _gate_cols = st.columns(3)
+        _gate_cols[0].metric(
+            "Auto-Change Gate",
+            "✅ Enabled" if _allowed else "🚫 Blocked",
+            help=_reason,
+        )
+        _gate_cols[1].metric("Learning Version", ADAPTIVE_LEARNING_VERSION)
+        _graded_count = _conn_al.execute(
+            "SELECT COUNT(*) FROM historical_recommendations hr "
+            "JOIN market_settlements ms ON hr.recommendation_id = ms.recommendation_id "
+            "WHERE ms.settlement_status IS NOT NULL AND ms.settlement_status != 'UNRESOLVED'"
+        ).fetchone()[0]
+        _gate_cols[2].metric("Graded Recs", _graded_count)
+
+        if not _allowed:
+            st.warning(f"Auto-change blocked: {_reason}")
+
+        st.divider()
+
+        # ── Section 1: Data Readiness ──
+        st.subheader("1. Data Readiness")
+        _recs = _conn_al.execute(
+            "SELECT recommendation_tier, COUNT(*) as cnt "
+            "FROM historical_recommendations GROUP BY recommendation_tier"
+        ).fetchall()
+        if _recs:
+            import pandas as pd
+            _tier_df = pd.DataFrame([{"Tier": r["recommendation_tier"], "Count": r["cnt"]} for r in _recs])
+            st.dataframe(_tier_df, use_container_width=True, hide_index=True)
+
+            _days = _conn_al.execute(
+                "SELECT DISTINCT substr(scan_timestamp, 1, 10) as day "
+                "FROM historical_recommendations ORDER BY day"
+            ).fetchall()
+            st.caption(f"Total: {_graded_count} graded | {len(_days)} unique days")
+        else:
+            st.info("No historical recommendation data available.")
+
+        st.divider()
+
+        # ── Section 2: Score Calibration ──
+        st.subheader("2. Score Calibration")
+        try:
+            _cal = compute_score_calibration(_conn_al)
+            if _cal and _cal.get("buckets"):
+                import pandas as pd
+                _cal_rows = []
+                for b in _cal["buckets"]:
+                    _cal_rows.append({
+                        "Bucket": b.get("bucket_label", ""),
+                        "Total": b.get("total", 0),
+                        "Wins": b.get("wins", 0),
+                        "Losses": b.get("losses", 0),
+                        "Win Rate": f"{b.get('actual_win_rate', 0):.1%}",
+                        "ROI": f"{b.get('roi', 0):.1%}",
+                        "Avg CLV": f"{b.get('avg_clv', 0):.4f}" if b.get("avg_clv") is not None else "N/A",
+                        "Sufficient": "✅" if b.get("sample_sufficient") else "⚠️",
+                    })
+                st.dataframe(pd.DataFrame(_cal_rows), use_container_width=True, hide_index=True)
+
+                if _cal.get("score_distribution"):
+                    _dist = _cal["score_distribution"]
+                    _dist_cols = st.columns(3)
+                    _dist_cols[0].metric("Mean Score", f"{_dist.get('mean', 0):.2f}")
+                    _dist_cols[1].metric("Median Score", f"{_dist.get('median', 0):.2f}")
+                    _dist_cols[2].metric("Std Dev", f"{_dist.get('stdev', 0):.2f}")
+            else:
+                st.info("Score calibration requires more graded data.")
+        except Exception as e:
+            st.info(f"Score calibration unavailable: {e}")
+
+        st.divider()
+
+        # ── Section 3: Grade Summary by Tier ──
+        st.subheader("3. Performance by Tier")
+        try:
+            _grade_summary = compute_grade_summary(_conn_al)
+            if _grade_summary:
+                import pandas as pd
+                _tier_perf_rows = []
+                for tier_name, perf_dict in _grade_summary.items():
+                    _tier_perf_rows.append({
+                        "Tier": tier_name,
+                        "Total": perf_dict.get("total", 0),
+                        "Wins": perf_dict.get("wins", 0),
+                        "Losses": perf_dict.get("losses", 0),
+                        "Win Rate": f"{perf_dict.get('win_rate', 0):.1%}",
+                        "ROI": f"{perf_dict.get('roi', 0):.1%}",
+                        "Units Won": f"{perf_dict.get('units_won', 0):.2f}",
+                        "Max Drawdown": f"{perf_dict.get('max_drawdown', 0):.2f}",
+                    })
+                st.dataframe(pd.DataFrame(_tier_perf_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No tier performance data available.")
+        except Exception as e:
+            st.info(f"Grade summary unavailable: {e}")
+
+        st.divider()
+
+        # ── Section 4: Learning Recommendations ──
+        st.subheader("4. Learning Recommendations")
+        try:
+            _learn_recs = generate_learning_recommendations(_conn_al)
+            if _learn_recs:
+                import pandas as pd
+                _lr_rows = []
+                for lr in _learn_recs:
+                    _lr_rows.append({
+                        "Category": lr.get("category", ""),
+                        "Proposed Change": lr.get("proposed_change", ""),
+                        "Current": lr.get("current_value", ""),
+                        "Proposed": lr.get("proposed_value", ""),
+                        "Sample Size": lr.get("sample_size", 0),
+                        "Status": lr.get("status", ""),
+                        "Overfit Risk": lr.get("overfitting_risk", ""),
+                    })
+                st.dataframe(pd.DataFrame(_lr_rows), use_container_width=True, hide_index=True)
+                st.caption(f"Total: {len(_learn_recs)} recommendations")
+            else:
+                st.info("No learning recommendations available (insufficient data or all thresholds met).")
+        except Exception as e:
+            st.info(f"Learning recommendations unavailable: {e}")
+
+        st.divider()
+
+        # ── Section 5: Holdout Validation ──
+        st.subheader("5. Champion vs Challenger")
+        try:
+            _holdout = run_holdout_validation(_conn_al)
+            if _holdout.get("champion_holdout"):
+                _hv_cols = st.columns(3)
+                _ch_train = _holdout.get("champion_train", {})
+                _ch_holdout = _holdout.get("champion_holdout", {})
+                _hv_cols[0].metric("Train ROI", f"{_ch_train.get('roi', 0):.1%}")
+                _hv_cols[1].metric("Holdout ROI", f"{_ch_holdout.get('roi', 0):.1%}")
+                _hv_cols[2].metric(
+                    "Validated",
+                    "✅ Yes" if _holdout.get("validated") else "⏳ Pending",
+                )
+                st.caption(
+                    f"Train: {_holdout.get('train_size', 0)} recs | "
+                    f"Val: {_holdout.get('val_size', 0)} recs | "
+                    f"Holdout: {_holdout.get('holdout_size', 0)} recs"
+                )
+            else:
+                st.info("Holdout validation requires more graded data for chronological split.")
+        except Exception as e:
+            st.info(f"Holdout validation unavailable: {e}")
+
+        st.divider()
+
+        # ── Section 6: Experiments ──
+        st.subheader("6. Experiments")
+        try:
+            _experiments = _conn_al.execute(
+                "SELECT experiment_id, challenger_id, conclusion, approved, created_at "
+                "FROM experiments ORDER BY created_at DESC LIMIT 20"
+            ).fetchall()
+            if _experiments:
+                import pandas as pd
+                _exp_rows = []
+                for exp in _experiments:
+                    _exp_rows.append({
+                        "Experiment ID": exp["experiment_id"][:12] + "...",
+                        "Challenger": exp["challenger_id"],
+                        "Conclusion": exp["conclusion"],
+                        "Approved": "✅" if exp["approved"] else "⏳",
+                        "Created": exp["created_at"][:16] if exp["created_at"] else "",
+                    })
+                st.dataframe(pd.DataFrame(_exp_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No experiments have been created yet.")
+        except Exception as e:
+            st.info(f"Experiments unavailable: {e}")
+
+    finally:
+        _conn_al.close()
+
+# ── Footer ─────────────────────────────────────────────────────────
+st.divider()
+footer_cols = st.columns(3)
+with footer_cols[0]:
+    st.caption("MLB VIP Model — Shadow Mode")
+    st.caption("No wagers are placed. No deliveries are sent.")
+with footer_cols[1]:
+    st.caption(f"Database: `{db_path}`")
+with footer_cols[2]:
+    st.caption(f"Updated: {_now_str()}")
