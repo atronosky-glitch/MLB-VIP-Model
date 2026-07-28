@@ -1436,3 +1436,56 @@ Added to `tests/fixture_data.py`: Flaherty event now includes YN odds (5 books o
 4. Update `strikeout_scanner.py` to include YN groups in output
 5. Write tests: filter, parse, analyze, pipeline, scanner integration
 6. Full suite pass
+
+## Session: 2026-07-28 — Fix PostgreSQL file-guard bug in control_panel.py
+
+### What was done
+
+Fixed a critical bug where dashboard helpers (`_get_latest_run_id`, `_get_schedule_summary`, `_load_recs`, `_get_live_game_warnings`) checked `Path(db_path).exists()` before calling `get_connection()`. On Render, `DATABASE_URL` is set and `get_connection()` correctly connects to PostgreSQL, but the file-existence guard returned early with empty/default values before PostgreSQL was ever queried.
+
+**Root cause:** `_get_latest_run_id()`, `_get_schedule_summary()`, `_load_recs()`, and `_get_live_game_warnings()` all had `if not Path(db_path).exists(): return ...` guards. These were written for SQLite where the file must exist. On Render PostgreSQL, the file doesn't exist (PostgreSQL is remote), so every guard returned empty data.
+
+### Files changed
+
+1. **`src/control_panel.py`**:
+   - Added `from database.connection import get_database_url` import
+   - Added `_is_postgres()` helper — returns True when `DATABASE_URL` is set
+   - Added `_should_query(db_path)` helper — returns True if PostgreSQL or SQLite file exists
+   - Replaced 4 `if not Path(db_path).exists()` guards with `if not _should_query(db_path)`:
+     - `_load_recs()` (line 117)
+     - `_get_latest_run_id()` (line 175)
+     - `_get_schedule_summary()` (line 206)
+     - `_get_live_game_warnings()` (line 277)
+   - Updated DB labels to show "PostgreSQL" when configured:
+     - Header label (line 419)
+     - Database & Storage metric (line 1226)
+     - DB Size metric (line 1228) — shows "Managed (PostgreSQL)" instead of file size
+     - Footer label (line 1719)
+   - Added `last_run_time` population from `scan_runs.finished_at` at session start
+
+2. **`tests/test_phase17b_postgres.py`**:
+   - Added `TestPostgresPathGuard` class with 11 tests covering:
+     - `_is_postgres()` True/False
+     - `_should_query()` for all 4 combinations (Postgres + no file, SQLite + no file, SQLite + file)
+     - Guard bypass for all 4 dashboard functions with PostgreSQL + mock data
+     - SQLite guard still returns empty when path missing (regression)
+     - `get_database_url` is importable from control_panel
+
+### Test results
+
+- **1402 passed**, 1 pre-existing flaky failure (`test_schedule_pregame_checks`)
+- All 11 new tests pass
+- All 75 dashboard regression tests pass
+
+### Commit message
+
+```
+Fix dashboard PostgreSQL file guards
+
+- Add _is_postgres() / _should_query() helpers in control_panel.py
+- Replace 4 Path(db_path).exists() guards with _should_query() so
+  PostgreSQL queries proceed even when the SQLite file is missing
+- Show "PostgreSQL" in DB labels when DATABASE_URL is configured
+- Populate last_run_time from scan_runs at session start
+- 11 new regression tests for guard bypass behavior
+```

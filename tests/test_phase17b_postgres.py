@@ -8,6 +8,8 @@ PostgreSQL is not available in CI.
 import pytest
 from unittest.mock import patch, MagicMock
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 
 
 class TestSQLConversion:
@@ -340,3 +342,125 @@ class TestMigrationScript:
         sig = inspect.signature(mod.main)
         # Check it's callable
         assert callable(mod.main)
+
+
+class TestPostgresPathGuard:
+    """Test that dashboard helpers bypass SQLite file-existence check
+    when PostgreSQL is configured (DATABASE_URL set)."""
+
+    def setup_method(self):
+        import sqlite3
+        from database.connection import DB
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.conn.executescript("""
+            CREATE TABLE scan_runs (
+                run_id TEXT PRIMARY KEY, started_at TEXT, finished_at TEXT,
+                run_type TEXT
+            );
+            CREATE TABLE games (
+                event_id TEXT PRIMARY KEY, start_time TEXT, status TEXT,
+                away_team TEXT, home_team TEXT, league TEXT DEFAULT 'MLB'
+            );
+            CREATE TABLE historical_recommendations (
+                recommendation_id TEXT PRIMARY KEY, event_id TEXT,
+                player_name TEXT, market_type TEXT, scan_run_id TEXT,
+                ev_pct REAL, rec_status TEXT, scan_timestamp TEXT,
+                freshness_status TEXT
+            );
+        """)
+        self.conn.execute(
+            "INSERT INTO scan_runs (run_id, started_at, finished_at, run_type) "
+            "VALUES (?, ?, ?, ?)",
+            ("run-999", "2026-07-25T10:00:00", "2026-07-25T11:00:00", "scan"),
+        )
+        self.conn.execute(
+            "INSERT INTO games (event_id, start_time, status, away_team, home_team) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("e1", f"{today}T20:00:00", "scheduled", "NYY", "BOS"),
+        )
+        self.conn.execute(
+            "INSERT INTO games (event_id, start_time, status, away_team, home_team) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("e2", f"{today}T20:00:00", "scheduled", "LAD", "SF"),
+        )
+        self.conn.execute(
+            "INSERT INTO historical_recommendations "
+            "(recommendation_id, event_id, player_name, market_type, scan_run_id, "
+            "ev_pct, rec_status, scan_timestamp, freshness_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("r1", "e1", "Judge", "homeruns", "run-999",
+             0.05, "BET", "2026-07-25T10:30:00", "fresh"),
+        )
+        self.db = DB(self.conn, dialect="sqlite")
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def test_is_postgres_false_when_no_url(self):
+        from src.control_panel import _is_postgres
+        with patch.dict(os.environ, {}, clear=True):
+            assert not _is_postgres()
+
+    def test_is_postgres_true_when_url_set(self):
+        from src.control_panel import _is_postgres
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://u:p@h/d"}):
+            assert _is_postgres()
+
+    def test_should_query_true_for_postgres_without_file(self):
+        from src.control_panel import _should_query
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://u:p@h/d"}):
+            assert _should_query("/nonexistent/db.db")
+
+    def test_should_query_false_for_sqlite_without_file(self):
+        from src.control_panel import _should_query
+        with patch.dict(os.environ, {}, clear=True):
+            assert not _should_query("/nonexistent/db.db")
+
+    def test_should_query_true_for_sqlite_with_file(self, tmp_path):
+        dbfile = str(tmp_path / "test.db")
+        Path(dbfile).touch()
+        from src.control_panel import _should_query
+        with patch.dict(os.environ, {}, clear=True):
+            assert _should_query(dbfile)
+
+    def test_guard_bypass_for_latest_run_id(self):
+        from src.control_panel import _get_latest_run_id
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://fake"}):
+            with patch("src.control_panel.get_connection", return_value=self.db):
+                result = _get_latest_run_id("/nonexistent/path.db")
+                assert result == "run-999"
+
+    def test_guard_bypass_for_schedule_summary(self):
+        from src.control_panel import _get_schedule_summary
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://fake"}):
+            with patch("src.control_panel.get_connection", return_value=self.db):
+                s = _get_schedule_summary("/nonexistent/path.db")
+                assert s["total"] == 2
+                assert s["eligible"] == 2
+                assert s["analyzed"] == 1
+
+    def test_guard_bypass_for_load_recs_latest(self):
+        from src.control_panel import _load_recs
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://fake"}):
+            with patch("src.control_panel.get_connection", return_value=self.db):
+                recs = _load_recs("/nonexistent/path.db", "latest")
+                assert len(recs) == 1
+                assert recs[0]["recommendation_id"] == "r1"
+
+    def test_guard_bypass_for_live_game_warnings(self):
+        from src.control_panel import _get_live_game_warnings
+        with patch.dict(os.environ, {"DATABASE_URL": "postgres://fake"}):
+            with patch("src.control_panel.get_connection", return_value=self.db):
+                result = _get_live_game_warnings("/nonexistent/path.db", "run-999")
+                assert result == []
+
+    def test_sqlite_guard_still_works_when_path_missing(self):
+        from src.control_panel import _get_latest_run_id
+        with patch.dict(os.environ, {}, clear=True):
+            assert _get_latest_run_id("/nonexistent/path.db") == ""
+
+    def test_control_panel_imports_database_url_util(self):
+        from src.control_panel import get_database_url
+        assert callable(get_database_url)

@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import subprocess
+from database.connection import get_database_url
 from database.db_manager import get_connection
 import sys
 import threading
@@ -101,6 +102,20 @@ def _format_market_type(mt: str) -> str:
     return mt.replace("_", " ").title() if mt else ""
 
 
+def _is_postgres() -> bool:
+    """Check whether PostgreSQL is configured (vs local SQLite)."""
+    return bool(get_database_url())
+
+
+def _should_query(db_path: str) -> bool:
+    """Return True if a database query can proceed.
+
+    When PostgreSQL is configured, always query (the file check is irrelevant).
+    Otherwise, verify the SQLite file exists.
+    """
+    return _is_postgres() or Path(db_path).exists()
+
+
 def _load_todays_recs(db_path: str) -> list[dict[str, Any]]:
     """Load today's frozen recommendations from the database."""
     return _load_recs(db_path, "today")
@@ -114,7 +129,7 @@ def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]
         "today"  — all recs with today's scan_timestamp
         "all"    — all recs in the database
     """
-    if not Path(db_path).exists():
+    if not _should_query(db_path):
         return []
     try:
         conn = get_connection(str(db_path))
@@ -172,7 +187,7 @@ def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]
 
 def _get_latest_run_id(db_path: str) -> str:
     """Get the most recent scan run_id from scan_runs."""
-    if not Path(db_path).exists():
+    if not _should_query(db_path):
         return ""
     try:
         conn = get_connection(str(db_path))
@@ -203,7 +218,7 @@ def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict
         "analyzed": 0, "skipped": 0, "recommendations": 0,
         "eligible": 0, "valid": True,
     }
-    if not Path(db_path).exists():
+    if not _should_query(db_path):
         return result
     try:
         conn = get_connection(str(db_path))
@@ -274,7 +289,7 @@ def _get_deduplicated_skipped_games(run_summary: dict | None) -> list[dict]:
 def _get_live_game_warnings(db_path: str, run_id: str) -> list[dict]:
     """Check if any recommendations in the given run belong to live/completed games."""
     warnings: list[dict] = []
-    if not Path(db_path).exists() or not run_id:
+    if not _should_query(db_path) or not run_id:
         return warnings
     try:
         conn = get_connection(str(db_path))
@@ -399,6 +414,21 @@ shadow = _get_shadow()
 db_path = config.database_path if config else "database/mlb_model.db"
 output_dir_val = config.output_dir if config else "output"
 
+# Populate last_run_time from the most recent completed scan run
+if st.session_state.last_run_time is None:
+    try:
+        _conn = get_connection(str(db_path))
+        _row = _conn.execute(
+            "SELECT COALESCE(finished_at, started_at) AS ts FROM scan_runs "
+            "WHERE run_type = 'scan' AND finished_at IS NOT NULL "
+            "ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        _conn.close()
+        if _row and _row.get("ts"):
+            st.session_state.last_run_time = _row["ts"]
+    except Exception:
+        pass
+
 # ── Header ─────────────────────────────────────────────────────────
 st.markdown("# ⚾ MLB VIP MODEL")
 header_cols = st.columns(4)
@@ -416,7 +446,7 @@ with header_cols[2]:
         st.warning("⚡ LIVE")
 with header_cols[3]:
     st.caption("Database")
-    st.write(Path(db_path).name)
+    st.write("PostgreSQL" if _is_postgres() else Path(db_path).name)
 
 st.divider()
 
@@ -1223,9 +1253,12 @@ with tabs[6]:
         st.subheader("Database & Storage")
         db_cols = st.columns(3)
         with db_cols[0]:
-            st.metric("Database Path", Path(db_path).name)
+            st.metric("Database", "PostgreSQL" if _is_postgres() else Path(db_path).name)
         with db_cols[1]:
-            st.metric("DB Size", f"{Path(db_path).stat().st_size / 1024:.0f} KB" if Path(db_path).exists() else "N/A")
+            if _is_postgres():
+                st.metric("DB Size", "Managed (PostgreSQL)")
+            else:
+                st.metric("DB Size", f"{Path(db_path).stat().st_size / 1024:.0f} KB" if Path(db_path).exists() else "N/A")
         with db_cols[2]:
             backup_dir = config.backup_dir if config else "backups"
             backup_count = len(list(Path(backup_dir).glob("mlb_backup_*"))) if Path(backup_dir).exists() else 0
@@ -1716,6 +1749,6 @@ with footer_cols[0]:
     st.caption("MLB VIP Model — Shadow Mode")
     st.caption("No wagers are placed. No deliveries are sent.")
 with footer_cols[1]:
-    st.caption(f"Database: `{db_path}`")
+    st.caption(f"Database: {'PostgreSQL' if _is_postgres() else f'`{db_path}`'}")
 with footer_cols[2]:
     st.caption(f"Updated: {_now_str()}")
