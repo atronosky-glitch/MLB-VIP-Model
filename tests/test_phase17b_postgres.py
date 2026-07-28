@@ -81,6 +81,32 @@ class TestSQLConversion:
         assert "sqlite_master" not in result
 
 
+    def test_named_placeholder_conversion(self):
+        """:event_id → %(event_id)s for psycopg2."""
+        from database.connection import _convert_sql
+        sql = "INSERT INTO t (id, league) VALUES (:event_id, :league)"
+        result = _convert_sql(sql, "postgresql")
+        assert "%(event_id)s" in result
+        assert "%(league)s" in result
+        assert ":event_id" not in result
+        assert ":league" not in result
+
+    def test_question_mark_still_works(self):
+        """? → %s still works alongside named placeholders."""
+        from database.connection import _convert_sql
+        sql = "VALUES (?, ?)"
+        result = _convert_sql(sql, "postgresql")
+        assert result == "VALUES (%s, %s)"
+
+    def test_postgres_cast_not_mangled(self):
+        """::date PostgreSQL casts are not accidentally changed."""
+        from database.connection import _convert_sql
+        sql = "SELECT start_time::date FROM games WHERE id = ?"
+        result = _convert_sql(sql, "postgresql")
+        assert "::date" in result
+        assert result == "SELECT start_time::date FROM games WHERE id = %s"
+
+
 class TestDBWrapper:
     """Test the DB wrapper class with in-memory SQLite."""
 

@@ -43,6 +43,14 @@ def _convert_sql(sql: str, dialect: str) -> str:
     # ── Placeholders: ? → %s ──────────────────────────────────────
     sql = sql.replace("?", "%s")
 
+    # Convert SQLite named placeholders like :event_id
+    # into psycopg2 placeholders like %(event_id)s.
+    sql = re.sub(
+        r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)",
+        r"%(\1)s",
+        sql,
+    )
+
     # ── Timestamp functions ───────────────────────────────────────
     # datetime('now')  → NOW()
     sql = re.sub(r"datetime\('now'\)", "NOW()", sql)
