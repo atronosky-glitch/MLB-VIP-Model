@@ -174,9 +174,9 @@ def schedule_grading(
 # ── Manual triggers ────────────────────────────────────────────────
 
 
-def trigger_morning_run(conn: sqlite3.Connection) -> str:
-    """Create an immediate morning run job."""
-    return create_job(conn, job_type="morning")
+def trigger_morning_run(conn: sqlite3.Connection, scheduled_at: str | None = None) -> str:
+    """Create a morning run job (immediate or scheduled for a future time)."""
+    return create_job(conn, job_type="morning-run", scheduled_at=scheduled_at)
 
 
 def trigger_pregame_refresh(conn: sqlite3.Connection, event_id: str) -> str:

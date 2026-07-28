@@ -311,6 +311,25 @@ def _is_backup_time(now: datetime) -> bool:
     return now.hour == 3 and now.minute == 30
 
 
+def _check_and_schedule_morning_run(conn: sqlite3.Connection) -> None:
+    """Auto-schedule a morning run at ~9 AM ET if none exists for today."""
+    from src.automation import create_job
+    now = _now_local()
+    # Only between 8:30 AM and 9:59 AM ET
+    if now.hour < 8 or now.hour > 9 or (now.hour == 8 and now.minute < 30):
+        return
+    today = now.strftime("%Y-%m-%d")
+    existing = conn.execute(
+        "SELECT 1 FROM scheduled_jobs "
+        "WHERE job_type = 'morning-run' AND scheduled_at LIKE ? "
+        "AND status IN ('pending', 'running', 'completed')",
+        (f"{today}%",),
+    ).fetchone()
+    if not existing:
+        job_id = create_job(conn, job_type="morning-run", scheduled_at=datetime.now(timezone.utc).isoformat())
+        logger.info("Auto-scheduled morning run: %s", job_id[:8])
+
+
 # ── Main loop ─────────────────────────────────────────────────────
 
 
@@ -335,6 +354,7 @@ def run_worker_persistent(config) -> None:
     last_heartbeat = 0
     last_pregame_check = 0
     last_grading_check = 0
+    last_morning_check = 0
     last_backup_minute = -1
 
     while _running:
@@ -352,6 +372,11 @@ def run_worker_persistent(config) -> None:
 
             # Process pending jobs
             _process_pending_jobs(conn, config)
+
+            # Auto-schedule morning run (check once per minute in window)
+            if now - last_morning_check >= 60:
+                _check_and_schedule_morning_run(conn)
+                last_morning_check = now
 
             # Schedule pregame checks (every 10 min during game window)
             if now - last_pregame_check >= PREGAME_CHECK_INTERVAL_MINUTES * 60:
@@ -400,6 +425,7 @@ def run_worker_once(config) -> None:
         _write_heartbeat(conn)
         _recover_stale_jobs(conn)
         executed = _process_pending_jobs(conn, config)
+        _check_and_schedule_morning_run(conn)
         _check_and_schedule_pregame(conn)
         _check_and_schedule_grading(conn)
 
