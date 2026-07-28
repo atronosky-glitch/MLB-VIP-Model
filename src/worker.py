@@ -39,8 +39,12 @@ sys.path.insert(0, str(_ROOT))
 
 from src.production_config import load_config
 from src.structured_logging import setup_logging
+from database.db_manager import get_connection
 
 logger = logging.getLogger(__name__)
+
+# ── API quota alert state (avoid spam) ───────────────────────────
+_last_quota_alert_date: str = ""
 
 # ── Configuration ─────────────────────────────────────────────────
 
@@ -225,6 +229,65 @@ def _run_health_check(config) -> dict:
     return {"status": report.overall_status, "report": report.to_dict()}
 
 
+# ── API quota alerts ──────────────────────────────────────────────
+
+
+def _check_api_quota_and_alert(conn: sqlite3.Connection, config) -> None:
+    """Check API quota usage and send a Discord alert if running low or key has failed.
+
+    Only sends one alert per day to avoid spam.
+    """
+    global _last_quota_alert_date
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _last_quota_alert_date == today:
+        return  # already alerted today
+
+    try:
+        # Check quota from api_usage table
+        from src.api_usage import check_quota_warning, USAGE_TABLE
+        quota = check_quota_warning(conn, daily_limit=1000.0, warn_pct=80.0)
+        messages = []
+
+        if quota:
+            messages.append(
+                f"**API Quota Warning**\n"
+                f"Usage: {quota['used']:.0f}/{quota['limit']:.0f} ({quota['pct']}%)\n"
+                f"Key will need renewal soon."
+            )
+
+        # Check for 401/403 responses indicating a dead key
+        failed = conn.execute(f"""
+            SELECT COUNT(*) as cnt FROM {USAGE_TABLE}
+            WHERE request_timestamp LIKE '{today}%'
+            AND http_status IN (401, 403)
+        """).fetchone()
+        if failed and failed[0] > 0:
+            messages.append(
+                f"**API Key Failure**\n"
+                f"{failed[0]} requests returned HTTP 401/403 today.\n"
+                f"The API key may be invalid or out of credits."
+            )
+
+        if not messages:
+            return
+
+        alert_text = "\n\n".join(messages)
+
+        # Send to all configured Discord webhooks
+        if config.discord_webhook_urls:
+            from src.discord_delivery import send_webhook_message
+            urls = [u.strip() for u in config.discord_webhook_urls.split(",") if u.strip()]
+            for url in urls:
+                send_webhook_message(url, alert_text, embed_color=0xFF0000)
+            logger.warning("API quota alert sent to Discord: %s", alert_text[:120])
+        else:
+            logger.warning("API quota alert (no Discord configured): %s", alert_text[:120])
+
+        _last_quota_alert_date = today
+    except Exception as e:
+        logger.debug("Quota check skipped: %s", e)
+
+
 # ── Job dispatcher ────────────────────────────────────────────────
 
 
@@ -373,6 +436,9 @@ def run_worker_persistent(config) -> None:
             # Process pending jobs
             _process_pending_jobs(conn, config)
 
+            # Check API quota after any job activity
+            _check_api_quota_and_alert(conn, config)
+
             # Auto-schedule morning run (check once per minute in window)
             if now - last_morning_check >= 60:
                 _check_and_schedule_morning_run(conn)
@@ -396,6 +462,10 @@ def run_worker_persistent(config) -> None:
                     logger.info("Daily backup completed")
                 except Exception as e:
                     logger.error("Backup failed: %s", e)
+
+            # API quota check (every ~5 min, alerts only once per day)
+            if now_local.minute % 5 == 0 and now_local.second < 10:
+                _check_api_quota_and_alert(conn, config)
 
             # Adaptive learning data collection (hourly)
             if now_local.minute == 0 and now_local.second < 5:
@@ -428,6 +498,7 @@ def run_worker_once(config) -> None:
         _check_and_schedule_morning_run(conn)
         _check_and_schedule_pregame(conn)
         _check_and_schedule_grading(conn)
+        _check_api_quota_and_alert(conn, config)
 
         now_local = _now_local()
         if _is_backup_time(now_local):
