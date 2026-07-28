@@ -150,9 +150,9 @@ def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]
             if filter_mode == "latest":
                 rows = _run_query(
                     "WHERE scan_run_id = ("
-                    "  SELECT scan_run_id FROM historical_recommendations "
-                    "  WHERE scan_run_id IS NOT NULL AND scan_run_id != '' "
-                    "  ORDER BY scan_timestamp DESC LIMIT 1"
+                    "  SELECT run_id FROM scan_runs "
+                    "  WHERE run_type = 'scan' AND finished_at IS NOT NULL "
+                    "  ORDER BY started_at DESC LIMIT 1"
                     ") ORDER BY ev_pct DESC"
                 )
             elif filter_mode == "today":
@@ -171,18 +171,18 @@ def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]
 
 
 def _get_latest_run_id(db_path: str) -> str:
-    """Get the most recent scan_run_id."""
+    """Get the most recent scan run_id from scan_runs."""
     if not Path(db_path).exists():
         return ""
     try:
         conn = get_connection(str(db_path))
         row = conn.execute(
-            "SELECT scan_run_id FROM historical_recommendations "
-            "WHERE scan_run_id IS NOT NULL AND scan_run_id != '' "
-            "ORDER BY scan_timestamp DESC LIMIT 1"
+            "SELECT run_id FROM scan_runs "
+            "WHERE run_type = 'scan' AND finished_at IS NOT NULL "
+            "ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         conn.close()
-        return row["scan_run_id"] if row else ""
+        return row["run_id"] if row else ""
     except Exception:
         return ""
 
@@ -230,12 +230,12 @@ def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict
         )
 
         latest_run = conn.execute(
-            "SELECT scan_run_id FROM historical_recommendations "
-            "WHERE scan_run_id IS NOT NULL AND scan_run_id != '' "
-            "ORDER BY scan_timestamp DESC LIMIT 1"
+            "SELECT run_id FROM scan_runs "
+            "WHERE run_type = 'scan' AND finished_at IS NOT NULL "
+            "ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         if latest_run:
-            run_id = latest_run["scan_run_id"]
+            run_id = latest_run["run_id"]
             result["recommendations"] = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM historical_recommendations WHERE scan_run_id = ?",
                 (run_id,),

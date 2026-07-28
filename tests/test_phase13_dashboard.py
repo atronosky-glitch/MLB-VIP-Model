@@ -75,6 +75,23 @@ def _make_rec_db(
             market_quality_score REAL DEFAULT 0.0,
             created_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS scan_runs (
+            run_id          TEXT PRIMARY KEY,
+            started_at      TEXT NOT NULL,
+            finished_at     TEXT,
+            run_type        TEXT NOT NULL DEFAULT 'scan',
+            mode            TEXT,
+            market_filter   TEXT,
+            form_filter     TEXT,
+            n_events        INTEGER DEFAULT 0,
+            n_markets       INTEGER DEFAULT 0,
+            n_opportunities INTEGER DEFAULT 0,
+            n_yn_opps       INTEGER DEFAULT 0,
+            data_source     TEXT,
+            research_only   INTEGER DEFAULT 0,
+            error_message   TEXT,
+            metadata_json   TEXT
+        );
     """)
 
     if games:
@@ -116,6 +133,19 @@ def _make_rec_db(
                     r.get("event_status", ""),
                 ),
             )
+    # Auto-populate scan_runs from unique scan_run_ids in recs (encounter order)
+    seen_ids: set[str] = set()
+    if recs:
+        for i, r in enumerate(recs):
+            rid = r.get("scan_run_id", "")
+            if rid and rid not in seen_ids:
+                seen_ids.add(rid)
+                conn.execute(
+                    "INSERT OR IGNORE INTO scan_runs "
+                    "(run_id, started_at, finished_at, run_type) VALUES (?, ?, ?, ?)",
+                    (rid, f"2026-07-25T{10+i:02d}:00:00+00:00",
+                     "2026-07-25T23:59:59+00:00", "scan"),
+                )
     conn.commit()
     conn.close()
     return db_path
@@ -1040,7 +1070,7 @@ class TestGameCountReconciliation:
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
-        conn.execute("""
+        conn.executescript("""
             CREATE TABLE historical_recommendations (
                 recommendation_id TEXT PRIMARY KEY, fingerprint TEXT,
                 event_id TEXT, player_name TEXT, market_type TEXT,
@@ -1069,7 +1099,24 @@ class TestGameCountReconciliation:
                 model_score_threshold REAL DEFAULT 8.0,
                 qualification_rules_version TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now'))
-            )
+            );
+            CREATE TABLE IF NOT EXISTS scan_runs (
+                run_id          TEXT PRIMARY KEY,
+                started_at      TEXT NOT NULL,
+                finished_at     TEXT,
+                run_type        TEXT NOT NULL DEFAULT 'scan',
+                mode            TEXT,
+                market_filter   TEXT,
+                form_filter     TEXT,
+                n_events        INTEGER DEFAULT 0,
+                n_markets       INTEGER DEFAULT 0,
+                n_opportunities INTEGER DEFAULT 0,
+                n_yn_opps       INTEGER DEFAULT 0,
+                data_source     TEXT,
+                research_only   INTEGER DEFAULT 0,
+                error_message   TEXT,
+                metadata_json   TEXT
+            );
         """)
         now = datetime.now(timezone.utc)
         today = now.strftime("%Y-%m-%d")
@@ -1102,6 +1149,18 @@ class TestGameCountReconciliation:
                         r.get("matchup", ""), "scheduled",
                     ),
                 )
+        seen_ids: set[str] = set()
+        if recs:
+            for i, r in enumerate(recs):
+                rid = r.get("scan_run_id", "run-001") if "scan_run_id" in r else ""
+                if rid and rid not in seen_ids:
+                    seen_ids.add(rid)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO scan_runs "
+                        "(run_id, started_at, finished_at, run_type) VALUES (?, ?, ?, ?)",
+                        (rid, f"2026-07-25T{10+i:02d}:00:00+00:00",
+                         "2026-07-25T23:59:59+00:00", "scan"),
+                    )
         conn.commit()
         conn.close()
         return db_path
