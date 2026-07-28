@@ -182,7 +182,7 @@ def _get_latest_run_id(db_path: str) -> str:
             "ORDER BY scan_timestamp DESC LIMIT 1"
         ).fetchone()
         conn.close()
-        return row[0] if row else ""
+        return row["scan_run_id"] if row else ""
     except Exception:
         return ""
 
@@ -209,8 +209,8 @@ def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict
         conn = get_connection(str(db_path))
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         total = conn.execute(
-            "SELECT COUNT(*) FROM games WHERE date(start_time) = ?", (today,)
-        ).fetchone()[0]
+            "SELECT COUNT(*) AS total FROM games WHERE date(start_time) = ?", (today,)
+        ).fetchone()["total"]
         result["total"] = total
 
         for status_val, key in [
@@ -221,9 +221,9 @@ def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict
             ("cancelled", "cancelled"),
         ]:
             result[key] = conn.execute(
-                "SELECT COUNT(*) FROM games WHERE date(start_time) = ? AND status = ?",
+                "SELECT COUNT(*) AS cnt FROM games WHERE date(start_time) = ? AND status = ?",
                 (today, status_val),
-            ).fetchone()[0]
+            ).fetchone()["cnt"]
 
         result["eligible"] = max(
             0, total - result["postponed"] - result["cancelled"]
@@ -235,15 +235,15 @@ def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict
             "ORDER BY scan_timestamp DESC LIMIT 1"
         ).fetchone()
         if latest_run:
-            run_id = latest_run[0]
+            run_id = latest_run["scan_run_id"]
             result["recommendations"] = conn.execute(
-                "SELECT COUNT(*) FROM historical_recommendations WHERE scan_run_id = ?",
+                "SELECT COUNT(*) AS cnt FROM historical_recommendations WHERE scan_run_id = ?",
                 (run_id,),
-            ).fetchone()[0]
+            ).fetchone()["cnt"]
             result["analyzed"] = conn.execute(
-                "SELECT COUNT(DISTINCT event_id) FROM historical_recommendations WHERE scan_run_id = ?",
+                "SELECT COUNT(DISTINCT event_id) AS cnt FROM historical_recommendations WHERE scan_run_id = ?",
                 (run_id,),
-            ).fetchone()[0]
+            ).fetchone()["cnt"]
 
         result["skipped"] = max(0, result["eligible"] - result["analyzed"])
         result["valid"] = True
@@ -1038,23 +1038,23 @@ with tabs[5]:
             })
 
             for row in _mi_rows:
-                mt = row[0] or "unknown"
+                mt = row["market_type"] or "unknown"
                 s = market_stats[mt]
                 s["total_odds_rows"] += 1
-                s["unique_events"].add(row[1])
-                s["unique_players"].add(row[2])
-                s["unique_sportsbooks"].add(row[4])
+                s["unique_events"].add(row["event_id"])
+                s["unique_players"].add(row["player_id"])
+                s["unique_sportsbooks"].add(row["sportsbook"])
                 # Track books per exact market (event+player+line+side)
-                exact_key = f"{row[1]}|{row[2]}|{row[9]}|{row[10]}"
-                s["books_per_market"][exact_key].add(row[4])
-                if row[5] == "STALE":
+                exact_key = f"{row['event_id']}|{row['player_id']}|{row['line']}|{row['side']}"
+                s["books_per_market"][exact_key].add(row["sportsbook"])
+                if row["validation_status"] == "STALE":
                     s["stale_count"] += 1
-                if row[6] in ("LOW", "NONE", "FAILED", "REJECTED"):
+                if row["mapping_confidence"] in ("LOW", "NONE", "FAILED", "REJECTED"):
                     s["mapping_failures"] += 1
 
             for rec in _mi_recs:
-                mt = rec[0] or "unknown"
-                tier = rec[1] or "RESEARCH_ONLY"
+                mt = rec["market_type"] or "unknown"
+                tier = rec["recommendation_tier"] or "RESEARCH_ONLY"
                 s = market_stats[mt]
                 if tier == "OFFICIAL_TRACKED":
                     s["official_count"] += 1
@@ -1126,13 +1126,13 @@ with tabs[5]:
                 mqs_display = []
                 for row in _mqs_rows:
                     from src.prop_config import get_market_by_ou_type as _gou, get_market_by_yn_type as _gyn
-                    cfg2 = _gou(row[0]) or _gyn(row[0])
+                    cfg2 = _gou(row["market_type"]) or _gyn(row["market_type"])
                     mqs_display.append({
-                        "Market": cfg2.display_name if cfg2 else row[0],
-                        "MQS": round(row[1], 2),
-                        "Model Score": round(row[2], 1) if row[2] else 0,
-                        "Books": row[3],
-                        "Tier": row[4] or "RESEARCH_ONLY",
+                        "Market": cfg2.display_name if cfg2 else row["market_type"],
+                        "MQS": round(row["market_quality_score"], 2),
+                        "Model Score": round(row["model_score"], 1) if row["model_score"] else 0,
+                        "Books": row["n_consensus_books"],
+                        "Tier": row["recommendation_tier"] or "RESEARCH_ONLY",
                     })
                 st.dataframe(pd.DataFrame(mqs_display), use_container_width=True, hide_index=True)
             else:
@@ -1536,11 +1536,13 @@ with tabs[8]:
             help=_reason,
         )
         _gate_cols[1].metric("Learning Version", ADAPTIVE_LEARNING_VERSION)
-        _graded_count = _conn_al.execute(
-            "SELECT COUNT(*) FROM historical_recommendations hr "
+        _graded_row = _conn_al.execute(
+            "SELECT COUNT(*) AS graded_count FROM historical_recommendations hr "
             "JOIN market_settlements ms ON hr.recommendation_id = ms.recommendation_id "
             "WHERE ms.settlement_status IS NOT NULL AND ms.settlement_status != 'UNRESOLVED'"
-        ).fetchone()[0]
+        ).fetchone()
+
+        _graded_count = _graded_row["graded_count"] if _graded_row else 0
         _gate_cols[2].metric("Graded Recs", _graded_count)
 
         if not _allowed:
