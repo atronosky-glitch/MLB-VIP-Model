@@ -204,17 +204,17 @@ def get_automation_status(conn: sqlite3.Connection) -> dict:
     ).fetchone()
 
     pending_count = conn.execute(
-        "SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'pending'"
-    ).fetchone()[0]
+        "SELECT COUNT(*) AS cnt FROM scheduled_jobs WHERE status = 'pending'"
+    ).fetchone()["cnt"]
 
     failed_count = conn.execute(
-        "SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'failed'"
-    ).fetchone()[0]
+        "SELECT COUNT(*) AS cnt FROM scheduled_jobs WHERE status = 'failed'"
+    ).fetchone()["cnt"]
 
     pending_pregame = conn.execute(
-        "SELECT COUNT(*) FROM scheduled_jobs "
+        "SELECT COUNT(*) AS cnt FROM scheduled_jobs "
         "WHERE job_type = 'pregame' AND status = 'pending'"
-    ).fetchone()[0]
+    ).fetchone()["cnt"]
 
     last_grading = conn.execute(
         "SELECT completed_at FROM scheduled_jobs "

@@ -161,8 +161,8 @@ def _check_database(db_path: str | Path) -> HealthCheck:
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
-            tables = {row[0] for row in cursor.fetchall()}
-            row_count = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+            tables = {row["name"] for row in cursor.fetchall()}
+            row_count = conn.execute("SELECT COUNT(*) AS cnt FROM sqlite_master").fetchone()["cnt"]
         finally:
             conn.close()
 
@@ -399,7 +399,7 @@ def _check_worker_heartbeat(db_path: str | Path) -> HealthCheck:
                 message="No worker heartbeat recorded (worker may not be running)",
             )
 
-        hb_str = row[0]
+        hb_str = row["last_heartbeat"]
         hb_time = datetime.fromisoformat(hb_str)
         if hb_time.tzinfo is None:
             hb_time = hb_time.replace(tzinfo=timezone.utc)
@@ -409,14 +409,14 @@ def _check_worker_heartbeat(db_path: str | Path) -> HealthCheck:
             return HealthCheck(
                 name="worker_heartbeat",
                 status="error",
-                message=f"Worker heartbeat stale: {age_seconds / 60:.0f}m ago (pid={row[1]})",
-                details={"age_seconds": round(age_seconds), "worker_pid": row[1]},
+                message=f"Worker heartbeat stale: {age_seconds / 60:.0f}m ago (pid={row['worker_pid']})",
+                details={"age_seconds": round(age_seconds), "worker_pid": row["worker_pid"]},
             )
         return HealthCheck(
             name="worker_heartbeat",
             status="ok",
-            message=f"Worker active: heartbeat {age_seconds:.0f}s ago (pid={row[1]})",
-            details={"age_seconds": round(age_seconds), "worker_pid": row[1]},
+            message=f"Worker active: heartbeat {age_seconds:.0f}s ago (pid={row['worker_pid']})",
+            details={"age_seconds": round(age_seconds), "worker_pid": row["worker_pid"]},
         )
     except sqlite3.Error as e:
         return HealthCheck(

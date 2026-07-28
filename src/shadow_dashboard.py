@@ -133,9 +133,9 @@ def _fill_recommendations(conn: sqlite3.Connection, dash: ShadowDashboard) -> No
             WHERE observation_timestamp LIKE ?
         """, (f"{today}%",)).fetchone()
         if row:
-            dash.total_recommendations = row[0] or 0
-            dash.actionable_count = row[1] or 0
-            dash.avg_confidence = round(row[2] or 0.0, 2)
+            dash.total_recommendations = row["total"] or 0
+            dash.actionable_count = row["actionable"] or 0
+            dash.avg_confidence = round(row["avg_ev"] or 0.0, 2)
     except Exception:
         pass
 
@@ -147,7 +147,7 @@ def _fill_recommendations(conn: sqlite3.Connection, dash: ShadowDashboard) -> No
             WHERE observation_timestamp LIKE ?
             GROUP BY sportsbook ORDER BY cnt DESC
         """, (f"{today}%",)).fetchall()
-        dash.by_sportsbook = {r[0]: r[1] for r in rows}
+        dash.by_sportsbook = {r["sportsbook"]: r["cnt"] for r in rows}
     except Exception:
         pass
 
@@ -159,7 +159,7 @@ def _fill_recommendations(conn: sqlite3.Connection, dash: ShadowDashboard) -> No
             WHERE observation_timestamp LIKE ?
             GROUP BY market_type ORDER BY cnt DESC
         """, (f"{today}%",)).fetchall()
-        dash.by_market = {r[0]: r[1] for r in rows}
+        dash.by_market = {r["market_type"]: r["cnt"] for r in rows}
     except Exception:
         pass
 
@@ -169,11 +169,11 @@ def _fill_recommendations(conn: sqlite3.Connection, dash: ShadowDashboard) -> No
     for name, (lo, hi) in buckets.items():
         try:
             row = conn.execute("""
-                SELECT COUNT(*) FROM historical_recommendations
+                SELECT COUNT(*) AS cnt FROM historical_recommendations
                 WHERE observation_timestamp LIKE ?
                   AND ev_pct >= ? AND ev_pct < ?
             """, (f"{today}%", lo, hi)).fetchone()
-            dash.by_confidence_bucket[name] = row[0] if row else 0
+            dash.by_confidence_bucket[name] = row["cnt"] if row else 0
         except Exception:
             pass
 
@@ -188,7 +188,9 @@ def _fill_delivery(conn: sqlite3.Connection, dash: ShadowDashboard) -> None:
             WHERE timestamp LIKE ?
             GROUP BY status
         """, (f"{today}%",)).fetchall()
-        for status, cnt in rows:
+        for r in rows:
+            status = r["status"]
+            cnt = r["cnt"]
             if status == "blocked":
                 dash.delivery_blocked_count += cnt
             elif status in ("sent", "delivered"):
@@ -207,7 +209,9 @@ def _fill_data_quality(conn: sqlite3.Connection, dash: ShadowDashboard) -> None:
             WHERE timestamp LIKE ?
             GROUP BY severity
         """, (f"{today}%",)).fetchall()
-        for sev, cnt in rows:
+        for r in rows:
+            sev = r["severity"]
+            cnt = r["cnt"]
             if sev == "CRITICAL":
                 dash.critical_findings = cnt
             elif sev == "WARNING":
@@ -229,8 +233,8 @@ def _fill_api_usage(conn: sqlite3.Connection, dash: ShadowDashboard) -> None:
             WHERE request_timestamp LIKE ?
         """, (f"{today}%",)).fetchone()
         if row:
-            dash.api_live_requests = row[0] or 0
-            dash.api_cache_hits = row[1] or 0
+            dash.api_live_requests = row["live"] or 0
+            dash.api_cache_hits = row["cached"] or 0
     except Exception:
         pass
 
