@@ -401,8 +401,9 @@ def run_worker_persistent(config) -> None:
     logger.info("Starting persistent worker (pid=%d, tz=%s)", os.getpid(), TZ_NAME)
 
     conn = get_connection(config.database_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    if conn.dialect == "sqlite":
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
 
     _running = True
 
@@ -488,8 +489,9 @@ def run_worker_once(config) -> None:
     logger.info("Running worker once (one-shot mode)")
 
     conn = get_connection(config.database_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    if conn.dialect == "sqlite":
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
 
     try:
         _write_heartbeat(conn)
@@ -514,8 +516,9 @@ def run_specific_job(job_type: str, config) -> None:
     logger.info("Running specific job: %s", job_type)
 
     conn = get_connection(config.database_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    if conn.dialect == "sqlite":
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
 
     try:
         result = _execute_job(job_type, conn, config)
