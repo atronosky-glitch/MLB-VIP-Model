@@ -794,14 +794,15 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
 
             # Validation: check for live-game recommendations
             if saved > 0:
-                live_check = conn.execute(
-                    """SELECT COUNT(*) FROM historical_recommendations
+                row = conn.execute(
+                    """SELECT COUNT(*) AS cnt FROM historical_recommendations
                        WHERE scan_run_id = ?
                        AND event_status IN ('live','inprogress','in_progress',
                            'started','in-progress','final','finished',
                            'completed','closed','ended')""",
                     (state.scan_run_id,),
-                ).fetchone()[0]
+                ).fetchone()
+                live_check = dict(row).get("cnt", 0) if row else 0
                 if live_check > 0:
                     state.has_live_game_recs = True
                     state.errors.append(
