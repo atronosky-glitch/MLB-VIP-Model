@@ -193,13 +193,13 @@ def get_automation_status(conn: sqlite3.Connection) -> dict:
     """Get summary status of automation system."""
     last_morning = conn.execute(
         "SELECT completed_at FROM scheduled_jobs "
-        "WHERE job_type = 'morning' AND status = 'completed' "
+        "WHERE job_type = 'morning-run' AND status = 'completed' "
         "ORDER BY completed_at DESC LIMIT 1"
     ).fetchone()
 
     next_morning = conn.execute(
         "SELECT scheduled_at FROM scheduled_jobs "
-        "WHERE job_type = 'morning' AND status = 'pending' "
+        "WHERE job_type = 'morning-run' AND status = 'pending' "
         "ORDER BY scheduled_at ASC LIMIT 1"
     ).fetchone()
 
