@@ -338,15 +338,32 @@ def _process_pending_jobs(conn: sqlite3.Connection, config) -> int:
 
             result = _execute_job(job_type, conn, config)
 
+            ts = datetime.now(timezone.utc).isoformat()
             if result.get("status") == "success":
-                update_job_status(conn, job_id, "completed")
+                conn.execute(
+                    "UPDATE scheduled_jobs SET status = 'completed', completed_at = ? WHERE job_id = ?",
+                    (ts, job_id),
+                )
+                conn.commit()
             else:
-                update_job_status(conn, job_id, "failed", error_message=str(result))
+                conn.execute(
+                    "UPDATE scheduled_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE job_id = ?",
+                    (str(result), ts, job_id),
+                )
+                conn.commit()
             executed += 1
 
         except Exception as e:
             logger.error("Job %s failed: %s", job_id[:8], e)
-            update_job_status(conn, job_id, "failed", error_message=str(e))
+            ts = datetime.now(timezone.utc).isoformat()
+            try:
+                conn.execute(
+                    "UPDATE scheduled_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE job_id = ?",
+                    (str(e), ts, job_id),
+                )
+                conn.commit()
+            except Exception:
+                pass
         finally:
             _release_lock(conn, lock_key)
 
