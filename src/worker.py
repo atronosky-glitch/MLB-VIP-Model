@@ -181,7 +181,7 @@ def _recover_stale_jobs(conn: sqlite3.Connection) -> int:
 def _run_morning_scan(config) -> dict:
     """Execute the full morning pipeline."""
     from src.daily_pipeline import run_pipeline, PipelineConfig
-    pipeline_config = PipelineConfig(output_dir=config.output_dir)
+    pipeline_config = PipelineConfig(output_dir=config.output_dir, live=True)
     exit_code = run_pipeline(pipeline_config)
     return {"status": "success" if exit_code == 0 else "failed", "exit_code": exit_code}
 
