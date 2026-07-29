@@ -52,15 +52,15 @@ def _convert_sql(sql: str, dialect: str) -> str:
     )
 
     # ── Timestamp functions ───────────────────────────────────────
-    # datetime('now')  → NOW()
-    sql = re.sub(r"datetime\('now'\)", "NOW()", sql)
-    # datetime('now', '+N hours') → NOW() + interval 'N hours'
+    # datetime('now')  → NOW()::text  (all columns are TEXT, not timestamptz)
+    sql = re.sub(r"datetime\('now'\)", "NOW()::text", sql)
+    # datetime('now', '+N hours') → (NOW() + interval 'N hours')::text
     def _replace_datetime_offset(m):
         inner = m.group(0)
         # Extract the offset part: datetime('now', '+3 hours') → '+3 hours'
         prefix = "datetime('now', "
         offset = inner[len(prefix):-1]  # strip prefix and trailing )
-        return f"NOW() + interval {offset}"
+        return f"(NOW() + interval {offset})::text"
 
     sql = re.sub(
         r"datetime\('now',\s*'[+-]?\d+\s+(second|minute|hour|day|month|year)s?'\)",
