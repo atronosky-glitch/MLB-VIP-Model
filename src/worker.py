@@ -180,14 +180,15 @@ def _recover_stale_jobs(conn: sqlite3.Connection) -> int:
 
 def _run_morning_scan(config) -> dict:
     """Execute the full morning pipeline."""
-    from src.daily_pipeline import run_pipeline
-    result = run_pipeline(
+    from src.daily_pipeline import run_pipeline, PipelineConfig
+    pipeline_config = PipelineConfig(
         api_key=config.api_key,
         db_path=config.database_path,
         cache_path=config.cache_path,
         output_dir=config.output_dir,
     )
-    return {"status": "success" if result.get("exit_code", 1) == 0 else "failed", "result": result}
+    exit_code = run_pipeline(pipeline_config)
+    return {"status": "success" if exit_code == 0 else "failed", "exit_code": exit_code}
 
 
 def _run_pregame_checks(conn: sqlite3.Connection, config) -> dict:
