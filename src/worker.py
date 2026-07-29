@@ -98,7 +98,7 @@ def _acquire_lock(conn: sqlite3.Connection, job_type: str) -> str | None:
         return None
 
 
-def _release_lock(conn: sqlite3.Connection, lock_key: str) -> None:
+def _release_lock(conn, lock_key: str) -> None:
     """Release a job lock by marking it completed."""
     try:
         conn.execute(
@@ -107,14 +107,14 @@ def _release_lock(conn: sqlite3.Connection, lock_key: str) -> None:
             (lock_key,),
         )
         conn.commit()
-    except sqlite3.Error:
+    except Exception:
         pass
 
 
 # ── Heartbeat ─────────────────────────────────────────────────────
 
 
-def _write_heartbeat(conn: sqlite3.Connection) -> None:
+def _write_heartbeat(conn) -> None:
     """Write a worker heartbeat to the database."""
     try:
         conn.execute("""
@@ -125,24 +125,34 @@ def _write_heartbeat(conn: sqlite3.Connection) -> None:
                 uptime_seconds REAL
             )
         """)
-        conn.execute("""
-            INSERT OR REPLACE INTO worker_heartbeat (id, last_heartbeat, worker_pid)
-            VALUES (1, ?, ?)
-        """, (datetime.now(timezone.utc).isoformat(), os.getpid()))
+        ts = datetime.now(timezone.utc).isoformat()
+        pid = os.getpid()
+        if conn.dialect == "postgresql":
+            conn.execute("""
+                INSERT INTO worker_heartbeat (id, last_heartbeat, worker_pid)
+                VALUES (1, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET last_heartbeat = EXCLUDED.last_heartbeat,
+                                                worker_pid = EXCLUDED.worker_pid
+            """, (ts, pid))
+        else:
+            conn.execute("""
+                INSERT OR REPLACE INTO worker_heartbeat (id, last_heartbeat, worker_pid)
+                VALUES (1, ?, ?)
+            """, (ts, pid))
         conn.commit()
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.warning("Failed to write heartbeat: %s", e)
 
 
-def _read_heartbeat(conn: sqlite3.Connection) -> dict | None:
+def _read_heartbeat(conn) -> dict | None:
     """Read the last worker heartbeat."""
     try:
         row = conn.execute(
             "SELECT last_heartbeat, worker_pid FROM worker_heartbeat WHERE id = 1"
         ).fetchone()
         if row:
-            return {"last_heartbeat": row[0], "worker_pid": row[1]}
-    except sqlite3.Error:
+            return {"last_heartbeat": row["last_heartbeat"], "worker_pid": row["worker_pid"]}
+    except Exception:
         pass
     return None
 
