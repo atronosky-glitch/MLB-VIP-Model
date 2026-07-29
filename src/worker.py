@@ -408,7 +408,7 @@ def _check_and_schedule_morning_run(conn: sqlite3.Connection) -> None:
     existing = conn.execute(
         "SELECT 1 FROM scheduled_jobs "
         "WHERE job_type = 'morning-run' AND scheduled_at LIKE ? "
-        "AND status IN ('pending', 'running', 'completed')",
+        "AND status IN ('pending', 'running', 'completed', 'failed')",
         (f"{today}%",),
     ).fetchone()
     if not existing:
