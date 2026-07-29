@@ -2,6 +2,63 @@
 
 > Future OpenCode session: read `AGENTS.md`, `PROJECT_STATUS.md`, `TODO.md`, and this file before modifying code.
 
+## Session: 2026-07-28 — Phase 17C: Market rationalization, variable staking, pipeline indicator
+
+### What was done
+
+Completed Phase 17C — rationalized MARKET_REGISTRY from 21 to 8 high-signal markets, implemented variable Kelly staking, added pipeline completion indicator, fixed worker crash on Render, and cleaned up PostgreSQL.
+
+**Market rationalization:**
+- `src/prop_config.py`: MARKET_REGISTRY cut from 21 to 8 keepers. Dropped: pitching_outs, pitching_earnedRuns, pitching_pitchesThrown, batting_hits+runs+rbi, batting_RBI, batting_runs, batting_runs+rbi, batting_singles, batting_doubles, batting_triples, batting_walks, batting_strikeouts, batting_firstHomeRun (O/U and YN variants). `PITCHER_WALKS_ALLOWED` set to O/U-only (`market_type_yn=None, supports_yn=False`). `BATTER_TOTAL_BASES` set to O/U-only.
+- All dropped-market assertions removed from 5 test files: `tests/test_pitcher_outs.py` (file deleted), `test_phase8_markets.py`, `test_player_prop_scanner.py`, `test_player_props.py`, `test_additional_props.py`, `test_daily_pipeline.py`.
+
+**Variable Kelly staking:**
+- `compute_variable_stake()` = 25% fractional Kelly × score multiplier [0.25, 2.0] units; 1 unit = 1% bankroll.
+
+**Pipeline completion indicator:**
+- `src/daily_pipeline.py`: `_write_completion_flag()` writes `database/.pipeline_completed` JSON after stage 9.
+- `src/control_panel.py`: Reads `.pipeline_completed` and shows green `st.success()` banner above Pipeline section.
+
+**Worker crash fix:**
+- `src/worker.py:42`: Added `from database.db_manager import get_connection` (missing import caused Render crash loop). Pushed to GitHub as `b3e7bc2`.
+
+**Render PostgreSQL cleanup:**
+- Used `psql` in Render shell to delete 64 dropped-market rows from `historical_recommendations` and 2 linked rows from `official_picks`.
+- `scripts/render_cleanup.py` pushed for future use (`c7fad73`).
+
+### Files changed
+
+1. `src/prop_config.py` — MARKET_REGISTRY: 8 keepers, YN disabled for walks_allowed/total_bases
+2. `src/worker.py` — Added `get_connection` import (line 42)
+3. `src/daily_pipeline.py` — Added `_write_completion_flag()`
+4. `src/control_panel.py` — Reads `.pipeline_completed` flag for green banner
+5. `scripts/render_cleanup.py` — NEW: clean up dropped-market picks from PostgreSQL
+6. `scripts/cleanup_dropped_markets.py` — NEW: SQLite variant
+7. `tests/test_pitcher_outs.py` — DELETED (dropped market)
+8. `tests/test_phase8_markets.py` — Stripped dropped-market assertions
+9. `tests/test_player_prop_scanner.py` — Stripped dropped-market assertions
+10. `tests/test_player_props.py` — Stripped dropped-market assertions
+11. `tests/test_additional_props.py` — Stripped dropped-market assertions
+12. `tests/test_daily_pipeline.py` — Stripped dropped-market assertions
+
+### Test results
+
+- **1297 passed, 1 pre-existing flaky failure** (`test_schedule_pregame_checks`)
+- All changes related to 8-market rationalization pass
+
+### Known issues
+
+- 75 tests fail on Render container due to environment differences (env vars like `MLB_LOG_LEVEL=INFO` override test configs, PostgreSQL `sqlite_master` query fails for health checks). These all pass locally with SQLite.
+- `test_schedule_pregame_checks` is timing-sensitive flaky test, pre-existing.
+
+### Next steps
+
+1. Wait for rate-limit reset on SportsGameOdds API
+2. Run morning pipeline on Render: `python -m src.daily_pipeline manual`
+3. Verify dashboard shows picks from only the 8 keeper markets
+
+---
+
 ## Session: 2026-07-27 — Phase 17B: PostgreSQL Migration for Production
 
 ### What was done

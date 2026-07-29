@@ -378,6 +378,18 @@ Entries are dated. New entries are appended.
 - **Reason**: No single metric captures market quality. Book count alone ignores freshness or diversity. A composite score provides a single rankable metric while preserving component-level diagnostics.
 - **Consequence**: MQS is computed during pipeline freeze and stored per recommendation. Dashboard shows MQS in Market Intelligence tab with per-market averages.
 
+## Market rationalization: 21 → 8 high-signal markets (2026-07-28)
+
+- **Decision**: Reduced MARKET_REGISTRY from 21 to 8 markets. Kept: pitcher_strikeouts, pitcher_hits_allowed, pitcher_walks_allowed (O/U-only), pitcher_wins (YN-only), batter_hits, batter_total_bases (O/U-only), batter_home_runs, batter_stolen_bases. Dropped: pitcher_outs, pitcher_earned_runs, pitcher_pitches_thrown, batter_hits_runs_rbi, batter_rbi, batter_runs, batter_runs_rbi, batter_singles, batter_doubles, batter_triples, batter_walks, batter_strikeouts, batter_first_hr (all 13 O/U + YN variants).
+- **Reason**: SportsGameOdds free tier limit (2,500 objects/month, 10 req/min, 10 min update freq) made 21 markets unsustainable. The 8 keepers were selected for highest signal-to-noise ratio based on historical grading data, cross-market coverage (pitching + batting), and avoidance of composite/hard-to-grade props.
+- **Consequence**: 13 markets lose coverage entirely. API budget concentrated on 8 markets where model accuracy is highest. Any dropped market can be re-enabled by adding its MarketConfig entry back.
+
+## Variable Kelly staking (2026-07-28)
+
+- **Decision**: Stake = 25% fractional Kelly × score multiplier [0.25, 2.0] units; 1 unit = 1% bankroll.
+- **Reason**: Full Kelly is too aggressive for correlated props. 25% fractional Kelly provides bankroll safety while allowing higher-confidence picks to scale.
+- **Consequence**: Stake size varies by recommendation score. Maximum stake is 2% bankroll (2 units × 1%). Dashboard and reports show computed stake alongside EV and score.
+
 ## _load_recs uses try/except fallback for column resilience
 
 - **Decision**: The dashboard's `_load_recs()` function tries an explicit column list first, then falls back to `SELECT *` on OperationalError.

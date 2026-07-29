@@ -291,6 +291,7 @@ def db_conn():
             outcome TEXT NOT NULL DEFAULT 'pending',
             graded_at TEXT,
             profit_units REAL,
+            risk_units REAL,
             final_stat_value REAL,
             grader_version TEXT
         );

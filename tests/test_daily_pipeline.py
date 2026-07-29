@@ -364,8 +364,8 @@ class TestCLI:
 
     def test_market_choices(self):
         parser = build_parser()
-        for market in ["strikeouts", "outs", "hits_allowed",
-                       "walks_allowed", "earned_runs", "all"]:
+        for market in ["strikeouts", "hits_allowed",
+                       "walks_allowed", "home_runs", "all"]:
             args = parser.parse_args(["--market", market])
             assert args.market == market
 

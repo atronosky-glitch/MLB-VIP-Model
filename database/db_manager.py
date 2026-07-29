@@ -566,6 +566,13 @@ def init_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_op_selected ON official_picks(selected_at)"
     )
 
+    # Phase 17C: Variable staking - add risk_units to official_picks
+    for col, typedef in [("risk_units", "REAL")]:
+        try:
+            conn.execute(f"ALTER TABLE official_picks ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass
+
     # Phase 16: Odds observations (append-only)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS pick_observations (

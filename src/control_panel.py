@@ -566,6 +566,17 @@ with tabs[0]:
 
     st.divider()
 
+    # Pipeline completion indicator
+    _pipeline_flag = Path(__file__).resolve().parent.parent / "database" / ".pipeline_completed"
+    if _pipeline_flag.exists():
+        try:
+            _flag_data = json.loads(_pipeline_flag.read_text())
+            _ts = _flag_data.get("timestamp", "unknown")[:19].replace("T", " ")
+            _n = _flag_data.get("n_recommendations", 0)
+            st.success(f"Pipeline completed at {_ts} — {_n} recommendation(s) saved")
+        except Exception:
+            pass
+
     # Pipeline run
     st.subheader("Pipeline")
     can_run = True
@@ -665,7 +676,7 @@ with tabs[0]:
 # ==================================================================
 with tabs[1]:
     st.subheader("Official Picks (Frozen Snapshots)")
-    st.caption("Official picks meet all qualification thresholds and are frozen as immutable records. Flat 1.0 unit stake.")
+    st.caption("Official picks meet all qualification thresholds and are frozen as immutable records. Variable Kelly staking.")
 
     try:
         import pandas as pd
@@ -976,7 +987,7 @@ with tabs[3]:
 # ==================================================================
 with tabs[4]:
     st.subheader("Tracker & Performance")
-    st.caption("Flat 1.0 unit stake. P/L in units.")
+    st.caption("Variable Kelly staking (25% fractional Kelly × score multiplier). P/L in units.")
 
     try:
         import pandas as pd
@@ -1000,6 +1011,54 @@ with tabs[4]:
         b_cols[0].metric("Win Rate", f"{metrics.win_rate:.1%}")
         b_cols[1].metric("ROI", f"{metrics.roi:.1%}")
         b_cols[2].metric("Avg EV", f"{metrics.avg_ev:.2f}%")
+
+        st.divider()
+
+        # ── Cumulative PnL Chart ──
+        try:
+            conn_chart = get_connection(str(db_path))
+            try:
+                rows = conn_chart.execute("""
+                    SELECT op.selected_at, op.profit_units
+                    FROM official_picks op
+                    WHERE op.outcome IN ('win', 'loss')
+                    ORDER BY op.selected_at ASC
+                """).fetchall()
+            finally:
+                conn_chart.close()
+            if rows:
+                df_pnl = pd.DataFrame({
+                    "Date": [r["selected_at"][:10] for r in rows],
+                    "Profit": [r["profit_units"] or 0 for r in rows],
+                })
+                df_pnl["Cumulative"] = df_pnl["Profit"].cumsum()
+                st.subheader("Cumulative Profit / Loss")
+                st.line_chart(df_pnl.set_index("Date")["Cumulative"])
+        except Exception as e:
+            st.caption(f"PnL chart unavailable: {e}")
+
+        # ── EV vs Actual Profit ──
+        try:
+            conn_ev = get_connection(str(db_path))
+            try:
+                ev_rows = conn_ev.execute("""
+                    SELECT op.profit_units, hr.ev_pct
+                    FROM official_picks op
+                    JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
+                    WHERE op.outcome IN ('win', 'loss')
+                      AND hr.ev_pct IS NOT NULL
+                """).fetchall()
+            finally:
+                conn_ev.close()
+            if ev_rows and len(ev_rows) >= 3:
+                df_ev = pd.DataFrame({
+                    "EV%": [r["ev_pct"] for r in ev_rows],
+                    "Profit (u)": [r["profit_units"] or 0 for r in ev_rows],
+                })
+                st.subheader("EV% vs Profit")
+                st.scatter_chart(df_ev, x="EV%", y="Profit (u)")
+        except Exception as e:
+            st.caption(f"EV chart unavailable: {e}")
 
         st.divider()
 

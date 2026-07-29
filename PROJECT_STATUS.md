@@ -2,6 +2,15 @@
 
 ## Completed
 
+- **Phase 17C: Market rationalization** — MARKET_REGISTRY cut from 21 to 8 high-signal markets:
+  - **Kept (8)**: pitcher_strikeouts, pitcher_hits_allowed, pitcher_walks_allowed (O/U-only), pitcher_wins (YN-only), batter_hits, batter_total_bases (O/U-only), batter_home_runs, batter_stolen_bases
+  - **Dropped (13)**: pitcher_outs, pitcher_earned_runs, pitcher_pitches_thrown, batter_hits_runs_rbi, batter_rbi, batter_runs, batter_runs_rbi, batter_singles, batter_doubles, batter_triples, batter_walks, batter_strikeouts, batter_first_hr
+- **Variable Kelly staking** — `compute_variable_stake()` = 25% fractional Kelly × score multiplier [0.25, 2.0] units; 1 unit = 1% bankroll
+- **Pipeline completion indicator** — `_write_completion_flag()` in `daily_pipeline.py` writes `.pipeline_completed` JSON; dashboard reads it for green success banner
+- **Worker crash fix** — added `from database.db_manager import get_connection` to `src/worker.py:42` (missing import caused Render crash loop)
+- **Render PostgreSQL cleanup** — deleted 64 dropped-market `historical_recommendations` + 2 `official_picks` via psql
+- **Cleanup script** — `scripts/render_cleanup.py` for future use
+
 - SportsGameOdds API v2 client (`src/api_client.py`) with local JSON caching
 - MLB event ingestion (`src/odds_parser.py`)
 - SQLite storage (`database/db_manager.py`) — games, odds, raw_responses, data_pulls, bet_results, player_prop_odds, odds_mapping_audit, player_prop_mapping_audit, scan_runs, ingestion_log
@@ -28,71 +37,56 @@
 
 ## Current test status
 
-Full suite: **1389/1389 passing, 0 skipped, 0 failed** (last full run 2026-07-27)
+Full suite: **1297 passing, 1 flaky failure** (`test_schedule_pregame_checks` — timing-sensitive, pre-existing)
 
 Breakdown:
-- `tests/test_stage1.py` — 7 tests (project structure, env, DB init, games, raw responses, API structure)
-- `tests/test_stage2.py` — 15 tests (odd ID parsing, event odds, spreads, totals, alt lines, bulk insert, price sanity, required columns)
-- `tests/test_stage3.py` — 40 tests (conversions, vig, EV, consensus, analysis, CLV, slow-book, validation filtering, side analysis, approved statuses)
-- `tests/test_participant_swap.py` — 27 tests (mapping, validation, BetMGM flagging, DB round-trip, exclusion)
-- `tests/test_player_props.py` — 92 tests (parsing, grouping, thresholds, exclusion, LOO, pipeline, config override, regression, YN parsing/analysis, decimal_odds_advantage unit tests, market registry regression tests)
-- `tests/test_pitcher_outs.py` — 49 tests (outs parsing, alt lines, missing side, insufficient books, duplicates, malformed line, invalid mapping, positive/negative EV, freshness, cross-market isolation, regression, registry, field completeness, scanner grouping)
-- `tests/test_additional_props.py` — 69 tests (hits allowed, walks allowed, earned runs O/U + YN parsing/analysis, cross-market isolation, stale cache, registry completeness, regression)
-- `tests/test_strikeout_scanner.py` — 25 tests (backward-compat wrapper, filtering, ranking, dedup, freshness, validation, output, CLI)
-- `tests/test_player_prop_scanner.py` — 87 tests (market/form resolution, filtering, backward compat, cross-market, YN output, freshness, output structure, single implementation proof)
-- `tests/test_phase5_integrity.py` — 21 tests (run tracking, config validation, error persistence, DB schema, --min-ev YN rejection, --require-fresh, game filtering, no-data hint)
-- `tests/test_phase6_grading.py` — 77 tests (recommendation persistence, fingerprint, O/U grading, YN grading, units, CLV, buckets, settlement, manual overrides, performance summary, database schema, player stat results, event results, CLV storage, migration safety)
-- `tests/test_daily_pipeline.py` — 74 tests (CLI, config, state, exit codes, stages, reports, dry run, API failure, config failure, empty slate, summary, timings, full pipeline dry-run)
-- `tests/test_phase8_markets.py` — 99 tests (registry, O/U dispatch, YN dispatch, CLI lookup, type lookup, parser, name extraction, cross-market isolation, supports flags, group keys, validation, pitcher regression, edge cases)
-- `tests/test_phase9_intelligence.py` — 41 tests (CLV capture, analytics queries, confidence scoring, calibration, bookmaker scores, report generation, bucket calculations, compute units)
-- `tests/test_phase10_config.py` — 22 tests (production config, env vars, validation, secrets, load/save)
-- `tests/test_phase10_formatting.py` — 25 tests (structured logging, message formatting, chunking, confidence labels)
-- `tests/test_phase10_health.py` — 20 tests (health checks, report structure, DB/disk/freshness checks)
-- `tests/test_phase10_backup.py` — 12 tests (backup, restore, compression, pruning, listing)
-- `tests/test_phase10_discord.py` — 11 tests (webhook delivery, retry, rate limiting, filtering)
-- `tests/test_phase10_scheduler.py` — 13 tests (cron, Windows, GitHub Actions, cloud config)
-- `tests/test_phase10_jobs.py` — 13 tests (job orchestration, handlers, persistence, CLI)
-- `tests/test_phase10_sheets.py` — 13 tests (Sheets export, fingerprints, early returns)
-- `tests/test_phase11_shadow.py` — 55 tests (shadow mode, API usage, data quality, audit trail)
-- `tests/test_phase11_readiness.py` — 47 tests (live readiness, canary, delivery gate, dashboard, promotion, checklist)
-- `tests/test_phase12_control_panel.py` — 67 tests (control panel, launcher, setup, Streamlit config, pipeline states, recommendation table, CSV export, backup, advanced controls)
-- `tests/test_phase13_dashboard.py` — 47 tests (live-game filtering, matchup builder, latest-run filtering, game detail columns, pipeline state fields, run summary, control panel helpers, live-game warnings, source structure)
-- `tests/test_phase14_scoring.py` — 50 tests (model score computation, weighted components, score caps, versioning, historical scores, dashboard integration, EV display fix, confidence unit fix, analytics fix)
-- `tests/test_phase15_official_picks.py` — 15 tests (qualification config, tier classification, OU/YN rules, edge metric tracking, pipeline integration, tier constants, immutability)
-- `tests/test_phase16_comprehensive.py` — 55 tests (market quality score, 3-tier classification, score diagnostics, market intelligence, qualification, discovery, config, grading, observations, automation, DB schema, pipeline, export validation)
-- `tests/test_phase16b_adaptive_learning.py` — 79 tests (grade analysis, score calibration, learning recommendations, champion/challenger, config versioning, safety rules, DB storage, dashboard integration)
-- `tests/test_phase17_cloud.py` — 56 tests (environment loading, DB path, scheduler, worker heartbeat, duplicate-job prevention, timezone scheduling, persistent storage, secret redaction, backup/restore, web/worker separation, health checks, stale job recovery)
+- `tests/test_stage1.py` — 7 tests
+- `tests/test_stage2.py` — 15 tests
+- `tests/test_stage3.py` — 40 tests
+- `tests/test_participant_swap.py` — 27 tests
+- `tests/test_player_props.py` — 92 tests
+- `tests/test_additional_props.py` — 69 tests
+- `tests/test_strikeout_scanner.py` — 25 tests
+- `tests/test_player_prop_scanner.py` — 87 tests
+- `tests/test_phase5_integrity.py` — 21 tests
+- `tests/test_phase6_grading.py` — 77 tests
+- `tests/test_daily_pipeline.py` — 74 tests
+- `tests/test_phase8_markets.py` — 99 tests
+- `tests/test_phase9_intelligence.py` — 41 tests
+- `tests/test_phase10_config.py` — 22 tests
+- `tests/test_phase10_formatting.py` — 25 tests
+- `tests/test_phase10_health.py` — 20 tests
+- `tests/test_phase10_backup.py` — 12 tests
+- `tests/test_phase10_discord.py` — 11 tests
+- `tests/test_phase10_scheduler.py` — 13 tests
+- `tests/test_phase10_jobs.py` — 13 tests
+- `tests/test_phase10_sheets.py` — 13 tests
+- `tests/test_phase11_shadow.py` — 55 tests
+- `tests/test_phase11_readiness.py` — 47 tests
+- `tests/test_phase12_control_panel.py` — 67 tests
+- `tests/test_phase13_dashboard.py` — 47 tests
+- `tests/test_phase14_scoring.py` — 50 tests
+- `tests/test_phase15_official_picks.py` — 15 tests
+- `tests/test_phase16_comprehensive.py` — 55 tests
+- `tests/test_phase16b_adaptive_learning.py` — 79 tests
+- `tests/test_phase17_cloud.py` — 56 tests
 
 All tests are **deterministic** — none depend on live API responses or mutable cache data.
-Cache-dependent fixtures were replaced with synthetic inline fixtures in `tests/fixture_data.py`.
 
 ## Current supported markets
 
-### Pitcher markets (implemented Phase 1-3)
-- MLB pitcher strikeouts Over/Under (full scanner pipeline)
-- MLB pitcher strikeouts Yes/No (single-sided price comparison, full scanner pipeline) — **approved for regular use**
-- MLB pitcher outs recorded Over/Under (full scanner pipeline via generic O/U engine)
-- MLB pitcher hits allowed Over/Under (generic O/U engine, no YN variant)
-- MLB pitcher walks allowed Over/Under (generic O/U engine) + Yes/No (single-sided price comparison)
-- MLB pitcher earned runs Over/Under (generic O/U engine) + Yes/No (single-sided price comparison)
-- MLB pitcher pitches thrown Over/Under (generic O/U engine, no YN variant) — **Phase 8, low API coverage**
-- MLB pitching win Yes/No (single-sided price comparison, no O/U) — **Phase 8, low API coverage**
-
-### Batter markets (implemented Phase 8)
+### Active markets (8 high-signal keepers after Phase 17C rationalization)
+- MLB pitcher strikeouts Over/Under + Yes/No
+- MLB pitcher hits allowed Over/Under (O/U only)
+- MLB pitcher walks allowed Over/Under (O/U only)
+- MLB pitcher win Yes/No (YN only)
 - MLB batter hits Over/Under + Yes/No
-- MLB total bases Over/Under + Yes/No
-- MLB hits + runs + RBI Over/Under + Yes/No
-- MLB home runs Over/Under + Yes/No
-- MLB runs batted in (RBI) Over/Under + Yes/No
-- MLB runs + RBI Over/Under + Yes/No
-- MLB singles Over/Under + Yes/No
-- MLB doubles Over/Under + Yes/No
-- MLB batter walks Over/Under + Yes/No
-- MLB stolen bases Over/Under + Yes/No
-- MLB triples Over/Under + Yes/No
-- MLB batter strikeouts Over/Under + Yes/No
-- MLB batter runs Over/Under + Yes/No — **Phase 16A**
-- MLB first home run Yes/No (no O/U) — **low API coverage**
+- MLB batter total bases Over/Under (O/U only)
+- MLB batter home runs Over/Under + Yes/No
+- MLB batter stolen bases Over/Under + Yes/No
+
+### Dropped markets (Phase 17C — removed due to free-tier API limits)
+- pitcher_outs, pitcher_earned_runs, pitcher_pitches_thrown, batter_hits_runs_rbi, batter_rbi, batter_runs, batter_runs_rbi, batter_singles, batter_doubles, batter_triples, batter_walks, batter_strikeouts, batter_first_hr (O/U + YN variants) — can be re-enabled by adding MarketConfig entries back
 
 ## Unscheduled markets (not implemented)
 - Team totals (displayed but not EV-analysed in main.py)
@@ -112,7 +106,7 @@ Cache-dependent fixtures were replaced with synthetic inline fixtures in `tests/
 
 ## Current stage
 
-**Completed**: Phase 17B — PostgreSQL Migration for Production. 1389/1389 passing.
+**Completed**: Phase 17C — Market Rationalization, Variable Kelly Staking, Pipeline Completion Indicator. 1297 passed (1 pre-existing flaky).
 
 Phase 17B deliverables:
 - **Database Connection Layer** (`database/connection.py`): Dialect-aware `DB` wrapper class, auto SQL conversion (`?`→`%s`, `datetime('now')`→`NOW()`, `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, `AUTOINCREMENT`→`SERIAL`, `sqlite_master`→`information_schema`, `GROUP_CONCAT`→`STRING_AGG`), uniform `DBResult` cursor
@@ -186,6 +180,6 @@ Phase 11 deliverables:
 
 ## Next stage
 
+- **Run morning pipeline on Render** to verify 8-market picks land on dashboard
 - **Alt-line scanning** (currently preserved but not included in scanner output)
-- **Cloud deployment**: serverless daily run (AWS Lambda, GitHub Actions)
 - **Website**: market visualisation dashboard

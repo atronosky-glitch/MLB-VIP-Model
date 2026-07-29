@@ -1,14 +1,15 @@
 """Official Pick Tracker and Performance Metrics.
 
-Flat staking: 1.0 unit risk per official pick.
+Variable Kelly-based staking: 25% fractional Kelly scaled by model score.
 Tracks win/loss/push/void with profit calculations.
 Provides performance metrics and breakdowns.
 """
 
 from __future__ import annotations
 
+import math
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from src.official_picks import TIER_OFFICIAL
@@ -16,24 +17,53 @@ from src.official_picks import TIER_OFFICIAL
 
 # ── Unit calculations ──────────────────────────────────────────────
 
-def compute_pick_units(american_odds: int, outcome: str) -> float:
-    """Calculate profit units for a pick given its outcome.
+def compute_variable_stake(
+    ev_pct: float | None,
+    decimal_odds: float | None,
+    model_score: float | None,
+) -> float:
+    """Compute smart stake size using 25% fractional Kelly + score multiplier.
 
-    Flat staking: 1.0 unit risk.
-    Positive odds: profit = odds / 100
-    Negative odds: profit = 100 / abs(odds)
-    Loss: -1.0
+    Kelly % = EV% / (decimal_odds - 1)
+    25% fractional Kelly in units (1 unit = 1% of bankroll).
+    Score multiplier: 7.0 → 1.0x, 9.0+ → 1.5x, linear in between.
+    Clamped to [0.25, 2.0] units.
+    Returns 0.5 if data is insufficient to calculate.
+    """
+    if not ev_pct or ev_pct <= 0:
+        return 0.5
+    if not decimal_odds or decimal_odds <= 1.0:
+        return 0.5
+
+    b = decimal_odds - 1.0
+    kelly_pct = (ev_pct / 100.0) / b
+    fractional = 0.25 * kelly_pct
+    raw_units = fractional * 100.0
+
+    if model_score:
+        score_mult = 1.0 + min(model_score - 7.0, 2.0) * 0.25
+        raw_units *= score_mult
+
+    return round(max(0.25, min(2.0, raw_units)), 2)
+
+
+def compute_pick_units(american_odds: int, outcome: str, risk_units: float = 1.0) -> float:
+    """Calculate profit units given outcome and stake.
+
+    Positive odds: profit = risk_units * odds / 100
+    Negative odds: profit = risk_units * 100 / abs(odds)
+    Loss: -risk_units
     Push/Void/Cancelled: 0.0
     """
     if outcome in ("push", "void", "cancelled"):
         return 0.0
     if outcome == "loss":
-        return -1.0
+        return -risk_units
     if outcome == "win":
         if american_odds > 0:
-            return american_odds / 100.0
+            return risk_units * american_odds / 100.0
         else:
-            return 100.0 / abs(american_odds)
+            return risk_units * 100.0 / abs(american_odds)
     return 0.0
 
 
@@ -143,26 +173,32 @@ def update_pick_outcome(
     final_stat_value: float | None = None,
     grader_version: str = "v1.0",
 ) -> bool:
-    """Update a pick's outcome after grading."""
+    """Update a pick's outcome after grading using variable Kelly staking."""
     profit = None
+    risk_units = None
     if outcome in (WIN, LOSS, PUSH, VOID, "cancelled"):
         row = conn.execute(
-            "SELECT offered_american_odds FROM historical_recommendations "
-            "WHERE recommendation_id = ?",
+            "SELECT offered_american_odds, offered_decimal_odds, ev_pct, model_score "
+            "FROM historical_recommendations WHERE recommendation_id = ?",
             (recommendation_id,),
         ).fetchone()
         if row:
-            profit = compute_pick_units(row["offered_american_odds"], outcome)
+            stake = compute_variable_stake(
+                row["ev_pct"], row["offered_decimal_odds"], row["model_score"],
+            )
+            profit = compute_pick_units(row["offered_american_odds"], outcome, stake)
+            risk_units = stake if outcome in (WIN, LOSS) else 0.0
 
     conn.execute("""
         UPDATE official_picks SET
             outcome = ?,
             graded_at = datetime('now'),
             profit_units = ?,
+            risk_units = ?,
             final_stat_value = ?,
             grader_version = ?
         WHERE recommendation_id = ?
-    """, (outcome, profit, final_stat_value, grader_version, recommendation_id))
+    """, (outcome, profit, risk_units, final_stat_value, grader_version, recommendation_id))
     conn.commit()
     return True
 
@@ -198,7 +234,7 @@ def compute_performance(
             SUM(CASE WHEN op.outcome = 'push' THEN 1 ELSE 0 END) as pushes,
             SUM(CASE WHEN op.outcome = 'void' THEN 1 ELSE 0 END) as voids,
             SUM(COALESCE(op.profit_units, 0)) as units_won,
-            SUM(CASE WHEN op.outcome IN ('win','loss') THEN 1.0 ELSE 0 END) as units_risked,
+            SUM(COALESCE(op.risk_units, CASE WHEN op.outcome IN ('win','loss') THEN 1.0 ELSE 0 END)) as units_risked,
             AVG(hr.offered_american_odds) as avg_odds,
             AVG(hr.model_score) as avg_model_score,
             AVG(hr.yn_implied_prob_adv) as avg_pa,

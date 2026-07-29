@@ -24,6 +24,7 @@ from src.official_picks import (
     RULES_VERSION,
 )
 from src.tracker import (
+    compute_variable_stake,
     compute_pick_units,
     get_official_picks,
     update_pick_outcome,
@@ -375,6 +376,74 @@ class TestTracker:
     def test_heavy_fav_profit(self):
         profit = compute_pick_units(-300, "win")
         assert round(profit, 4) == round(100 / 300, 4)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Part 3a: Tracker (Variable Staking)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestVariableStaking:
+    """Tests for compute_variable_stake (25% fractional Kelly)."""
+
+    def test_default_on_none(self):
+        assert compute_variable_stake(None, None, None) == 0.5
+
+    def test_default_on_zero_ev(self):
+        assert compute_variable_stake(0.0, 2.0, 7.0) == 0.5
+
+    def test_default_on_negative_ev(self):
+        assert compute_variable_stake(-2.0, 2.0, 7.0) == 0.5
+
+    def test_default_on_no_odds(self):
+        assert compute_variable_stake(5.0, 1.0, 7.0) == 0.5
+
+    def test_basic_kelly_calculation(self):
+        # EV 5%, decimal 2.0 (+100), score 7.0
+        # kelly = 0.05/1.0 = 5%, 25% = 1.25%, raw_units = 1.25
+        # score mult = 1.0
+        stake = compute_variable_stake(5.0, 2.0, 7.0)
+        assert stake == 1.25
+
+    def test_score_multiplier(self):
+        # EV 5%, decimal 2.0 (+100), score 9.0
+        # kelly = 0.05/1.0 = 5%, 25% = 1.25%, raw_units = 1.25
+        # score mult = 1.0 + min(2.0, 2.0) * 0.25 = 1.5
+        # final = 1.25 * 1.5 = 1.875 -> round(1.875, 2) = 1.88
+        stake = compute_variable_stake(5.0, 2.0, 9.0)
+        assert stake == 1.88
+
+    def test_caps_at_max_2(self):
+        # EV 20%, decimal 1.5 (-200)
+        # kelly = 0.20/0.5 = 40%, 25% = 10%, raw_units = 10.0
+        # score mult at 9.0 = 1.5, final = 15.0 -> clamp to 2.0
+        stake = compute_variable_stake(20.0, 1.5, 9.0)
+        assert stake == 2.0
+
+    def test_caps_at_min_025(self):
+        # EV 1%, decimal 10.0 (+900)
+        # kelly = 0.01/9.0 = 0.111%, 25% = 0.0278%, raw_units = 0.0278
+        # score mult at 7.0 = 1.0, final = 0.0278 -> clamp to 0.25
+        stake = compute_variable_stake(1.0, 10.0, 7.0)
+        assert stake == 0.25
+
+    def test_variable_profit_calculation(self):
+        # Risk 1.5 units on +150 odds, win
+        profit = compute_pick_units(150, "win", risk_units=1.5)
+        assert profit == 2.25
+
+    def test_variable_loss(self):
+        profit = compute_pick_units(-110, "loss", risk_units=1.5)
+        assert profit == -1.5
+
+    def test_variable_push(self):
+        profit = compute_pick_units(-110, "push", risk_units=1.5)
+        assert profit == 0.0
+
+    def test_variable_with_default_risk(self):
+        # Default risk_units should still be 1.0
+        profit = compute_pick_units(-110, "win")
+        assert round(profit, 4) == round(100/110, 4)
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -994,17 +994,6 @@ def test_registry_strikeouts_yn_detected():
     assert match_yn_market("pitching_strikeouts-X-game-yn-no") is PITCHER_STRIKEOUTS
 
 
-def test_registry_outs_ou_detected():
-    from src.prop_config import match_ou_market, PITCHER_OUTS
-    assert match_ou_market("pitching_outs-X-game-ou-over") is PITCHER_OUTS
-    assert match_ou_market("pitching_outs-X-game-ou-under") is PITCHER_OUTS
-
-
-def test_registry_outs_yn_returns_none():
-    from src.prop_config import match_yn_market
-    assert match_yn_market("pitching_outs-X-game-yn-yes") is None
-
-
 def test_registry_unknown_returns_none():
     from src.prop_config import match_ou_market, match_yn_market
     assert match_ou_market("batting_unknown_stat-X-game-ou-over") is None
@@ -1013,17 +1002,16 @@ def test_registry_unknown_returns_none():
 
 
 def test_registry_market_type_lookup():
-    from src.prop_config import get_market_by_ou_type, get_market_by_yn_type, PITCHER_STRIKEOUTS, PITCHER_OUTS
+    from src.prop_config import get_market_by_ou_type, get_market_by_yn_type, PITCHER_STRIKEOUTS, PITCHER_HITS_ALLOWED, PITCHER_WALKS_ALLOWED
     assert get_market_by_ou_type("pitching_strikeouts_ou") is PITCHER_STRIKEOUTS
     assert get_market_by_yn_type("pitching_strikeouts_yn") is PITCHER_STRIKEOUTS
-    assert get_market_by_ou_type("pitching_outs_ou") is PITCHER_OUTS
-    assert get_market_by_yn_type("pitching_outs_yn") is None
+    assert get_market_by_ou_type("pitching_hits_ou") is PITCHER_HITS_ALLOWED
+    assert get_market_by_ou_type("pitching_basesOnBalls_ou") is PITCHER_WALKS_ALLOWED
 
 
 def test_registry_cli_name_lookup():
-    from src.prop_config import get_market_by_cli_name, PITCHER_STRIKEOUTS, PITCHER_OUTS
+    from src.prop_config import get_market_by_cli_name, PITCHER_STRIKEOUTS
     assert get_market_by_cli_name("strikeouts") is PITCHER_STRIKEOUTS
-    assert get_market_by_cli_name("outs") is PITCHER_OUTS
     assert get_market_by_cli_name("unknown") is None
 
 

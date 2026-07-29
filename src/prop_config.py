@@ -179,11 +179,12 @@ PITCHER_WALKS_ALLOWED = MarketConfig(
     cli_name="walks_allowed",
     odd_id_stat_prefix="pitching_basesOnBalls",
     market_type_ou="pitching_basesOnBalls_ou",
-    market_type_yn="pitching_basesOnBalls_yn",
+    market_type_yn=None,
     display_name="Pitcher Walks Allowed",
     short_label="BB",
     period="game",
     scanner_title="MLB PITCHER WALKS ALLOWED EDGE SCANNER",
+    supports_yn=False,
 )
 
 PITCHER_EARNED_RUNS = MarketConfig(
@@ -238,11 +239,12 @@ BATTER_TOTAL_BASES = MarketConfig(
     cli_name="total_bases",
     odd_id_stat_prefix="batting_totalBases",
     market_type_ou="batting_totalBases_ou",
-    market_type_yn="batting_totalBases_yn",
+    market_type_yn=None,
     display_name="Total Bases",
     short_label="TB",
     period="game",
     scanner_title="MLB TOTAL BASES EDGE SCANNER",
+    supports_yn=False,
 )
 
 BATTER_HITS_RUNS_RBI = MarketConfig(
@@ -384,26 +386,13 @@ BATTER_FIRST_HR = MarketConfig(
 
 MARKET_REGISTRY: list[MarketConfig] = [
     PITCHER_STRIKEOUTS,
-    PITCHER_OUTS,
     PITCHER_HITS_ALLOWED,
     PITCHER_WALKS_ALLOWED,
-    PITCHER_EARNED_RUNS,
-    PITCHER_PITCHES_THROWN,
     PITCHER_WIN,
     BATTER_HITS,
     BATTER_TOTAL_BASES,
-    BATTER_HITS_RUNS_RBI,
     BATTER_HOME_RUNS,
-    BATTER_RBI,
-    BATTER_RUNS,
-    BATTER_RUNS_RBI,
-    BATTER_SINGLES,
-    BATTER_DOUBLES,
-    BATTER_WALKS,
     BATTER_STOLEN_BASES,
-    BATTER_TRIPLES,
-    BATTER_STRIKEOUTS,
-    BATTER_FIRST_HR,
 ]
 
 # Lookup helpers

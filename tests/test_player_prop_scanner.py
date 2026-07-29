@@ -21,8 +21,8 @@ from src.prop_config import (
     BET_STATUS_STRONG, BET_STATUS_POSITIVE, BET_STATUS_MARGINAL,
     BET_STATUS_NO_EDGE, ACTIONABLE_EDGE_THRESHOLD,
     FRESHNESS_THRESHOLD_SECONDS, MARKET_REGISTRY,
-    PITCHER_STRIKEOUTS, PITCHER_OUTS, PITCHER_HITS_ALLOWED,
-    PITCHER_WALKS_ALLOWED, PITCHER_EARNED_RUNS,
+    PITCHER_STRIKEOUTS, PITCHER_HITS_ALLOWED,
+    PITCHER_WALKS_ALLOWED,
 )
 from src.player_prop_scanner import (
     run_scan, parse_args, display_results, display_verbose,
@@ -194,9 +194,9 @@ class TestMarketFormResolution:
         assert "pitching_strikeouts_yn" in types
 
     def test_scanner_title_single_market(self):
-        r = resolve_markets("outs", "ou")
+        r = resolve_markets("strikeouts", "ou")
         title = _build_scanner_title(r)
-        assert title == "MLB PITCHER OUTS RECORDED EDGE SCANNER"
+        assert title == "MLB PITCHER STRIKEOUTS EDGE SCANNER"
 
     def test_scanner_title_all_markets(self):
         r = resolve_markets("all", "ou")
@@ -212,9 +212,9 @@ class TestFiltering:
     def _run_with_filters(self, **filter_kwargs):
         """Run scan with synthetic events that include all market types."""
         from tests.fixture_data import (
-            flaherty_event, outs_event, hits_event, walks_event, earned_runs_event,
+            flaherty_event, hits_event, walks_event,
         )
-        events = [flaherty_event, outs_event, hits_event, walks_event, earned_runs_event]
+        events = [flaherty_event, hits_event, walks_event]
         from src.player_prop_parser import parse_player_props
         all_odds = []
         for ev in events:
@@ -475,9 +475,9 @@ class TestGenericCLI:
         args = parse_args(["--market", "strikeouts"])
         assert args.market == "strikeouts"
 
-    def test_parse_args_market_outs(self):
-        args = parse_args(["--market", "outs"])
-        assert args.market == "outs"
+    def test_parse_args_market_strikeouts(self):
+        args = parse_args(["--market", "strikeouts"])
+        assert args.market == "strikeouts"
 
     def test_parse_args_market_form_ou(self):
         args = parse_args(["--market-form", "ou"])
@@ -513,10 +513,8 @@ class TestGenericCLI:
 
     def test_valid_markets_list(self):
         assert "strikeouts" in VALID_MARKETS
-        assert "outs" in VALID_MARKETS
         assert "hits_allowed" in VALID_MARKETS
         assert "walks_allowed" in VALID_MARKETS
-        assert "earned_runs" in VALID_MARKETS
 
     def test_build_parser_is_argparse(self):
         parser = build_parser()
@@ -532,10 +530,6 @@ class TestCrossMarketScanner:
         r = resolve_markets("strikeouts", "ou")
         assert r.market_configs[0].scanner_title == "MLB PITCHER STRIKEOUTS EDGE SCANNER"
 
-    def test_outs_scanner_title(self):
-        r = resolve_markets("outs", "ou")
-        assert r.market_configs[0].scanner_title == "MLB PITCHER OUTS RECORDED EDGE SCANNER"
-
     def test_hits_scanner_title(self):
         r = resolve_markets("hits_allowed", "ou")
         assert r.market_configs[0].scanner_title == "MLB PITCHER HITS ALLOWED EDGE SCANNER"
@@ -543,14 +537,6 @@ class TestCrossMarketScanner:
     def test_walks_scanner_title(self):
         r = resolve_markets("walks_allowed", "ou")
         assert r.market_configs[0].scanner_title == "MLB PITCHER WALKS ALLOWED EDGE SCANNER"
-
-    def test_earned_runs_scanner_title(self):
-        r = resolve_markets("earned_runs", "ou")
-        assert r.market_configs[0].scanner_title == "MLB PITCHER EARNED RUNS EDGE SCANNER"
-
-    def test_outs_rejects_yn(self):
-        with pytest.raises(SystemExit):
-            resolve_markets("outs", "yn")
 
     def test_hits_allowed_rejects_yn(self):
         with pytest.raises(SystemExit):
@@ -560,33 +546,23 @@ class TestCrossMarketScanner:
         r = resolve_markets("walks_allowed", "ou")
         assert r.market_configs[0].supports_ou
 
-    def test_walks_allowed_supports_yn(self):
-        r = resolve_markets("walks_allowed", "yn")
-        assert r.market_configs[0].supports_yn
-
-    def test_earned_runs_supports_ou(self):
-        r = resolve_markets("earned_runs", "ou")
-        assert r.market_configs[0].supports_ou
-
-    def test_earned_runs_supports_yn(self):
-        r = resolve_markets("earned_runs", "yn")
-        assert r.market_configs[0].supports_yn
+    def test_walks_allowed_no_yn(self):
+        assert not PITCHER_WALKS_ALLOWED.supports_yn
 
     def test_no_cross_market_contamination(self):
         """O/U rows from different markets should have different market_type."""
-        from tests.fixture_data import flaherty_event, outs_event, hits_event
+        from tests.fixture_data import flaherty_event, hits_event
         from src.player_prop_parser import parse_player_props
 
         ou_types = set()
-        for ev in [flaherty_event, outs_event, hits_event]:
+        for ev in [flaherty_event, hits_event]:
             parsed = parse_player_props(ev)
             for row in parsed.odds_rows:
                 if row["side"] in ("OVER", "UNDER"):
                     ou_types.add(row["market_type"])
 
-        assert len(ou_types) >= 3, f"Expected at least 3 distinct O/U types, got {ou_types}"
+        assert len(ou_types) >= 2, f"Expected at least 2 distinct O/U types, got {ou_types}"
         assert "pitching_strikeouts_ou" in ou_types
-        assert "pitching_outs_ou" in ou_types
         assert "pitching_hits_ou" in ou_types
 
 

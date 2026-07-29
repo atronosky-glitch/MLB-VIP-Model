@@ -71,8 +71,11 @@
 - [x] Phase 17: Cloud Deployment — Render platform (web + worker + persistent disk), background worker (persistent/one-shot/specific-job modes), production schedule (America/New_York), database persistence (WAL, busy timeout, env-var path), secrets management, dashboard automation controls (worker heartbeat, job metrics, manual triggers with confirmation), System Health (11 checks: database, disk, freshness, API key, output, worker heartbeat, persistent storage, deployment env, timezone, scheduler, backup), deployment documentation, 56 new tests (1367/1367 passing)
 - [x] Phase 17B: PostgreSQL Migration — dialect-aware DB wrapper (connection.py), dual-mode db_manager, all src/*.py files migrated to get_connection(), Render Blueprint with PostgreSQL service, psycopg2-binary, SQLite→PostgreSQL migration script, 22 new tests (1389/1389 passing)
 
+- [x] Phase 17C: Market rationalization (21→8 markets), variable Kelly staking, pipeline completion indicator, worker crash fix (get_connection import), Render PostgreSQL cleanup
+
 ## Next feature stage
 
+- [ ] Run morning pipeline on Render to verify 8-market picks land on dashboard
 - [ ] Alt-line scanning (currently preserved but not included in scanner output)
 - [ ] Website (market visualisation dashboard)
 - [ ] Multi-league support (NBA, NFL, NHL props)

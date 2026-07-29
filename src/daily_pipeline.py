@@ -1084,6 +1084,26 @@ def _parse_status(status_obj: dict | str) -> str:
 
 
 # ==================================================================
+# Completion flag
+# ==================================================================
+
+_PIPELINE_COMPLETION_FILE = Path(__file__).resolve().parent.parent / "database" / ".pipeline_completed"
+
+def _write_completion_flag(config: PipelineConfig, state: PipelineState) -> None:
+    """Write a timestamp file so the dashboard can show when the pipeline last ran."""
+    try:
+        flag = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": state.run_id,
+            "n_recommendations": state.n_recommendations_saved,
+            "exit_code": EXIT_SUCCESS if state.n_recommendations_saved > 0 else EXIT_SUCCESS_NO_RECS,
+        }
+        _PIPELINE_COMPLETION_FILE.write_text(json.dumps(flag, indent=2))
+    except Exception:
+        pass  # non-critical, don't fail the pipeline
+
+
+# ==================================================================
 # Main pipeline
 # ==================================================================
 
@@ -1129,6 +1149,9 @@ def run_pipeline(config: PipelineConfig) -> int:
 
         # Stage 9: Summary
         _stage_summary(config, state)
+
+        # Write pipeline completion flag
+        _write_completion_flag(config, state)
 
         # Determine exit code
         if state.n_recommendations_saved > 0:

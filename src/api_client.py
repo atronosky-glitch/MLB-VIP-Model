@@ -148,6 +148,13 @@ class SportsGameOddsClient:
         for attempt in range(max_retries + 1):
             try:
                 resp = self.session.get(url, params=params, timeout=timeout)
+                if resp.status_code in (401, 403):
+                    logger.critical(
+                        "API key rejected (HTTP %d) — key may be invalid or out of credits. "
+                        "Fix SPORTSODDS_API_KEY in .env / Render env vars.",
+                        resp.status_code,
+                    )
+                    return resp
                 if resp.status_code in retry_statuses and attempt < max_retries:
                     wait = 2 ** attempt
                     logger.warning(

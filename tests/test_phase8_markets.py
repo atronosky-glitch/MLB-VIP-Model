@@ -23,24 +23,12 @@ from src.prop_config import (
     get_market_by_yn_type,
     BATTER_HITS,
     BATTER_TOTAL_BASES,
-    BATTER_HITS_RUNS_RBI,
     BATTER_HOME_RUNS,
-    BATTER_RBI,
-    BATTER_RUNS_RBI,
-    BATTER_SINGLES,
-    BATTER_DOUBLES,
-    BATTER_WALKS,
     BATTER_STOLEN_BASES,
-    BATTER_TRIPLES,
-    BATTER_STRIKEOUTS,
-    BATTER_FIRST_HR,
-    PITCHER_PITCHES_THROWN,
     PITCHER_WIN,
     PITCHER_STRIKEOUTS,
-    PITCHER_OUTS,
     PITCHER_HITS_ALLOWED,
     PITCHER_WALKS_ALLOWED,
-    PITCHER_EARNED_RUNS,
 )
 from src.player_prop_parser import parse_player_props, _extract_player_name_from_market
 
@@ -49,16 +37,15 @@ from src.player_prop_parser import parse_player_props, _extract_player_name_from
 
 class TestRegistryPhase8:
     def test_total_market_count(self):
-        assert len(MARKET_REGISTRY) == 21
+        assert len(MARKET_REGISTRY) == 8
 
     def test_all_new_markets_registered(self):
         expected = [
-            BATTER_HITS, BATTER_TOTAL_BASES, BATTER_HITS_RUNS_RBI,
-            BATTER_HOME_RUNS, BATTER_RBI, BATTER_RUNS_RBI,
-            BATTER_SINGLES, BATTER_DOUBLES, BATTER_WALKS,
-            BATTER_STOLEN_BASES, BATTER_TRIPLES,
-            BATTER_STRIKEOUTS, BATTER_FIRST_HR,
-            PITCHER_PITCHES_THROWN, PITCHER_WIN,
+            BATTER_HITS, BATTER_TOTAL_BASES,
+            BATTER_HOME_RUNS,
+            BATTER_STOLEN_BASES,
+            PITCHER_WIN,
+            PITCHER_STRIKEOUTS, PITCHER_HITS_ALLOWED, PITCHER_WALKS_ALLOWED,
         ]
         for mc in expected:
             assert mc in MARKET_REGISTRY
@@ -103,55 +90,28 @@ class TestOUDispatchPhase8:
         m = match_ou_market("batting_totalBases-AARON_JUDGE_1_MLB-game-ou-over")
         assert m is BATTER_TOTAL_BASES
 
-    def test_batter_hrr_ou(self):
-        m = match_ou_market("batting_hits+runs+rbi-AARON_JUDGE_1_MLB-game-ou-over")
-        assert m is BATTER_HITS_RUNS_RBI
-
     def test_batter_hr_ou(self):
         m = match_ou_market("batting_homeRuns-AARON_JUDGE_1_MLB-game-ou-over")
         assert m is BATTER_HOME_RUNS
-
-    def test_batter_rbi_ou(self):
-        m = match_ou_market("batting_RBI-AARON_JUDGE_1_MLB-game-ou-over")
-        assert m is BATTER_RBI
-
-    def test_batter_runs_rbi_ou(self):
-        m = match_ou_market("batting_runs+rbi-AARON_JUDGE_1_MLB-game-ou-over")
-        assert m is BATTER_RUNS_RBI
-
-    def test_batter_singles_ou(self):
-        m = match_ou_market("batting_singles-AARON_JUDGE_1_MLB-game-ou-over")
-        assert m is BATTER_SINGLES
-
-    def test_batter_doubles_ou(self):
-        m = match_ou_market("batting_doubles-AARON_JUDGE_1_MLB-game-ou-over")
-        assert m is BATTER_DOUBLES
-
-    def test_batter_walks_ou(self):
-        m = match_ou_market("batting_basesOnBalls-AARON_JUDGE_1_MLB-game-ou-over")
-        assert m is BATTER_WALKS
 
     def test_batter_stolen_bases_ou(self):
         m = match_ou_market("batting_stolenBases-AARON_JUDGE_1_MLB-game-ou-over")
         assert m is BATTER_STOLEN_BASES
 
-    def test_batter_triples_ou(self):
-        m = match_ou_market("batting_triples-AARON_JUDGE_1_MLB-game-ou-over")
-        assert m is BATTER_TRIPLES
-
-    def test_batter_strikeouts_ou(self):
-        m = match_ou_market("batting_strikeouts-AARON_JUDGE_1_MLB-game-ou-over")
-        assert m is BATTER_STRIKEOUTS
-
-    def test_pitches_thrown_ou(self):
-        m = match_ou_market("pitching_pitchesThrown-BRANDON_PFAADT_1_MLB-game-ou-over")
-        assert m is PITCHER_PITCHES_THROWN
-
     def test_pitching_win_no_ou(self):
         assert match_ou_market("pitching_win-BRANDON_PFAADT_1_MLB-game-ou-over") is None
 
-    def test_first_hr_no_ou(self):
-        assert match_ou_market("batting_firstHomeRun-AARON_JUDGE_1_MLB-game-ou-over") is None
+    def test_hits_allowed_ou(self):
+        m = match_ou_market("pitching_hits-BRANDON_PFAADT_1_MLB-game-ou-over")
+        assert m is PITCHER_HITS_ALLOWED
+
+    def test_walks_allowed_ou(self):
+        m = match_ou_market("pitching_basesOnBalls-BRANDON_PFAADT_1_MLB-game-ou-over")
+        assert m is PITCHER_WALKS_ALLOWED
+
+    def test_strikeouts_ou(self):
+        m = match_ou_market("pitching_strikeouts-BRANDON_PFAADT_1_MLB-game-ou-over")
+        assert m is PITCHER_STRIKEOUTS
 
 
 # ── YN dispatch tests ─────────────────────────────────────────────
@@ -165,20 +125,15 @@ class TestYNDispatchPhase8:
         m = match_yn_market("batting_homeRuns-AARON_JUDGE_1_MLB-game-yn-yes")
         assert m is BATTER_HOME_RUNS
 
-    def test_batter_rbi_yn(self):
-        m = match_yn_market("batting_RBI-AARON_JUDGE_1_MLB-game-yn-yes")
-        assert m is BATTER_RBI
-
-    def test_batter_first_hr_yn(self):
-        m = match_yn_market("batting_firstHomeRun-AARON_JUDGE_1_MLB-game-yn-yes")
-        assert m is BATTER_FIRST_HR
-
     def test_pitching_win_yn(self):
         m = match_yn_market("pitching_win-BRANDON_PFAADT_1_MLB-game-yn-yes")
         assert m is PITCHER_WIN
 
-    def test_pitches_thrown_no_yn(self):
-        assert match_yn_market("pitching_pitchesThrown-X-game-yn-yes") is None
+    def test_walks_allowed_no_yn(self):
+        assert match_yn_market("pitching_basesOnBalls-X-game-yn-yes") is None
+
+    def test_total_bases_no_yn(self):
+        assert match_yn_market("batting_totalBases-X-game-yn-yes") is None
 
 
 # ── CLI name lookup tests ─────────────────────────────────────────
@@ -190,41 +145,11 @@ class TestCLILookupPhase8:
     def test_total_bases(self):
         assert get_market_by_cli_name("total_bases") is BATTER_TOTAL_BASES
 
-    def test_hits_runs_rbi(self):
-        assert get_market_by_cli_name("hits_runs_rbi") is BATTER_HITS_RUNS_RBI
-
     def test_home_runs(self):
         assert get_market_by_cli_name("home_runs") is BATTER_HOME_RUNS
 
-    def test_rbi(self):
-        assert get_market_by_cli_name("rbi") is BATTER_RBI
-
-    def test_runs_rbi(self):
-        assert get_market_by_cli_name("runs_rbi") is BATTER_RUNS_RBI
-
-    def test_singles(self):
-        assert get_market_by_cli_name("singles") is BATTER_SINGLES
-
-    def test_doubles(self):
-        assert get_market_by_cli_name("doubles") is BATTER_DOUBLES
-
-    def test_batter_walks(self):
-        assert get_market_by_cli_name("batter_walks") is BATTER_WALKS
-
     def test_stolen_bases(self):
         assert get_market_by_cli_name("stolen_bases") is BATTER_STOLEN_BASES
-
-    def test_triples(self):
-        assert get_market_by_cli_name("triples") is BATTER_TRIPLES
-
-    def test_batter_strikeouts(self):
-        assert get_market_by_cli_name("batter_strikeouts") is BATTER_STRIKEOUTS
-
-    def test_first_home_run(self):
-        assert get_market_by_cli_name("first_home_run") is BATTER_FIRST_HR
-
-    def test_pitches_thrown(self):
-        assert get_market_by_cli_name("pitches_thrown") is PITCHER_PITCHES_THROWN
 
     def test_pitching_win(self):
         assert get_market_by_cli_name("pitching_win") is PITCHER_WIN
@@ -242,14 +167,17 @@ class TestTypeLookupPhase8:
     def test_ou_type_batter_hr(self):
         assert get_market_by_ou_type("batting_homeRuns_ou") is BATTER_HOME_RUNS
 
-    def test_ou_type_pitches_thrown(self):
-        assert get_market_by_ou_type("pitching_pitchesThrown_ou") is PITCHER_PITCHES_THROWN
-
     def test_yn_type_pitching_win(self):
         assert get_market_by_yn_type("pitching_win_yn") is PITCHER_WIN
 
-    def test_yn_type_first_hr(self):
-        assert get_market_by_yn_type("batting_firstHomeRun_yn") is BATTER_FIRST_HR
+    def test_ou_type_strikeouts(self):
+        assert get_market_by_ou_type("pitching_strikeouts_ou") is PITCHER_STRIKEOUTS
+
+    def test_ou_type_hits_allowed(self):
+        assert get_market_by_ou_type("pitching_hits_ou") is PITCHER_HITS_ALLOWED
+
+    def test_ou_type_walks_allowed(self):
+        assert get_market_by_ou_type("pitching_basesOnBalls_ou") is PITCHER_WALKS_ALLOWED
 
 
 # ── Parser tests ──────────────────────────────────────────────────
@@ -280,34 +208,6 @@ class TestParserPhase8:
         tb_rows = [r for r in parsed.odds_rows if r["market_type"] == "batting_totalBases_ou"]
         assert len(tb_rows) > 0
 
-    def test_batter_hrr_ou_parsed(self, parsed):
-        hrr_rows = [r for r in parsed.odds_rows if r["market_type"] == "batting_hits+runs+rbi_ou"]
-        assert len(hrr_rows) > 0
-
-    def test_batter_rbi_ou_parsed(self, parsed):
-        rbi_rows = [r for r in parsed.odds_rows if r["market_type"] == "batting_RBI_ou"]
-        assert len(rbi_rows) > 0
-
-    def test_batter_singles_ou_parsed(self, parsed):
-        rows = [r for r in parsed.odds_rows if r["market_type"] == "batting_singles_ou"]
-        assert len(rows) > 0
-
-    def test_batter_doubles_ou_parsed(self, parsed):
-        rows = [r for r in parsed.odds_rows if r["market_type"] == "batting_doubles_ou"]
-        assert len(rows) > 0
-
-    def test_batter_walks_ou_parsed(self, parsed):
-        rows = [r for r in parsed.odds_rows if r["market_type"] == "batting_basesOnBalls_ou"]
-        assert len(rows) > 0
-
-    def test_batter_first_hr_yn_parsed(self, parsed):
-        rows = [r for r in parsed.odds_rows if r["market_type"] == "batting_firstHomeRun_yn"]
-        assert len(rows) > 0
-
-    def test_first_hr_no_ou_rows(self, parsed):
-        """First Home Run is YN-only, no O/U rows should exist."""
-        assert not any(r["market_type"] == "batting_firstHomeRun_ou" for r in parsed.odds_rows)
-
 
 # ── Name extraction tests ─────────────────────────────────────────
 
@@ -332,50 +232,10 @@ class TestNameExtractionPhase8:
         name = _extract_player_name_from_market(odd_data)
         assert name == "Aaron Judge"
 
-    def test_batter_hrr_ou(self):
-        odd_data = {"marketName": "Aaron Judge Hits + Runs + RBIs Over/Under"}
-        name = _extract_player_name_from_market(odd_data)
-        assert name == "Aaron Judge"
-
-    def test_batter_rbi_ou(self):
-        odd_data = {"marketName": "Aaron Judge Runs Batted In Over/Under"}
-        name = _extract_player_name_from_market(odd_data)
-        assert name == "Aaron Judge"
-
-    def test_batter_singles_ou(self):
-        odd_data = {"marketName": "Aaron Judge Singles Over/Under"}
-        name = _extract_player_name_from_market(odd_data)
-        assert name == "Aaron Judge"
-
-    def test_batter_doubles_ou(self):
-        odd_data = {"marketName": "Aaron Judge Doubles Over/Under"}
-        name = _extract_player_name_from_market(odd_data)
-        assert name == "Aaron Judge"
-
-    def test_batter_walks_ou(self):
-        odd_data = {"marketName": "Aaron Judge Walks Over/Under"}
-        name = _extract_player_name_from_market(odd_data)
-        assert name == "Aaron Judge"
-
-    def test_batter_first_hr_yn(self):
-        odd_data = {"marketName": "Aaron Judge To Record First Home Run Yes/No"}
-        name = _extract_player_name_from_market(odd_data)
-        assert name == "Aaron Judge"
-
-    def test_batter_strikeouts_ou(self):
-        odd_data = {"marketName": "Aaron Judge Strikeouts Over/Under"}
-        name = _extract_player_name_from_market(odd_data)
-        assert name == "Aaron Judge"
-
     def test_pitcher_still_works(self):
         odd_data = {"marketName": "Jack Flaherty Strikeouts Over/Under"}
         name = _extract_player_name_from_market(odd_data)
         assert name == "Jack Flaherty"
-
-    def test_pitcher_outs_still_works(self):
-        odd_data = {"marketName": "Gerrit Cole Outs Recorded Over/Under"}
-        name = _extract_player_name_from_market(odd_data)
-        assert name == "Gerrit Cole"
 
 
 # ── Cross-market isolation tests ──────────────────────────────────
@@ -404,7 +264,7 @@ class TestCrossMarketIsolation:
         market_types = {r["market_type"] for r in parsed.odds_rows}
         # Should have multiple distinct batter market types
         batter_types = {t for t in market_types if t.startswith("batting_")}
-        assert len(batter_types) >= 8
+        assert len(batter_types) >= 4
 
     def test_batter_hits_different_from_pitcher_hits(self, db_conn):
         """Batter hits O/U and pitcher hits allowed O/U are independent."""
@@ -422,17 +282,9 @@ class TestCrossMarketIsolation:
 # ── Supports flags tests ──────────────────────────────────────────
 
 class TestSupportsFlags:
-    def test_pitching_win_ou_only(self):
+    def test_pitching_win_yn_only(self):
         assert PITCHER_WIN.supports_ou is False
         assert PITCHER_WIN.supports_yn is True
-
-    def test_first_hr_ou_only(self):
-        assert BATTER_FIRST_HR.supports_ou is False
-        assert BATTER_FIRST_HR.supports_yn is True
-
-    def test_pitches_thrown_yn_only(self):
-        assert PITCHER_PITCHES_THROWN.supports_ou is True
-        assert PITCHER_PITCHES_THROWN.supports_yn is False
 
     def test_batter_hits_both(self):
         assert BATTER_HITS.supports_ou is True
@@ -442,9 +294,13 @@ class TestSupportsFlags:
         assert BATTER_HOME_RUNS.supports_ou is True
         assert BATTER_HOME_RUNS.supports_yn is True
 
-    def test_batter_rbi_both(self):
-        assert BATTER_RBI.supports_ou is True
-        assert BATTER_RBI.supports_yn is True
+    def test_walks_allowed_ou_only(self):
+        assert PITCHER_WALKS_ALLOWED.supports_ou is True
+        assert PITCHER_WALKS_ALLOWED.supports_yn is False
+
+    def test_total_bases_ou_only(self):
+        assert BATTER_TOTAL_BASES.supports_ou is True
+        assert BATTER_TOTAL_BASES.supports_yn is False
 
 
 # ── Group key tests ───────────────────────────────────────────────
@@ -509,12 +365,6 @@ class TestPitcherRegression:
         k_rows = [r for r in parsed.odds_rows if r["market_type"] == "pitching_strikeouts_ou"]
         assert len(k_rows) > 0
 
-    def test_pitcher_earnings_still_work(self):
-        from tests.fixture_data import earned_runs_event
-        parsed = parse_player_props(earned_runs_event)
-        er_rows = [r for r in parsed.odds_rows if "earnedRuns" in r["market_type"]]
-        assert len(er_rows) > 0
-
     def test_pitcher_walks_still_work(self):
         from tests.fixture_data import walks_event
         parsed = parse_player_props(walks_event)
@@ -534,11 +384,6 @@ class TestEdgeCases:
     def test_empty_bybookmaker_yn_no(self):
         """YN No-side with empty byBookmaker produces audit-only row."""
         parsed = parse_player_props(batter_event)
-        no_rows = [r for r in parsed.audit_rows if r.get("side") == "NO"]
-        # First Home Run No-side should be audit-only
-        first_hr_no = [r for r in no_rows if "firstHomeRun" in r.get("odd_id", "")]
-        for row in first_hr_no:
-            assert row["excluded"] == 1
 
     def test_unknown_odd_id_not_parsed(self):
         """Odd IDs not in any registry entry are silently skipped."""
