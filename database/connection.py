@@ -225,7 +225,11 @@ class DB:
             converted = sql
 
         cursor = self._conn.cursor()
-        cursor.execute(converted, params)
+        try:
+            cursor.execute(converted, params)
+        except Exception:
+            self._conn.rollback()
+            raise
         self._total_changes += cursor.rowcount
         return DBResult(cursor, self.dialect)
 
@@ -247,8 +251,8 @@ class DB:
                         cursor = self._conn.cursor()
                         cursor.execute(converted)
                     except Exception:
-                        # Some statements may fail if table already exists
-                        pass
+                        self._conn.rollback()
+
 
     def executemany(self, sql: str, params_list: list[tuple]) -> DBResult:
         """Execute SQL for many parameter sets."""
@@ -258,7 +262,11 @@ class DB:
             converted = sql
 
         cursor = self._conn.cursor()
-        cursor.executemany(converted, params_list)
+        try:
+            cursor.executemany(converted, params_list)
+        except Exception:
+            self._conn.rollback()
+            raise
         self._total_changes += cursor.rowcount
         return DBResult(cursor, self.dialect)
 
