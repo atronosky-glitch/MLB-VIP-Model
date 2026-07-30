@@ -304,6 +304,13 @@ def run_scan(
             }
 
     # Analyze each O/U group
+    if ou_groups:
+        print(f"  O/U groups formed: {len(ou_groups)}")
+        for gk, gd in ou_groups.items():
+            has_both = "BOTH" if gd["over"] and gd["under"] else "MISSING_SIDE"
+            print(f"    [{has_both}] {gd['market_type']:35} line={gd.get('line','?'):6}  "
+                  f"over_books={len(gd['over'])} under_books={len(gd['under'])}  "
+                  f"player={gd.get('player_name','?')[:20]}")
     opportunities = []
     for gkey, gdata in ou_groups.items():
         if not gdata["over"] or not gdata["under"]:
@@ -364,6 +371,21 @@ def run_scan(
                 "is_alt_line": 0,
             }
             opportunities.append(opp)
+
+    if ou_groups:
+        n_ou_opps = len(opportunities)
+        print(f"  O/U opportunities from scan: {n_ou_opps}")
+
+    # YN groups formed (debug)
+    yn_groups_with_yes = sum(1 for g in yn_groups.values() if g["yes"])
+    if yn_groups:
+        print(f"  YN groups formed: {len(yn_groups)}  (with YES side: {yn_groups_with_yes})")
+        market_types = {}
+        for gd in yn_groups.values():
+            mt = gd.get("market_type", "?")
+            market_types[mt] = market_types.get(mt, 0) + 1
+        for mt, count in sorted(market_types.items(), key=lambda x: -x[1]):
+            print(f"    {mt}: {count} groups")
 
     # Analyze each YN group
     yn_opportunities = []
@@ -501,6 +523,15 @@ def run_scan(
     if limit:
         opportunities = opportunities[:limit]
         yn_opportunities = yn_opportunities[:limit]
+
+    if yn_opportunities:
+        yn_market_counts = {}
+        for o in yn_opportunities:
+            mt = o.get("market_type", "?")
+            yn_market_counts[mt] = yn_market_counts.get(mt, 0) + 1
+        print(f"  YN opportunities after filtering: {len(yn_opportunities)}")
+        for mt, cnt in sorted(yn_market_counts.items(), key=lambda x: -x[1]):
+            print(f"    {mt}: {cnt}")
 
     # ── Determine scanner title ──
     scanner_title = _build_scanner_title(resolved)
