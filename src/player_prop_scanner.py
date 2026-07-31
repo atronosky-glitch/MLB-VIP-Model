@@ -313,8 +313,6 @@ def run_scan(
                   f"player={gd.get('player_name','?')[:20]}")
     opportunities = []
     for gkey, gdata in ou_groups.items():
-        if not gdata["over"] or not gdata["under"]:
-            continue
         analysis = analyze_prop_group(
             gkey, gdata["over"], gdata["under"],
             n_excluded_rows=excluded_count,

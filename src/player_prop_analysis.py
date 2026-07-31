@@ -1,15 +1,15 @@
-"""Analyse player prop over/under and yes/no markets (pitcher strikeouts).
+"""Analyse player prop over/under and yes/no markets.
 
 For each exact O/U market group (same event, player, market type, line,
 alt-line status), this module:
 
 1. Collects approved Over and Under prices
-2. Requires matching exact lines for pairing
-3. Calculates consensus in implied-probability space
-4. Removes vig using paired Over/Under prices
-5. Calculates leave-one-sportsbook-out (LOO) fair probability
-6. Computes EV for each book using LOO fair probability
-7. Separates market quality from individual bet status
+2. Computes consensus independently per side using ALL available books
+   (sportsbooks offering only one side contribute to same-side consensus)
+3. Calculates LOO median implied probability as fair reference per side
+4. Removes vig when both sides are available; uses raw implied otherwise
+5. Computes EV for each book using same-side LOO fair probability
+6. Separates market quality from individual bet status
 
 For YN market groups (same event, player, yes/no type):
 
@@ -45,7 +45,11 @@ def analyze_prop_group(
     n_approved_rows: int = 0,
     **kwargs,
 ) -> dict:
-    """Analyse one market group (paired Over/Under at same line).
+    """Analyse one market group (Over/Under at same line).
+
+    UPDATED: consensus is computed independently per side using ALL
+    available books (not just paired). Sportsbooks offering only one
+    side contribute to the same-side LOO consensus.
 
     Parameters
     ----------
@@ -74,84 +78,125 @@ def analyze_prop_group(
         best_ev: best EV entry or None,
         recommendation: "BET" or "NO_BET"
     """
-    if not over_prices or not under_prices:
+    if not over_prices and not under_prices:
         return _empty_result(group_key, over_prices, under_prices,
                              n_excluded_rows, n_approved_rows)
 
-    # Find common books (same sportsbook has both Over and Under)
-    all_books = sorted(set(over_prices) & set(under_prices))
+    # All unique books across both sides
+    all_books = sorted(set(over_prices) | set(under_prices))
     line = _resolve_line(over_prices, under_prices)
     total_n = len(all_books)
 
-    # Market quality — check early to avoid consensus crash on empty book list
+    over_books_list = sorted(over_prices.keys())
+    under_books_list = sorted(under_prices.keys())
+
+    # Market quality — check early to avoid crash on empty book list
     market_quality, quality_flags = _classify_market(total_n, all_books, over_prices, under_prices)
     if market_quality == cfg.MARKET_QUALITY_EXCLUDED:
         return _empty_result(group_key, over_prices, under_prices,
                              n_excluded_rows, n_approved_rows, line=line)
 
-    # Consensus from all common books
-    over_odds_list = [over_prices[b]["price"] for b in all_books]
-    under_odds_list = [under_prices[b]["price"] for b in all_books]
-    consensus_over = _consensus(over_odds_list)
-    consensus_under = _consensus(under_odds_list)
+    # Consensus from ALL available prices per side (not just paired)
+    over_odds_list = [over_prices[b]["price"] for b in over_books_list]
+    under_odds_list = [under_prices[b]["price"] for b in under_books_list]
+    consensus_over = _consensus(over_odds_list) if over_odds_list else 0
+    consensus_under = _consensus(under_odds_list) if under_odds_list else 0
 
-    nv_prob_over, nv_prob_under = _remove_vig(consensus_over, consensus_under)
-    vig_pct = _vig_percentage(consensus_over, consensus_under)
+    # Vig removal when both sides have data, otherwise use raw implied probability
+    if over_odds_list and under_odds_list:
+        nv_prob_over, nv_prob_under = _remove_vig(consensus_over, consensus_under)
+        vig_pct = _vig_percentage(consensus_over, consensus_under)
+    else:
+        if over_odds_list:
+            over_implied = [american_to_probability(p) for p in over_odds_list]
+            nv_prob_over = median(over_implied)
+        else:
+            nv_prob_over = 0.0
+        if under_odds_list:
+            under_implied = [american_to_probability(p) for p in under_odds_list]
+            nv_prob_under = median(under_implied)
+        else:
+            nv_prob_under = 0.0
+        vig_pct = 0.0
+
+    # Books that have BOTH Over and Under (for paired LOO)
+    paired_books = sorted(set(over_prices) & set(under_prices))
 
     # Per-book analysis with LOO fair probability and bet_status
     books = []
     for book in all_books:
-        over_info = over_prices[book]
-        under_info = under_prices[book]
-        over_price = over_info["price"]
-        under_price = under_info["price"]
+        has_over = book in over_prices
+        has_under = book in under_prices
+        is_paired = has_over and has_under
 
-        # Leave-one-out: fair probability from all OTHER books
-        other_books = [b for b in all_books if b != book]
-        if len(other_books) >= 2:
-            other_over = [over_prices[b]["price"] for b in other_books]
-            other_under = [under_prices[b]["price"] for b in other_books]
-            loo_cons_over = _consensus(other_over)
-            loo_cons_under = _consensus(other_under)
-            loo_nv_over, _ = _remove_vig(loo_cons_over, loo_cons_under)
-            fair_prob = loo_nv_over
+        if is_paired and len(paired_books) >= 3:
+            # Paired LOO with vig removal (most accurate when both sides exist)
+            other_paired = [b for b in paired_books if b != book]
+            other_over_prices = [over_prices[b]["price"] for b in other_paired]
+            other_under_prices = [under_prices[b]["price"] for b in other_paired]
+            loo_cons_over = _consensus(other_over_prices)
+            loo_cons_under = _consensus(other_under_prices)
+            loo_fair_over, loo_fair_under = _remove_vig(loo_cons_over, loo_cons_under)
         else:
-            fair_prob = nv_prob_over
+            # Default fallback (overwritten by side-specific LOO below when relevant)
+            loo_fair_over = nv_prob_over
+            loo_fair_under = nv_prob_under
 
-        over_dec = american_to_decimal(over_price)
-        under_dec = american_to_decimal(under_price)
-        ev_over = fair_prob * over_dec - 1.0
-        ev_under = (1.0 - fair_prob) * under_dec - 1.0
+        if has_over:
+            over_info = over_prices[book]
+            over_price = over_info["price"]
 
-        bet_status_over = _classify_bet(ev_over)
-        bet_status_under = _classify_bet(ev_under)
+            if not is_paired or len(paired_books) < 3:
+                # Single-side LOO: median of other Over implied probabilities
+                other_over_probs = [american_to_probability(over_prices[b]["price"])
+                                   for b in over_books_list if b != book]
+                loo_fair_over = median(other_over_probs) if len(other_over_probs) >= 2 else nv_prob_over
 
-        books.append({
-            "sportsbook": book,
-            "side": "OVER",
-            "line": line,
-            "american_odds": over_price,
-            "decimal_odds": round(over_dec, 4),
-            "fair_prob": round(fair_prob, 6),
-            "ev_pct": round(ev_over * 100, 4),
-            "bet_status": bet_status_over,
-            "validation_status": over_info.get("validation_status", "VALID"),
-            "included": True,
-            "reason": "",
-        })
-        books.append({
-            "sportsbook": book,
-            "side": "UNDER",
-            "line": line,
-            "american_odds": under_price,
-            "decimal_odds": round(under_dec, 4),
-            "fair_prob": round(1.0 - fair_prob, 6),
-            "ev_pct": round(ev_under * 100, 4),
-            "bet_status": bet_status_under,
-            "validation_status": under_info.get("validation_status", "VALID"),
-            "included": True,
-            "reason": "",
-        })
+            over_dec = american_to_decimal(over_price)
+            ev_over = loo_fair_over * over_dec - 1.0
+            bet_status_over = _classify_bet(ev_over)
+
+            books.append({
+                "sportsbook": book,
+                "side": "OVER",
+                "line": line,
+                "american_odds": over_price,
+                "decimal_odds": round(over_dec, 4),
+                "fair_prob": round(loo_fair_over, 6),
+                "ev_pct": round(ev_over * 100, 4),
+                "bet_status": bet_status_over,
+                "validation_status": over_info.get("validation_status", "VALID"),
+                "included": True,
+                "reason": "",
+            })
+
+        if has_under:
+            under_info = under_prices[book]
+            under_price = under_info["price"]
+
+            if not is_paired or len(paired_books) < 3:
+                # Single-side LOO: median of other Under implied probabilities
+                other_under_probs = [american_to_probability(under_prices[b]["price"])
+                                    for b in under_books_list if b != book]
+                loo_fair_under = median(other_under_probs) if len(other_under_probs) >= 2 else nv_prob_under
+
+            under_dec = american_to_decimal(under_price)
+            ev_under = loo_fair_under * under_dec - 1.0
+            bet_status_under = _classify_bet(ev_under)
+
+            books.append({
+                "sportsbook": book,
+                "side": "UNDER",
+                "line": line,
+                "american_odds": under_price,
+                "decimal_odds": round(under_dec, 4),
+                "fair_prob": round(loo_fair_under, 6),
+                "ev_pct": round(ev_under * 100, 4),
+                "bet_status": bet_status_under,
+                "validation_status": under_info.get("validation_status", "VALID"),
+                "included": True,
+                "reason": "",
+            })
 
     # If any extreme outlier, demote market quality
     if any(b["ev_pct"] > cfg.OUTLIER_EV_THRESHOLD * 100 or b["ev_pct"] < -cfg.OUTLIER_EV_THRESHOLD * 100
@@ -222,12 +267,12 @@ def _empty_result(group_key, over_prices, under_prices,
 
 
 def _classify_market(total_books, all_books, over_prices, under_prices):
-    """Determine market quality based on paired book count and data cleanliness."""
+    """Determine market quality based on total unique books across both sides."""
     flags = []
     if total_books < 2:
-        return cfg.MARKET_QUALITY_EXCLUDED, flags + ["Fewer than 2 paired books"]
+        return cfg.MARKET_QUALITY_EXCLUDED, flags + ["Fewer than 2 books"]
     if total_books < cfg.MIN_COMPARISON_BOOKS + 1:
-        flags.append(f"Only {total_books} paired books (need {cfg.MIN_COMPARISON_BOOKS + 1})")
+        flags.append(f"Only {total_books} books (need {cfg.MIN_COMPARISON_BOOKS + 1})")
         return cfg.MARKET_QUALITY_INSUFFICIENT, flags
     return cfg.MARKET_QUALITY_VALID, flags
 
