@@ -339,6 +339,239 @@ class TestPinnacleRequiredForOfficial:
             cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
 
 
+# ── Phase 18C: Pinnacle + alt-line diagnostics ─────────────────────
+
+class TestPinnacleDiagnostics:
+    """Per-group diagnostics metadata + rejection reasons (logging only)."""
+
+    def test_diagnostics_key_present_and_populated(self):
+        over, under = _pinny_group()
+        result = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        d = result["diagnostics"]
+        assert d["player"] == "p1"
+        assert d["market"] == "total_bases"
+        assert d["line"] == 5.5
+        assert d["total_books"] == 5
+        assert d["n_comparison_books"] == 4
+        assert d["pinnacle_present"] is True
+        assert d["pinnacle_both_sides"] is True
+        assert d["pinnacle_reference_used"] is True
+        assert d["fallback_used"] is False
+        assert d["pinnacle_over_price"] == -120
+        assert d["pinnacle_under_price"] == 100
+        assert d["pinnacle_fair_over"] == pytest.approx(result["nv_prob_over"], abs=1e-6)
+        assert d["pinnacle_fair_under"] == pytest.approx(result["nv_prob_under"], abs=1e-6)
+        assert d["pinnacle_books"] == ["pinnacle"]
+        assert d["official_approved"] is False  # all -110 → no approval
+        assert d["rejection_reason"] == "no_positive_edge"
+
+    def test_rejection_reason_approved(self):
+        over = {"pinnacle": _price(-120), "fanduel": _price(110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        under = {"pinnacle": _price(100), "fanduel": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        d = r["diagnostics"]
+        assert d["rejection_reason"] == "approved"
+        assert d["official_approved"] is True
+        assert d["best_side"] == "OVER"
+        assert d["best_sportsbook"] == "fanduel"
+        assert d["best_ev_pct"] > 0
+        assert d["best_pinnacle_ev"] is not None
+        assert d["best_pinnacle_prob_edge"] is not None
+
+    def test_rejection_reason_ev_threshold_failed(self):
+        # OVER +95 → EV ~1.7% < MIN_PINNACLE_EV (4%)
+        over = {"pinnacle": _price(-120), "fanduel": _price(95), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        under = {"pinnacle": _price(100), "fanduel": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        assert r["diagnostics"]["rejection_reason"] == "ev_threshold_failed"
+
+    def test_rejection_reason_prob_edge_threshold_failed(self):
+        # OVER +100 → EV ~4.3% passes, but prob edge ~2.2% < MIN (2.5%)
+        over = {"pinnacle": _price(-120), "fanduel": _price(100), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        under = {"pinnacle": _price(100), "fanduel": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        assert r["diagnostics"]["rejection_reason"] == "prob_edge_threshold_failed"
+
+    def test_rejection_reasons_missing_and_insufficient(self):
+        # missing entirely → fallback displayed, never official
+        over = {"b0": _price(120), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        under = {"b0": _price(-110), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        d = r["diagnostics"]
+        assert d["pinnacle_present"] is False
+        assert d["fallback_used"] is True
+        assert d["rejection_reason"] == "missing_pinnacle"
+
+        # too few books → never reaches full analysis
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", {"b1": _price(-110)}, {"b1": _price(-110)})
+        assert r["diagnostics"]["rejection_reason"] == "insufficient_comparison_books"
+        assert r["diagnostics"]["total_books"] == 1
+
+    def test_rejection_reason_one_side_and_line_mismatch(self):
+        # only Over side on Pinnacle
+        over = {"pinnacle": _price(-120), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        under = {"b1": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        assert r["diagnostics"]["rejection_reason"] == "pinnacle_missing_opposite_side"
+
+        # Pinnacle present but only on a different line (6.5 vs 5.5)
+        over = {"b1": _price(-110),
+                "pinnacle": {"price": -120, "decimal_odds": round(american_to_decimal(-120), 4), "line": 6.5},
+                "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        under = {"b1": _price(-110),
+                 "pinnacle": {"price": 100, "decimal_odds": round(american_to_decimal(100), 4), "line": 6.5},
+                 "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        d = r["diagnostics"]
+        assert d["pinnacle_present"] is False
+        assert d["pinnacle_books"] == ["pinnacle"]
+        assert d["rejection_reason"] == "pinnacle_line_mismatch"
+
+    def test_rejection_reason_model_disabled(self):
+        orig = cfg.USE_PINNACLE_VALUE_MODEL
+        cfg.USE_PINNACLE_VALUE_MODEL = False
+        try:
+            over, under = _pinny_group()
+            r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+            d = r["diagnostics"]
+            assert d["rejection_reason"] == "pinnacle_model_disabled"
+            assert d["fallback_used"] is True
+            assert d["pinnacle_both_sides"] is True
+        finally:
+            cfg.USE_PINNACLE_VALUE_MODEL = orig
+
+    def test_empty_result_has_diagnostics(self):
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", {}, {})
+        assert r["diagnostics"]["rejection_reason"] == "insufficient_comparison_books"
+        assert r["diagnostics"]["total_books"] == 0
+
+
+class TestScannerPinnacleDiagnostics:
+    """Scanner-side summary counters, fragmentation log, and result key."""
+
+    def test_accumulate_summary(self):
+        from src.player_prop_scanner import (
+            _new_pinnacle_summary, _accumulate_pinnacle_summary,
+        )
+        over = {"pinnacle": _price(-120), "fanduel": _price(110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        under = {"pinnacle": _price(100), "fanduel": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        r1 = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        over2 = {"b0": _price(120), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        under2 = {"b0": _price(-110), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110), "b4": _price(-110)}
+        r2 = analyze_prop_group("e|p1|total_bases|game|5.5", over2, under2)
+
+        s = _new_pinnacle_summary()
+        _accumulate_pinnacle_summary(s, r1)
+        _accumulate_pinnacle_summary(s, r2)
+        assert s["total_groups"] == 2
+        assert s["pinnacle_exact_match"] == 1
+        assert s["pinnacle_reference_used"] == 1
+        assert s["official_approved"] == 1
+        assert s["pinnacle_missing"] == 1
+        assert s["fallback_lean"] == 1
+
+    def test_accumulate_summary_handles_no_diagnostics_key(self):
+        from src.player_prop_scanner import (
+            _new_pinnacle_summary, _accumulate_pinnacle_summary,
+        )
+        s = _new_pinnacle_summary()
+        _accumulate_pinnacle_summary(s, {"market_quality": "VALID_MARKET"})
+        assert s["total_groups"] == 1
+        assert s["pinnacle_missing"] == 0
+
+    def test_line_fragmentation_log(self, caplog):
+        from src.player_prop_scanner import _log_line_fragmentation
+        groups = {
+            "k1": {"over": {"pinnacle": _price(-120), "b1": _price(-110)},
+                   "under": {"pinnacle": _price(100), "b1": _price(-110)},
+                   "line": 5.5, "player_id": "p1", "market_type": "total_bases"},
+            "k2": {"over": {"fd": _price(110), "b2": _price(-110)},
+                   "under": {"fd": _price(-110), "b2": _price(-110)},
+                   "line": 6.5, "player_id": "p1", "market_type": "total_bases"},
+        }
+        with caplog.at_level("DEBUG", logger="src.player_prop_scanner"):
+            _log_line_fragmentation(groups)
+        frag = [r.getMessage() for r in caplog.records
+                if r.getMessage().startswith("LINE_FRAGMENTATION")]
+        assert len(frag) == 2
+        assert "line=5.5" in frag[0] and "pinnacle_on_line=True" in frag[0]
+        assert "line=6.5" in frag[1] and "pinnacle_on_line=False" in frag[1]
+        assert "player=p1" in frag[0] and "market=total_bases" in frag[0]
+
+    def test_pinnacle_summary_log(self, caplog):
+        from src.player_prop_scanner import (
+            _new_pinnacle_summary, _log_pinnacle_summary,
+        )
+        with caplog.at_level("INFO", logger="src.player_prop_scanner"):
+            _log_pinnacle_summary(_new_pinnacle_summary())
+        msgs = [r.getMessage() for r in caplog.records
+                if r.getMessage().startswith("PINNACLE_SUMMARY")]
+        assert len(msgs) == 1
+        assert "total_groups=0" in msgs[0]
+        assert "official_approved=0" in msgs[0]
+
+    def test_run_scan_result_includes_pinnacle_diagnostics(self):
+        from unittest import mock
+        from src.player_prop_scanner import run_scan
+        from src.player_prop_parser import ParsedPlayerPropResult
+
+        event = {
+            "eventID": "E1",
+            "teams": {"home": {"name": "Home"}, "away": {"name": "Away"}},
+            "status": {"startsAt": "2099-01-01T00:00:00Z"},
+            "odds": {},
+        }
+        key = "E1|p1|pitching_strikeouts_ou|game|5.5"
+        odds_rows = []
+        # Pinnacle -120/+100 + fanduel OVER +110 (approved) + 3 neutral books
+        book_prices = {"pinnacle": (-120, 100), "fanduel": (110, -110),
+                       "b2": (-110, -110), "b3": (-110, -110), "b4": (-110, -110)}
+        for book, (o, u) in book_prices.items():
+            odds_rows.append({
+                "event_id": "E1", "odd_id": f"o-{book}", "sportsbook": book,
+                "player_id": "p1", "player_name": "Player One",
+                "team_id": "", "team_name": "",
+                "market_type": "pitching_strikeouts_ou",
+                "market_group_key": key, "side": "OVER", "line": 5.5,
+                "price": o, "decimal_odds": round(american_to_decimal(o), 4),
+                "is_alt_line": 0, "available": 1, "validation_status": "VALID",
+                "mapping_confidence": "HIGH", "mapping_method": "test",
+                "validation_reason": "OK", "captured_at": "", "observation_time": "",
+            })
+            odds_rows.append({
+                "event_id": "E1", "odd_id": f"u-{book}", "sportsbook": book,
+                "player_id": "p1", "player_name": "Player One",
+                "team_id": "", "team_name": "",
+                "market_type": "pitching_strikeouts_ou",
+                "market_group_key": key, "side": "UNDER", "line": 5.5,
+                "price": u, "decimal_odds": round(american_to_decimal(u), 4),
+                "is_alt_line": 0, "available": 1, "validation_status": "VALID",
+                "mapping_confidence": "HIGH", "mapping_method": "test",
+                "validation_reason": "OK", "captured_at": "", "observation_time": "",
+            })
+
+        with mock.patch("src.player_prop_scanner.get_connection") as mock_gc, \
+             mock.patch("src.player_prop_scanner.create_run",
+                        return_value="test-run-id"), \
+             mock.patch("src.player_prop_scanner.finish_run"), \
+             mock.patch("src.player_prop_scanner.SportsGameOddsClient") as mock_cls, \
+             mock.patch("src.player_prop_scanner.parse_player_props") as mock_parse:
+
+            mock_gc.return_value = mock.MagicMock()
+            mock_cls.return_value.get_events.return_value = ({"data": [event]}, False)
+            mock_parse.return_value = ParsedPlayerPropResult(
+                odds_rows=odds_rows, audit_rows=[],
+            )
+            result = run_scan(mode="all", market="all", market_form="all", limit=25)
+
+        diag = result["pinnacle_diagnostics"]
+        assert diag["total_groups"] == 1
+        assert diag["pinnacle_exact_match"] == 1
+        assert diag["pinnacle_reference_used"] == 1
+        assert diag["official_approved"] == 1
+        assert diag["pinnacle_missing"] == 0
+
+
 # ── Dashboard Score Calibration None-formatting regression ─────────
 
 class TestScoreCalibrationDisplayGuard:

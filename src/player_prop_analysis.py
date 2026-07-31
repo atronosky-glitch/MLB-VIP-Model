@@ -112,6 +112,193 @@ def _is_official(pinnacle_approved, ev: float) -> bool:
 
 
 # ==================================================================
+# Pinnacle diagnostics (logging only — never changes pick logic)
+# ==================================================================
+
+def _rejection_reason(*, market_quality, use_pinnacle_ref, pinnacle_found,
+                      pinnacle_anywhere, pinnacle_both_sides, best_ev,
+                      official_count) -> str:
+    """Categorize why a group was rejected (or approved).
+
+    Diagnostics only — no thresholds or pick logic are changed here.
+    """
+    if market_quality in (cfg.MARKET_QUALITY_EXCLUDED, cfg.MARKET_QUALITY_INSUFFICIENT):
+        return "insufficient_comparison_books"
+    if official_count > 0:
+        return "approved"
+    if use_pinnacle_ref:
+        if best_ev is None:
+            return "no_positive_edge"
+        pev = best_ev.get("pinnacle_ev")
+        if pev is None:
+            return "pinnacle_threshold_failed"
+        pedge = best_ev.get("pinnacle_prob_edge") or 0.0
+        if pev < cfg.MIN_PINNACLE_EV * 100:
+            return "ev_threshold_failed"
+        if pedge < cfg.MIN_PINNACLE_PROB_EDGE * 100:
+            return "prob_edge_threshold_failed"
+        return "pinnacle_threshold_failed"
+    if pinnacle_found and pinnacle_both_sides:
+        return "pinnacle_model_disabled"
+    if pinnacle_found:
+        return "pinnacle_missing_opposite_side"
+    if pinnacle_anywhere:
+        return "pinnacle_line_mismatch"
+    return "missing_pinnacle"
+
+
+def _build_group_diagnostics(
+    *,
+    group_key: str,
+    line,
+    all_books: list[str],
+    over_prices: dict,
+    under_prices: dict,
+    use_pinnacle_ref: bool,
+    pinnacle_found: bool,
+    pinnacle_over_book: str | None,
+    pinnacle_under_book: str | None,
+    pinnacle_over_price,
+    pinnacle_under_price,
+    nv_prob_over: float,
+    nv_prob_under: float,
+    best_ev: dict | None,
+    official_count: int,
+    market_quality: str,
+) -> dict:
+    """Structured diagnostics for one prop group (debug logging only)."""
+    player_log, market_log = _group_key_meta(group_key)
+
+    pinnacle_anywhere = sorted(b for b in all_books if is_pinnacle_book(b))
+    pinnacle_both_sides = pinnacle_over_book is not None and pinnacle_under_book is not None
+
+    rec_books = [b for b in all_books if not is_pinnacle_book(b)]
+    over_recs = [b for b in rec_books if b in over_prices]
+    under_recs = [b for b in rec_books if b in under_prices]
+    best_over = (max(over_recs, key=lambda b: american_to_decimal(over_prices[b]["price"]))
+                 if over_recs else None)
+    best_under = (max(under_recs, key=lambda b: american_to_decimal(under_prices[b]["price"]))
+                  if under_recs else None)
+
+    if use_pinnacle_ref:
+        fair_over, fair_under = nv_prob_over, nv_prob_under
+    else:
+        fair_over = fair_under = None
+
+    best_sportsbook = best_ev.get("sportsbook") if best_ev else None
+    best_side = best_ev.get("side") if best_ev else None
+    best_odds = best_ev.get("american_odds") if best_ev else None
+    best_ev_pct = best_ev.get("ev_pct") if best_ev else None
+    best_pinnacle_ev = best_ev.get("pinnacle_ev") if best_ev else None
+    best_prob_edge = best_ev.get("pinnacle_prob_edge") if best_ev else None
+
+    reason = _rejection_reason(
+        market_quality=market_quality,
+        use_pinnacle_ref=use_pinnacle_ref,
+        pinnacle_found=pinnacle_found,
+        pinnacle_anywhere=bool(pinnacle_anywhere),
+        pinnacle_both_sides=pinnacle_both_sides,
+        best_ev=best_ev,
+        official_count=official_count,
+    )
+
+    return {
+        "player": player_log,
+        "market": market_log,
+        "line": line,
+        "side": best_side,
+        "total_books": len(all_books),
+        "n_comparison_books": len(rec_books) if use_pinnacle_ref else len(all_books),
+        "pinnacle_present": bool(pinnacle_found),
+        "pinnacle_books": pinnacle_anywhere,
+        "pinnacle_both_sides": pinnacle_both_sides,
+        "pinnacle_reference_used": bool(use_pinnacle_ref),
+        "fallback_used": not bool(use_pinnacle_ref),
+        "pinnacle_over_price": pinnacle_over_price,
+        "pinnacle_under_price": pinnacle_under_price,
+        "pinnacle_fair_over": round(fair_over, 6) if fair_over is not None else None,
+        "pinnacle_fair_under": round(fair_under, 6) if fair_under is not None else None,
+        "best_non_pinnacle_over": ({"book": best_over, "odds": over_prices[best_over]["price"]}
+                                   if best_over else {}),
+        "best_non_pinnacle_under": ({"book": best_under, "odds": under_prices[best_under]["price"]}
+                                    if best_under else {}),
+        "best_sportsbook": best_sportsbook,
+        "best_side": best_side,
+        "best_odds": best_odds,
+        "best_ev_pct": best_ev_pct,
+        "best_pinnacle_ev": best_pinnacle_ev,
+        "best_pinnacle_prob_edge": best_prob_edge,
+        "official_approved": bool(official_count > 0),
+        "rejection_reason": reason,
+    }
+
+
+def _fmt_diag(value) -> str:
+    return "None" if value is None else str(value)
+
+
+def _log_group_diagnostics(diag: dict) -> None:
+    """Emit one DEBUG line summarising a group's Pinnacle diagnostics."""
+    logger.debug(
+        "PINNACLE_GROUP player=%s market=%s line=%s side=%s total_books=%d "
+        "comparison_books=%d pinnacle_present=%s pinnacle_books=%s "
+        "pinnacle_both_sides=%s pinnacle_over_odds=%s pinnacle_under_odds=%s "
+        "pinnacle_fair_over=%s pinnacle_fair_under=%s best_book_over=%s "
+        "best_over_odds=%s best_book_under=%s best_under_odds=%s "
+        "best_ev_book=%s best_ev_side=%s best_ev_odds=%s ev_pct=%s "
+        "pinnacle_ev=%s prob_edge=%s official_approved=%s rejection_reason=%s",
+        diag.get("player", ""), diag.get("market", ""), diag.get("line"),
+        diag.get("side"), diag.get("total_books", 0), diag.get("n_comparison_books", 0),
+        bool(diag.get("pinnacle_present")), ",".join(diag.get("pinnacle_books") or []),
+        bool(diag.get("pinnacle_both_sides")),
+        _fmt_diag(diag.get("pinnacle_over_price")), _fmt_diag(diag.get("pinnacle_under_price")),
+        _fmt_diag(diag.get("pinnacle_fair_over")), _fmt_diag(diag.get("pinnacle_fair_under")),
+        _fmt_diag((diag.get("best_non_pinnacle_over") or {}).get("book")),
+        _fmt_diag((diag.get("best_non_pinnacle_over") or {}).get("odds")),
+        _fmt_diag((diag.get("best_non_pinnacle_under") or {}).get("book")),
+        _fmt_diag((diag.get("best_non_pinnacle_under") or {}).get("odds")),
+        _fmt_diag(diag.get("best_sportsbook")), _fmt_diag(diag.get("best_side")),
+        _fmt_diag(diag.get("best_odds")), _fmt_diag(diag.get("best_ev_pct")),
+        _fmt_diag(diag.get("best_pinnacle_ev")), _fmt_diag(diag.get("best_pinnacle_prob_edge")),
+        bool(diag.get("official_approved")), diag.get("rejection_reason", ""),
+    )
+
+
+def _empty_diagnostics(group_key: str, over_prices: dict, under_prices: dict,
+                       line=None) -> dict:
+    """Diagnostics for groups that never reached full analysis (empty/excluded)."""
+    player_log, market_log = _group_key_meta(group_key)
+    all_books = sorted(set(over_prices) | set(under_prices))
+    return {
+        "player": player_log,
+        "market": market_log,
+        "line": line if line is not None else _resolve_line(over_prices, under_prices),
+        "side": None,
+        "total_books": len(all_books),
+        "n_comparison_books": len([b for b in all_books if not is_pinnacle_book(b)]),
+        "pinnacle_present": False,
+        "pinnacle_books": sorted(b for b in all_books if is_pinnacle_book(b)),
+        "pinnacle_both_sides": False,
+        "pinnacle_reference_used": False,
+        "fallback_used": False,
+        "pinnacle_over_price": None,
+        "pinnacle_under_price": None,
+        "pinnacle_fair_over": None,
+        "pinnacle_fair_under": None,
+        "best_non_pinnacle_over": {},
+        "best_non_pinnacle_under": {},
+        "best_sportsbook": None,
+        "best_side": None,
+        "best_odds": None,
+        "best_ev_pct": None,
+        "best_pinnacle_ev": None,
+        "best_pinnacle_prob_edge": None,
+        "official_approved": False,
+        "rejection_reason": "insufficient_comparison_books",
+    }
+
+
+# ==================================================================
 # Public entry point
 # ==================================================================
 
@@ -503,6 +690,27 @@ def analyze_prop_group(
             player_log, market_log, line, reason,
         )
 
+    # Pinnacle diagnostics (structured metadata + one DEBUG log per group)
+    diagnostics = _build_group_diagnostics(
+        group_key=group_key,
+        line=line,
+        all_books=all_books,
+        over_prices=over_prices,
+        under_prices=under_prices,
+        use_pinnacle_ref=use_pinnacle_ref,
+        pinnacle_found=pinnacle_found,
+        pinnacle_over_book=pinnacle_over_book,
+        pinnacle_under_book=pinnacle_under_book,
+        pinnacle_over_price=pinnacle_over_price,
+        pinnacle_under_price=pinnacle_under_price,
+        nv_prob_over=nv_prob_over,
+        nv_prob_under=nv_prob_under,
+        best_ev=best_ev,
+        official_count=len(official_books),
+        market_quality=market_quality,
+    )
+    _log_group_diagnostics(diagnostics)
+
     return {
         "group_key": group_key,
         "line": line,
@@ -525,6 +733,7 @@ def analyze_prop_group(
         "books": books,
         "best_ev": best_ev,
         "recommendation": recommendation,
+        "diagnostics": diagnostics,
     }
 
 
@@ -556,6 +765,7 @@ def _empty_result(group_key, over_prices, under_prices,
         "books": [],
         "best_ev": None,
         "recommendation": "NO_BET",
+        "diagnostics": _empty_diagnostics(group_key, over_prices, under_prices, line),
     }
 
 

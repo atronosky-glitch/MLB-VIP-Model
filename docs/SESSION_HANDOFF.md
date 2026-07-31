@@ -2,6 +2,42 @@
 
 > Future OpenCode session: read `AGENTS.md`, `PROJECT_STATUS.md`, `TODO.md`, and this file before modifying code.
 
+## Session: 2026-07-31 — Phase 18C: Pinnacle + alt-line diagnostics only
+
+### What was done
+
+Added a Pinnacle/alt-line observability layer. **No pick logic, thresholds, book filtering, or fallback behavior changed** (explicitly frozen: `MIN_PINNACLE_EV`, `MIN_PINNACLE_PROB_EDGE`, `REQUIRE_PINNACLE_FOR_OFFICIAL`, `MIN_COMPARISON_BOOKS`, `YN_MIN_COMPARISON_BOOKS`). Full suite: **1345 passed, 0 failed** (was 1332; +13 new tests). Repo now at `C:\Users\atron\Dev\MLB_Model` (moved out of OneDrive).
+
+**`src/player_prop_analysis.py`** (diagnostics only):
+- New helpers: `_rejection_reason`, `_build_group_diagnostics`, `_fmt_diag`, `_log_group_diagnostics`, `_empty_diagnostics`.
+- Every `analyze_prop_group` result (main path + `_empty_result`) gains `"diagnostics"`: player, market, line, side, `total_books`, `n_comparison_books`, `pinnacle_present`, `pinnacle_books`, `pinnacle_both_sides`, `pinnacle_reference_used`, `fallback_used`, `pinnacle_over_price`/`pinnacle_under_price`, `pinnacle_fair_over`/`pinnacle_fair_under`, best non-Pinnacle book+odds per side, `best_sportsbook`/`best_side`/`best_odds`/`best_ev_pct`/`best_pinnacle_ev`/`best_pinnacle_prob_edge`, `official_approved`, `rejection_reason`.
+- One **DEBUG** log per group: `PINNACLE_GROUP player= market= line= side= total_books= comparison_books= pinnacle_present= pinnacle_books= pinnacle_both_sides= pinnacle_over_odds= pinnacle_under_odds= pinnacle_fair_over= pinnacle_fair_under= best_book_over= best_over_odds= best_book_under= best_under_odds= best_ev_book= best_ev_side= best_ev_odds= ev_pct= pinnacle_ev= prob_edge= official_approved= rejection_reason=`
+
+**`src/player_prop_scanner.py`:**
+- `_new_pinnacle_summary` / `_accumulate_pinnacle_summary` / `_log_pinnacle_summary`: one **INFO** line per run — `PINNACLE_SUMMARY total_groups= exact_match= reference_used= pinnacle_missing= line_mismatch= one_side= model_disabled= insufficient_books= ev_threshold_failed= prob_edge_threshold_failed= no_positive_edge= fallback_lean= official_approved=`.
+- `_log_line_fragmentation`: **DEBUG** per (player_id, market_type) — `LINE_FRAGMENTATION player= market= line= books= book_names= pinnacle_on_line= pinnacle_other_lines= over_books= under_books=`.
+- Result dicts (normal + cache/`_empty_result`) carry `pinnacle_diagnostics` (summary counters).
+- New `--debug` CLI flag → `logging.basicConfig(level=DEBUG)` in `main()`.
+
+**`src/daily_pipeline.py`:** `_build_run_summary` includes `"pinnacle_diagnostics": state.scan_result.get("pinnacle_diagnostics", {})` → shows up in `run_summary.json`.
+
+**Tests (+13, all in `tests/test_pinnacle_value_model.py`, file now 41 tests):**
+- `TestPinnacleDiagnostics` (7): diagnostics present + fields correct; every rejection reason exercised; model-disabled case; empty-result path.
+- `TestScannerPinnacleDiagnostics` (5): summary accumulation (incl. resilience to a missing `diagnostics` key), `PINNACLE_SUMMARY` INFO emitted via caplog, `LINE_FRAGMENTATION` DEBUG emitted, `--debug` parser flag, full `run_scan` integration asserting summary counters + `pinnacle_diagnostics` in result.
+
+### Live usage
+
+- `python -m src.player_prop_scanner --debug` (or `python -m src.daily_pipeline ... --debug`) → per-group `PINNACLE_GROUP`, per-line `LINE_FRAGMENTATION`, and the run-level `PINNACLE_SUMMARY` INFO line. Without `--debug`, production output is unchanged (per-group logs are DEBUG-level; only the single INFO summary line appears).
+- Production feed still has no `pinnacle` book → every group is `missing_pinnacle` (fallback), so `PINNACLE_SUMMARY` will show `exact_match=0 reference_used=0 pinnacle_missing=<n> fallback_lean=<n> official_approved=0` until a `pinnacle` key appears.
+
+### Next steps
+
+1. Commit Phase 18C and push → Render auto-deploys. Watch worker logs for the `PINNACLE_SUMMARY` INFO line.
+2. If a `pinnacle` book is ever added to the feed: `PINNACLE_SUMMARY` will show `exact_match>0`, per-group logs show `pinnacle_approved`/EV/edge, and OFFICIAL picks can appear (Gate 9 in `classify_recommendation`).
+3. Pending from earlier: alt-line scanning (now diagnosable via `LINE_FRAGMENTATION`), website, multi-league.
+
+---
+
 ## Session: 2026-07-31 — Phase 18B: Pinnacle required for official picks
 
 ### What was done

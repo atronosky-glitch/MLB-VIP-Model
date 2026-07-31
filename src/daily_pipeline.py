@@ -961,6 +961,7 @@ def _build_run_summary(state: PipelineState) -> dict:
         "stale_warning": state.stale_warning,
         "research_only": state.research_only,
         "stage_timings": state.stage_timings,
+        "pinnacle_diagnostics": state.scan_result.get("pinnacle_diagnostics", {}),
         "errors": state.errors,
         "warnings": state.warnings,
     }

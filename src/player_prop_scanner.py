@@ -31,7 +31,7 @@ from typing import NamedTuple
 from . import prop_config as cfg
 from .api_client import SportsGameOddsClient
 from .player_prop_parser import parse_player_props
-from .player_prop_analysis import analyze_prop_group, analyze_yn_group
+from .player_prop_analysis import analyze_prop_group, analyze_yn_group, is_pinnacle_book
 from .validation_constants import APPROVED_STATUSES
 from database.db_manager import get_connection, create_run, finish_run
 
@@ -43,6 +43,124 @@ _MQ_RANK = {
     cfg.MARKET_QUALITY_NEEDS_REVIEW: 1,
     cfg.MARKET_QUALITY_INSUFFICIENT: 2,
 }
+
+
+# ==================================================================
+# Pinnacle diagnostics (logging only — never changes pick logic)
+# ==================================================================
+
+def _new_pinnacle_summary() -> dict:
+    """Counter block for the end-of-analysis Pinnacle diagnostics summary."""
+    return {
+        "total_groups": 0,
+        "pinnacle_exact_match": 0,
+        "pinnacle_reference_used": 0,
+        "pinnacle_missing": 0,
+        "pinnacle_line_mismatch": 0,
+        "pinnacle_one_side": 0,
+        "pinnacle_model_disabled": 0,
+        "insufficient_comparison_books": 0,
+        "ev_threshold_failed": 0,
+        "prob_edge_threshold_failed": 0,
+        "no_positive_edge": 0,
+        "fallback_lean": 0,
+        "official_approved": 0,
+    }
+
+
+def _accumulate_pinnacle_summary(summary: dict, analysis: dict) -> None:
+    """Fold one group analysis result into the compact summary counters."""
+    diag = analysis.get("diagnostics") or {}
+    summary["total_groups"] += 1
+    if diag.get("pinnacle_both_sides"):
+        summary["pinnacle_exact_match"] += 1
+    if diag.get("pinnacle_reference_used"):
+        summary["pinnacle_reference_used"] += 1
+    if diag.get("fallback_used"):
+        summary["fallback_lean"] += 1
+    if diag.get("official_approved"):
+        summary["official_approved"] += 1
+    reason_key = {
+        "missing_pinnacle": "pinnacle_missing",
+        "pinnacle_line_mismatch": "pinnacle_line_mismatch",
+        "pinnacle_missing_opposite_side": "pinnacle_one_side",
+        "pinnacle_model_disabled": "pinnacle_model_disabled",
+        "insufficient_comparison_books": "insufficient_comparison_books",
+        "ev_threshold_failed": "ev_threshold_failed",
+        "prob_edge_threshold_failed": "prob_edge_threshold_failed",
+        "no_positive_edge": "no_positive_edge",
+    }.get(diag.get("rejection_reason", ""))
+    if reason_key:
+        summary[reason_key] += 1
+
+
+def _log_pinnacle_summary(summary: dict) -> None:
+    """Emit one compact INFO line summarising the whole O/U analysis run."""
+    logger.info(
+        "PINNACLE_SUMMARY total_groups=%d exact_match=%d reference_used=%d "
+        "pinnacle_missing=%d line_mismatch=%d one_side=%d model_disabled=%d "
+        "insufficient_books=%d ev_threshold_failed=%d "
+        "prob_edge_threshold_failed=%d no_positive_edge=%d fallback_lean=%d "
+        "official_approved=%d",
+        summary.get("total_groups", 0),
+        summary.get("pinnacle_exact_match", 0),
+        summary.get("pinnacle_reference_used", 0),
+        summary.get("pinnacle_missing", 0),
+        summary.get("pinnacle_line_mismatch", 0),
+        summary.get("pinnacle_one_side", 0),
+        summary.get("pinnacle_model_disabled", 0),
+        summary.get("insufficient_comparison_books", 0),
+        summary.get("ev_threshold_failed", 0),
+        summary.get("prob_edge_threshold_failed", 0),
+        summary.get("no_positive_edge", 0),
+        summary.get("fallback_lean", 0),
+        summary.get("official_approved", 0),
+    )
+
+
+def _log_line_fragmentation(ou_groups: dict) -> None:
+    """DEBUG-log the exact lines available per player+market.
+
+    For each ``(player_id, market_type)`` pair, summarise every exact line that
+    appears: line value, number of books, book names, whether Pinnacle is on
+    that exact line, whether Pinnacle exists on a different line, and the
+    Over/Under side counts.
+    """
+    pm_lines: dict[tuple[str, str], dict] = {}
+    for gd in ou_groups.values():
+        pm_key = (gd.get("player_id", ""), gd.get("market_type", ""))
+        line = gd.get("line")
+        books = sorted(set(gd["over"]) | set(gd["under"]))
+        line_entry = pm_lines.setdefault(pm_key, {}).setdefault(line, {
+            "books": [],
+            "pinnacle": False,
+            "over_books": 0,
+            "under_books": 0,
+        })
+        for b in books:
+            if b not in line_entry["books"]:
+                line_entry["books"].append(b)
+        line_entry["books"].sort()
+        if any(is_pinnacle_book(b) for b in books):
+            line_entry["pinnacle"] = True
+        line_entry["over_books"] = len(gd["over"])
+        line_entry["under_books"] = len(gd["under"])
+
+    for (player_id, market_type), lines in sorted(pm_lines.items()):
+        pinnacle_lines = {l for l, e in lines.items() if e["pinnacle"]}
+        lines_sorted = sorted(lines.keys(), key=lambda x: (x is None, str(x)))
+        for line in lines_sorted:
+            e = lines[line]
+            other_pinnacle = sorted(l for l in pinnacle_lines if l != line)
+            logger.debug(
+                "LINE_FRAGMENTATION player=%s market=%s line=%s books=%d "
+                "book_names=%s pinnacle_on_line=%s pinnacle_other_lines=%s "
+                "over_books=%d under_books=%d",
+                player_id, market_type, line, len(e["books"]),
+                ",".join(e["books"]), bool(e["pinnacle"]),
+                ",".join(str(l) for l in other_pinnacle),
+                e["over_books"], e["under_books"],
+            )
 
 
 # ==================================================================
@@ -315,6 +433,9 @@ def run_scan(
             print(f"    [{has_both}] {gd['market_type']:35} line={gd.get('line','?'):6}  "
                   f"over_books={len(gd['over'])} under_books={len(gd['under'])}  "
                   f"player={gd.get('player_name','?')[:20]}")
+    _log_line_fragmentation(ou_groups)
+
+    pinnacle_summary = _new_pinnacle_summary()
     opportunities = []
     for gkey, gdata in ou_groups.items():
         analysis = analyze_prop_group(
@@ -322,6 +443,7 @@ def run_scan(
             n_excluded_rows=excluded_count,
             n_approved_rows=approved_count,
         )
+        _accumulate_pinnacle_summary(pinnacle_summary, analysis)
         if analysis["market_quality"] == cfg.MARKET_QUALITY_EXCLUDED:
             continue
 
@@ -382,6 +504,8 @@ def run_scan(
     if ou_groups:
         n_ou_opps = len(opportunities)
         print(f"  O/U opportunities from scan: {n_ou_opps}")
+
+    _log_pinnacle_summary(pinnacle_summary)
 
     # YN groups formed (debug)
     yn_groups_with_yes = sum(1 for g in yn_groups.values() if g["yes"])
@@ -562,6 +686,7 @@ def run_scan(
         "research_only": research_only,
         "scanner_title": scanner_title,
         "run_id": _run_id or "",
+        "pinnacle_diagnostics": pinnacle_summary,
     }
 
     # Finish run record
@@ -606,6 +731,7 @@ def _empty_result(events, scan_start, fetch_time, data_source, from_cache):
         "research_only": from_cache,
         "scanner_title": "MLB PLAYER PROP EDGE SCANNER",
         "run_id": "",
+        "pinnacle_diagnostics": _new_pinnacle_summary(),
     }
 
 
@@ -837,6 +963,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Market form: ou (over/under), yn (yes/no), all (default)")
     parser.add_argument("--verbose", action="store_true",
                         help="Show detailed per-opportunity output")
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable debug logging (Pinnacle diagnostics)")
     parser.add_argument("--sportsbook", type=str, default=None,
                         help="Filter by sportsbook name (case-insensitive substring)")
     parser.add_argument("--player", type=str, default=None,
@@ -854,6 +982,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(name)s %(levelname)s: %(message)s")
+    else:
+        logging.basicConfig(level=logging.WARNING, format="%(name)s %(levelname)s: %(message)s")
 
     # Validate config at startup
     config_errors = cfg.validate_config()
