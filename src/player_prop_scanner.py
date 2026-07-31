@@ -368,6 +368,7 @@ def run_scan(
                 "ev_pct": book_entry["ev_pct"],
                 "market_quality": mq,
                 "rec_eligible": is_rec_eligible,
+                "is_official": bool(book_entry.get("is_official", False)),
                 "bet_status": bet_status,
                 "validation_status": book_entry.get("validation_status", ""),
                 "is_alt_line": 0,

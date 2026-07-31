@@ -15,8 +15,13 @@ All thresholds are in OfficialPickConfig — never hardcoded.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+from . import prop_config as cfg
+
+logger = logging.getLogger(__name__)
 
 # ── Tier constants ─────────────────────────────────────────────────
 
@@ -208,7 +213,21 @@ def classify_recommendation(
         applicable_metric = "unknown"
         disq.append(f"Unknown market form '{market_form}'")
 
-    # ── Gate 9: Valid identity fields ──────────────────────────
+    # ── Gate 9: Pinnacle approval (O/U official picks only) ───────
+
+    pinnacle_approved = rec.get("pinnacle_approved")
+    if market_form == "ou" and getattr(cfg, "REQUIRE_PINNACLE_FOR_OFFICIAL", False):
+        if not pinnacle_approved:
+            disq.append("Pinnacle approval required for official status")
+            logger.warning(
+                "OFFICIAL_BLOCKED_REQUIRE_PINNACLE player=%s market=%s line=%s "
+                "reason=%s",
+                rec.get("player_id", "?"), rec.get("market_type", "?"),
+                rec.get("line", "?"),
+                "missing_pinnacle" if pinnacle_approved is None else "pinnacle_threshold_failed",
+            )
+
+    # ── Gate 10: Valid identity fields ──────────────────────────
 
     if not rec.get("event_id"):
         disq.append("Missing event_id")
@@ -219,7 +238,7 @@ def classify_recommendation(
     if not rec.get("sportsbook"):
         disq.append("Missing sportsbook")
 
-    # ── Gate 10: Reference odds for YN ────────────────────────
+    # ── Gate 11: Reference odds for YN ────────────────────────
 
     if market_form == "yn" and not rec.get("yn_reference_odds"):
         disq.append("Missing YN reference odds")

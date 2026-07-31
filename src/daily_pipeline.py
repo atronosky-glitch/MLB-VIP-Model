@@ -660,6 +660,8 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     "market_quality": opp.get("market_quality", ""),
                     "rec_status": opp.get("bet_status", opp.get("comparison_status", "")),
                     "rec_eligible": opp.get("rec_eligible", False),
+                    "pinnacle_approved": opp.get("pinnacle_approved"),
+                    "is_official": opp.get("is_official", False),
                     "data_source": state.data_source,
                     "observation_timestamp": scan_ts,
                     "scan_timestamp": scan_ts,

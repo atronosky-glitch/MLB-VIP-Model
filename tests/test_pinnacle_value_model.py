@@ -177,7 +177,7 @@ class TestFallbackBehaviour:
         for b in result["books"]:
             assert b["pinnacle_approved"] is None
 
-    def test_req_pinnacle_suppresses_official_picks(self):
+    def test_req_pinnacle_blocks_fallback_official_but_displays(self):
         orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
         cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
         try:
@@ -185,8 +185,13 @@ class TestFallbackBehaviour:
             over = {"book0": _price(120), "book1": _price(-110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
             under = {"book0": _price(-110), "book1": _price(-110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
             result = analyze_prop_group("g1", over, under)
-            assert result["best_ev"] is None
-            assert result["recommendation"] == "NO_BET"
+            # Fallback opportunity is still displayed…
+            assert result["best_ev"] is not None
+            assert result["recommendation"] == "BET"
+            # …but never official without Pinnacle approval
+            assert result["best_ev"]["is_official"] is False
+            assert result["official_count"] == 0
+            assert all(b["is_official"] is False for b in result["books"])
         finally:
             cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
 
@@ -236,6 +241,102 @@ class TestFallbackBehaviour:
         result = analyze_prop_group("g1", over, under)
         assert result["recommendation"] == "NO_BET"
         assert all(b["pinnacle_approved"] is None for b in result["books"])
+
+
+# ── Phase 18B: Pinnacle required for official picks ────────────────
+
+class TestPinnacleRequiredForOfficial:
+    """Pinnacle approval gates official eligibility (REQUIRE flag explicit)."""
+
+    def test_pinnacle_approved_book_is_official(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            over = {"pinnacle": _price(-120), "fanduel": _price(110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            under = {"pinnacle": _price(100), "fanduel": _price(-110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            result = analyze_prop_group("g1", over, under)
+            assert result["pinnacle_found"] is True
+            assert result["pinnacle_reference_used"] is True
+            fanduel = next(b for b in result["books"] if b["sportsbook"] == "fanduel" and b["side"] == "OVER")
+            assert fanduel["pinnacle_approved"] is True
+            assert fanduel["is_official"] is True
+            assert result["official_count"] >= 1
+            assert result["best_ev"]["is_official"] is True
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_pinnacle_missing_blocks_official(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            over = {"book0": _price(120), "book1": _price(-110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            under = {"book0": _price(-110), "book1": _price(-110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            result = analyze_prop_group("g1", over, under)
+            assert result["pinnacle_found"] is False
+            assert result["pinnacle_reference_used"] is False
+            assert result["best_ev"] is not None  # still displayed
+            assert result["best_ev"]["is_official"] is False
+            assert result["official_count"] == 0
+            assert all(b["is_official"] is False for b in result["books"])
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_pinnacle_threshold_fail_blocks_official(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            # OVER +100 beats Pinnacle no-vig prob (EV ~4.4%) but the probability
+            # edge (2.2%) is below MIN_PINNACLE_PROB_EDGE → not approved.
+            over = {"pinnacle": _price(-120), "fanduel": _price(100), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            under = {"pinnacle": _price(100), "fanduel": _price(-110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            result = analyze_prop_group("g1", over, under)
+            assert result["pinnacle_found"] is True
+            assert result["pinnacle_reference_used"] is True
+            fanduel = next(b for b in result["books"] if b["sportsbook"] == "fanduel" and b["side"] == "OVER")
+            assert fanduel["pinnacle_approved"] is False
+            assert fanduel["is_official"] is False
+            assert result["best_ev"] is not None
+            assert result["best_ev"]["is_official"] is False
+            assert result["official_count"] == 0
+            assert all(b["is_official"] is False for b in result["books"])
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_fallback_still_displayed_but_not_official(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            over = {"book0": _price(120), "book1": _price(-110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            under = {"book0": _price(-110), "book1": _price(-110), "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            result = analyze_prop_group("g1", over, under)
+            # Opportunity still surfaces with a positive EV best entry…
+            assert result["recommendation"] == "BET"
+            assert result["best_ev"] is not None
+            assert result["best_ev"]["ev_pct"] > 0
+            # …but is never official.
+            assert result["best_ev"]["is_official"] is False
+            assert result["official_count"] == 0
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_different_line_pinnacle_not_used_as_reference(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            over = {"book1": _price(-110),
+                    "pinnacle": {"price": -120, "decimal_odds": round(american_to_decimal(-120), 4), "line": 6.5},
+                    "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            under = {"book1": _price(-110),
+                     "pinnacle": {"price": 100, "decimal_odds": round(american_to_decimal(100), 4), "line": 6.5},
+                     "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            result = analyze_prop_group("g1", over, under)
+            assert result["line"] == 5.5
+            # Pinnacle at 6.5 must not be treated as the reference for 5.5
+            assert result["pinnacle_found"] is False
+            assert result["pinnacle_reference_used"] is False
+            assert all(b["pinnacle_approved"] is None for b in result["books"])
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
 
 
 # ── Dashboard Score Calibration None-formatting regression ─────────

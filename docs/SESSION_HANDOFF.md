@@ -2,6 +2,46 @@
 
 > Future OpenCode session: read `AGENTS.md`, `PROJECT_STATUS.md`, `TODO.md`, and this file before modifying code.
 
+## Session: 2026-07-31 — Phase 18B: Pinnacle required for official picks
+
+### What was done
+
+Made Pinnacle approval a hard requirement for OFFICIAL_TRACKED picks while keeping fallback/market-median opportunities visible but non-official. `REQUIRE_PINNACLE_FOR_OFFICIAL` now defaults to `True`. Full suite: **1332 passed, 0 failed** (was 1316/5 prior session).
+
+**`src/prop_config.py`:** `REQUIRE_PINNACLE_FOR_OFFICIAL = True` (was False).
+
+**`src/player_prop_analysis.py`:**
+- New `_is_official()`: with the REQUIRE flag, only a Pinnacle-approved book is official; legacy rule (any positive EV) when flag off.
+- New `_group_key_meta()` parses `(player_id, market_type)` out of group keys for debug logs.
+- Per-book `is_official` added to all three book-dict builders (Pinnacle-ref OVER/UNDER + fallback).
+- Group-level results: `pinnacle_found`, `pinnacle_reference_used`, `pinnacle_book`, `pinnacle_over_price`, `pinnacle_under_price`, `official_count` (also added to `_empty_result`).
+- Same-line guard: entries whose `line` differs from the resolved line log `PINNACLE_LINE_FRAGMENTATION` (warn) instead of being silently merged; Pinnacle detection is restricted to books `_at_resolved_line()`.
+- **Behavior change vs 18A:** strict mode no longer sets `best_ev=None`/`NO_BET`. Fallback opportunities stay displayed; they are merely `is_official=False`. The old "REQUIRE_PINNACLE_FOR_OFFICIAL=True — no official picks" suppression print is gone.
+- Debug logs: `PINNACLE_CHECK player= market= line= found= approved= ev= prob_edge=` (debug, per group) and `OFFICIAL_BLOCKED_REQUIRE_PINNACLE player= market= line= reason=missing_pinnacle|pinnacle_threshold_failed` (warning).
+
+**`src/player_prop_scanner.py`:** O/U opportunities carry `is_official` (from book entry). Pinnacle fields were already propagated in 18A.
+
+**`src/daily_pipeline.py`:** `_stage_freeze` adds `pinnacle_approved` + `is_official` to the rec dict before `classify_recommendation`/`save_recommendation` (safe: `save_recommendation` uses an explicit column INSERT and ignores extra keys).
+
+**`src/official_picks.py`:** new Gate 9 — for O/U recs, when `cfg.REQUIRE_PINNACLE_FOR_OFFICIAL` is True and `rec["pinnacle_approved"]` is falsy, the official tier is disqualified (reason "Pinnacle approval required for official status") and `OFFICIAL_BLOCKED_REQUIRE_PINNACLE` is logged. Falsy recs fall to DISCOVERY (if status allows) or RESEARCH. YN recs are never gated (no Pinnacle counterpart for single-sided markets). Following gates renumbered (identity fields 10, YN reference odds 11).
+
+**Tests (11 new, 5 updated):**
+- `tests/test_pinnacle_value_model.py` — 5 required cases in `TestPinnacleRequiredForOfficial` (approved→official, missing→not official, threshold-fail→not official, fallback displayed but not official, different-line Pinnacle not used as reference); strict-mode test rewritten for display-not-official behavior.
+- `tests/test_phase15_official_picks.py` — 6 gate tests in `TestPinnacleOfficialGate` (approved→official, missing→DISCOVERY, threshold-fail→DISCOVERY, RESEARCH reports pinnacle reason, legacy behavior when flag disabled, YN unaffected); `_make_rec` base now includes `pinnacle_approved=True` so all pre-existing official-tier tests still pass under the new default.
+- `tests/test_phase16_comprehensive.py` — `_base_rec` gains `pinnacle_approved=True`/`is_official=True`.
+
+### Live behavior note
+
+Production feed still has no `pinnacle` book (`betmgm, bovada, caesars, draftkings, espnbet, fanduel, pointsbet, unibet, williamhill`), so every group runs the LOO fallback → all recs are `is_official=False` → no OFFICIAL_TRACKED picks until a `pinnacle` key appears. Fallback rows store as DISCOVERY_TRACKED or RESEARCH_ONLY. Worker logs will show `OFFICIAL_BLOCKED_REQUIRE_PINNACLE ... reason=missing_pinnacle` warnings and `[PINNACLE-REF] ... LOO median fallback used`.
+
+### Next steps
+
+1. Commit Phase 18B and push → Render auto-deploys. Watch logs for `OFFICIAL_BLOCKED_REQUIRE_PINNACLE` (expected per group) and confirm dashboard shows no OFFICIAL_TRACKED rows.
+2. If a `pinnacle` book is ever added to the feed, watch for `[PINNACLE-REF] ... Pinnacle (<book>) ...` + `PINNACLE-APPROVED` lines and OFFICIAL picks appearing.
+3. Pending from earlier: alt-line scanning, website, multi-league.
+
+---
+
 ## Session: 2026-07-30/31 — Phase 18A: Pinnacle-first sharp value model
 
 ### What was done

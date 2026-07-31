@@ -71,9 +71,12 @@ FRESHNESS_THRESHOLD_SECONDS = 3600  # 1 hour
 # When enabled, Pinnacle's two-sided prices define the no-vig fair
 # probability for a prop group and every other book is compared to it.
 USE_PINNACLE_VALUE_MODEL = True
-# If True and Pinnacle is missing one/both sides, no book in that group
-# can become an official pick (fallback analysis still runs if enabled).
-REQUIRE_PINNACLE_FOR_OFFICIAL = False
+# If True, Pinnacle approval is REQUIRED for a book to be an official pick.
+# Pinnacle approval means both-sides Pinnacle prices exist at the exact same
+# line and EV >= MIN_PINNACLE_EV and probability edge >= MIN_PINNACLE_PROB_EDGE.
+# Fallback analysis still runs and opportunities are still displayed, but
+# books without Pinnacle approval are marked is_official=False.
+REQUIRE_PINNACLE_FOR_OFFICIAL = True
 # If True, groups without Pinnacle fall back to the existing LOO
 # market-median consensus (unchanged behaviour).
 PINNACLE_FALLBACK_TO_MARKET_MEDIAN = True

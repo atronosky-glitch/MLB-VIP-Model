@@ -8,6 +8,7 @@ from src.official_picks import (
     OfficialPickConfig, QualificationResult, classify_recommendation,
     TIER_OFFICIAL, TIER_DISCOVERY, TIER_RESEARCH, RULES_VERSION, DEFAULT_CONFIG,
 )
+from src import prop_config as cfg
 
 
 def _make_rec(**overrides):
@@ -32,6 +33,7 @@ def _make_rec(**overrides):
         "event_status": "scheduled",
         "model_score": 8.5,
         "model_version": "v1",
+        "pinnacle_approved": True,
     }
     base.update(overrides)
     return base
@@ -140,6 +142,98 @@ class TestClassifyOU:
         q = classify_recommendation(rec)
         assert q.tier == TIER_RESEARCH
         assert len(q.disqualification_reasons) >= 3
+
+
+class TestPinnacleOfficialGate:
+    """REQUIRE_PINNACLE_FOR_OFFICIAL gates the official tier for O/U."""
+
+    def _strong_rec(self, **overrides):
+        rec = _make_rec(
+            model_score=9.0, ev_pct=6.0, n_consensus_books=7,
+            rec_status="QUALIFIED", freshness_status="FRESH",
+            event_status="scheduled", market_quality="STRONG",
+        )
+        rec.update(overrides)
+        return rec
+
+    def test_approved_is_official(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            q = classify_recommendation(self._strong_rec(pinnacle_approved=True))
+            assert q.tier == TIER_OFFICIAL
+            assert q.passed is True
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_missing_pinnacle_blocks_official(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            # QUALIFIED + STRONG + high score: everything passes except the gate.
+            q = classify_recommendation(self._strong_rec(pinnacle_approved=None))
+            assert q.tier == TIER_DISCOVERY
+            assert q.passed is False
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_threshold_fail_blocks_official(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            q = classify_recommendation(self._strong_rec(pinnacle_approved=False))
+            assert q.tier == TIER_DISCOVERY
+            assert q.passed is False
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_research_reports_pinnacle_reason(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            # MARGINAL_EDGE is not discovery-allowed → falls through to RESEARCH,
+            # where the official disqualifications are preserved for display.
+            q = classify_recommendation(self._strong_rec(
+                pinnacle_approved=None, rec_status="MARGINAL_EDGE",
+            ))
+            assert q.tier == TIER_RESEARCH
+            assert any("Pinnacle approval required" in r
+                       for r in q.disqualification_reasons)
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_legacy_behavior_when_flag_disabled(self):
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = False
+        try:
+            # Without the requirement, no pinnacle approval needed for official.
+            q = classify_recommendation(self._strong_rec(pinnacle_approved=None))
+            assert q.tier == TIER_OFFICIAL
+            assert q.passed is True
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
+    def test_yn_unaffected_by_pinnacle_gate(self):
+        """YN single-sided markets have no Pinnacle approval — never gated."""
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            rec = {
+                "event_id": "E2", "player_id": "P2", "player_name": "Ohtani",
+                "market_type": "pitching_win", "market_form": "yn", "side": "Yes",
+                "line": None, "sportsbook": "FD", "offered_american_odds": 150,
+                "offered_decimal_odds": 2.5, "offered_implied_prob": 0.4,
+                "yn_implied_prob_adv": 6.0, "yn_reference_prob": 0.55,
+                "yn_reference_odds": -110,
+                "n_consensus_books": 7, "market_quality": "STRONG",
+                "rec_status": "QUALIFIED", "freshness_status": "FRESH",
+                "event_status": "scheduled", "model_score": 9.0,
+            }
+            q = classify_recommendation(rec)
+            assert q.tier == TIER_OFFICIAL
+            assert q.passed is True
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
 
 
 class TestClassifyYN:

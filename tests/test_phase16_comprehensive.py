@@ -86,6 +86,8 @@ def _base_rec(**overrides) -> dict:
         "market_quality": "PRICED",
         "rec_status": "QUALIFIED",
         "rec_eligible": 1,
+        "pinnacle_approved": True,
+        "is_official": True,
         "data_source": "test",
         "observation_timestamp": datetime.now(timezone.utc).isoformat(),
         "scan_timestamp": datetime.now(timezone.utc).isoformat(),

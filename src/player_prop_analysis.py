@@ -85,6 +85,32 @@ def is_pinnacle_book(book_name: str) -> bool:
     return "pinnacle" in name
 
 
+def _group_key_meta(group_key: str) -> tuple[str, str]:
+    """Best-effort ``(player_id, market_type)`` extraction for logging.
+
+    Group keys look like ``{event_id}|{player_id}|{market_type}|game|{line}``.
+    Returns empty strings when the key cannot be parsed.
+    """
+    parts = (group_key or "").split("|")
+    player = parts[1] if len(parts) > 1 else ""
+    market = parts[2] if len(parts) > 2 else ""
+    return player, market
+
+
+def _is_official(pinnacle_approved, ev: float) -> bool:
+    """Whether a book entry may become an official pick.
+
+    When ``REQUIRE_PINNACLE_FOR_OFFICIAL`` is enabled, only a Pinnacle-approved
+    book (both-sides Pinnacle reference at the exact line with EV and
+    probability-edge thresholds passed) may be official — fallback/market-median
+    books are never official.  Otherwise the legacy rule applies: any book with
+    positive EV is a candidate.
+    """
+    if getattr(cfg, "REQUIRE_PINNACLE_FOR_OFFICIAL", False):
+        return bool(pinnacle_approved)
+    return bool(ev > 0)
+
+
 # ==================================================================
 # Public entry point
 # ==================================================================
@@ -129,7 +155,11 @@ def analyze_prop_group(
         n_paired_books, n_approved_rows, n_excluded_rows,
         consensus_over, consensus_under,
         nv_prob_over, nv_prob_under, vig_pct,
-        books: list of per-book analysis dicts,
+        pinnacle_found: whether a Pinnacle book is present at this exact line,
+        pinnacle_reference_used: whether Pinnacle no-vig was used as reference,
+        pinnacle_book, pinnacle_over_price, pinnacle_under_price,
+        official_count: number of books eligible to be official picks,
+        books: list of per-book analysis dicts (each with ``is_official``),
         best_ev: best EV entry or None,
         recommendation: "BET" or "NO_BET"
     """
@@ -145,19 +175,57 @@ def analyze_prop_group(
     over_books_list = sorted(over_prices.keys())
     under_books_list = sorted(under_prices.keys())
 
+    # Same-line guard: every price in the group must be at the resolved line.
+    # Groups are built exact-line upstream; this defensively logs (rather than
+    # silently merges) any line fragmentation.
+    for side_label, side_prices in (("OVER", over_prices), ("UNDER", under_prices)):
+        for book, entry in side_prices.items():
+            entry_line = entry.get("line")
+            if entry_line is None or line is None:
+                continue
+            try:
+                if abs(float(entry_line) - float(line)) > 1e-9:
+                    logger.warning(
+                        "PINNACLE_LINE_FRAGMENTATION group=%s side=%s book=%s "
+                        "entry_line=%s resolved_line=%s",
+                        group_key, side_label, book, entry_line, line,
+                    )
+            except (TypeError, ValueError):
+                logger.warning(
+                    "PINNACLE_LINE_FRAGMENTATION group=%s side=%s book=%s entry_line=%r",
+                    group_key, side_label, book, entry_line,
+                )
+
     # Market quality — check early to avoid crash on empty book list
     market_quality, quality_flags = _classify_market(total_n, all_books, over_prices, under_prices)
     if market_quality == cfg.MARKET_QUALITY_EXCLUDED:
         return _empty_result(group_key, over_prices, under_prices,
                              n_excluded_rows, n_approved_rows, line=line)
 
-    # Check if Pinnacle has both sides — use it as the source of truth when available
-    pinnacle_over_book = next((b for b in over_books_list if is_pinnacle_book(b)), None)
-    pinnacle_under_book = next((b for b in under_books_list if is_pinnacle_book(b)), None)
+    # Pinnacle detection at the EXACT resolved line — a Pinnacle price on a
+    # different line must never be used as the reference for this group.
+    def _at_resolved_line(book: str) -> bool:
+        entry = over_prices.get(book) or under_prices.get(book)
+        if not entry or entry.get("line") is None or line is None:
+            return True  # nothing to contradict
+        try:
+            return abs(float(entry["line"]) - float(line)) <= 1e-9
+        except (TypeError, ValueError):
+            return True
+
+    pinnacle_over_book = next((b for b in over_books_list
+                               if is_pinnacle_book(b) and _at_resolved_line(b)), None)
+    pinnacle_under_book = next((b for b in under_books_list
+                                if is_pinnacle_book(b) and _at_resolved_line(b)), None)
+    pinnacle_found = any(is_pinnacle_book(b) and _at_resolved_line(b) for b in all_books)
     use_pinnacle_model = bool(getattr(cfg, "USE_PINNACLE_VALUE_MODEL", True))
     use_pinnacle_ref = (use_pinnacle_model
                         and pinnacle_over_book is not None
                         and pinnacle_under_book is not None)
+
+    player_log, market_log = _group_key_meta(group_key)
+    pinnacle_over_price = None
+    pinnacle_under_price = None
 
     if use_pinnacle_ref:
         # Pinnacle no-vig probability becomes the fair reference for all books
@@ -218,6 +286,7 @@ def analyze_prop_group(
                     "pinnacle_prob_edge": round(prob_edge_over * 100, 4),
                     "pinnacle_fair_prob": round(nv_prob_over, 6),
                     "pinnacle_approved": bool(approved_over),
+                    "is_official": _is_official(bool(approved_over), ev_over),
                 })
 
             if has_under:
@@ -245,6 +314,7 @@ def analyze_prop_group(
                     "pinnacle_prob_edge": round(prob_edge_under * 100, 4),
                     "pinnacle_fair_prob": round(nv_prob_under, 6),
                     "pinnacle_approved": bool(approved_under),
+                    "is_official": _is_official(bool(approved_under), ev_under),
                 })
 
         for b in books:
@@ -328,6 +398,7 @@ def analyze_prop_group(
                     "pinnacle_prob_edge": None,
                     "pinnacle_fair_prob": None,
                     "pinnacle_approved": None,
+                    "is_official": _is_official(None, ev_over),
                 })
 
             if has_under:
@@ -360,6 +431,7 @@ def analyze_prop_group(
                     "pinnacle_prob_edge": None,
                     "pinnacle_fair_prob": None,
                     "pinnacle_approved": None,
+                    "is_official": _is_official(None, ev_under),
                 })
 
     # If any extreme outlier, demote market quality
@@ -381,12 +453,18 @@ def analyze_prop_group(
                 "ev_pct": b["ev_pct"],
                 "american_odds": b["american_odds"],
                 "bet_status": b["bet_status"],
+                "pinnacle_approved": b.get("pinnacle_approved"),
+                "pinnacle_ev": b.get("pinnacle_ev"),
+                "pinnacle_prob_edge": b.get("pinnacle_prob_edge"),
+                "is_official": b.get("is_official", False),
             }
             break
 
     recommendation = "BET" if best_ev is not None else "NO_BET"
 
-    # Pinnacle value model logging + strict-mode suppression of official picks
+    # Pinnacle value model logging + official-eligibility gating.
+    # Fallback opportunities are STILL displayed (best_ev kept) but are never
+    # official when REQUIRE_PINNACLE_FOR_OFFICIAL is enabled.
     if not use_pinnacle_ref:
         if not use_pinnacle_model:
             print(f"    [PINNACLE-REF] {group_key}: Pinnacle value model disabled — LOO median used")
@@ -394,10 +472,36 @@ def analyze_prop_group(
             print(f"    [PINNACLE-REF] {group_key}: Pinnacle missing or one-sided — LOO median fallback used")
         else:
             print(f"    [PINNACLE-REF] {group_key}: Pinnacle missing and market-median fallback disabled")
-        if getattr(cfg, "REQUIRE_PINNACLE_FOR_OFFICIAL", False):
-            print(f"    [PINNACLE-REF] {group_key}: REQUIRE_PINNACLE_FOR_OFFICIAL=True — no official picks")
-            best_ev = None
-            recommendation = "NO_BET"
+    else:
+        print(f"    [PINNACLE-REF] {group_key}: Pinnacle reference active — no-vig EV and prob edge vs Pinnacle")
+
+    # Debug log: per-group Pinnacle check summary (live debugging / tests)
+    if best_ev is not None:
+        _chk_ev = best_ev.get("pinnacle_ev")
+        _chk_edge = best_ev.get("pinnacle_prob_edge")
+        if _chk_ev is None:
+            _chk_ev = best_ev.get("ev_pct", 0.0)
+            _chk_edge = 0.0
+        _chk_approved = bool(best_ev.get("is_official", False))
+    else:
+        _chk_ev, _chk_edge, _chk_approved = 0.0, 0.0, False
+    logger.debug(
+        "PINNACLE_CHECK player=%s market=%s line=%s found=%s approved=%s ev=%.4f prob_edge=%.4f",
+        player_log, market_log, line, bool(pinnacle_found), bool(_chk_approved),
+        float(_chk_ev), float(_chk_edge),
+    )
+
+    official_books = [b for b in books if b.get("is_official") and b["included"]]
+
+    # Fallback picks stay visible but are never official under the REQUIRE flag
+    require_official = getattr(cfg, "REQUIRE_PINNACLE_FOR_OFFICIAL", False)
+    if (require_official and best_ev is not None
+            and not best_ev.get("is_official", False)):
+        reason = "missing_pinnacle" if not use_pinnacle_ref else "pinnacle_threshold_failed"
+        logger.warning(
+            "OFFICIAL_BLOCKED_REQUIRE_PINNACLE player=%s market=%s line=%s reason=%s",
+            player_log, market_log, line, reason,
+        )
 
     return {
         "group_key": group_key,
@@ -412,6 +516,12 @@ def analyze_prop_group(
         "nv_prob_over": round(nv_prob_over, 6),
         "nv_prob_under": round(nv_prob_under, 6),
         "vig_pct": round(vig_pct, 4),
+        "pinnacle_found": bool(pinnacle_found),
+        "pinnacle_reference_used": bool(use_pinnacle_ref),
+        "pinnacle_book": pinnacle_over_book,
+        "pinnacle_over_price": pinnacle_over_price,
+        "pinnacle_under_price": pinnacle_under_price,
+        "official_count": len(official_books),
         "books": books,
         "best_ev": best_ev,
         "recommendation": recommendation,
@@ -437,6 +547,12 @@ def _empty_result(group_key, over_prices, under_prices,
         "nv_prob_over": 0.0,
         "nv_prob_under": 0.0,
         "vig_pct": 0.0,
+        "pinnacle_found": False,
+        "pinnacle_reference_used": False,
+        "pinnacle_book": None,
+        "pinnacle_over_price": None,
+        "pinnacle_under_price": None,
+        "official_count": 0,
         "books": [],
         "best_ev": None,
         "recommendation": "NO_BET",
