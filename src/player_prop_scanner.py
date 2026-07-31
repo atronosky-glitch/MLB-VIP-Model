@@ -262,6 +262,7 @@ def run_scan(
     yn_groups: dict[str, dict] = {}
     excluded_count = 0
     approved_count = 0
+    seen_books: set[str] = set()
 
     for row in all_odds:
         if row["validation_status"] not in APPROVED_STATUSES:
@@ -272,6 +273,7 @@ def run_scan(
             continue
 
         approved_count += 1
+        seen_books.add(row["sportsbook"])
         key = row["market_group_key"]
         market_type = row["market_type"]
 
@@ -304,6 +306,8 @@ def run_scan(
             }
 
     # Analyze each O/U group
+    if seen_books:
+        print(f"  Books in approved O/U+YN rows ({len(seen_books)}): {', '.join(sorted(seen_books))}")
     if ou_groups:
         print(f"  O/U groups formed: {len(ou_groups)}")
         for gk, gd in ou_groups.items():
