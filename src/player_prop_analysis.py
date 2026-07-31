@@ -114,6 +114,8 @@ def analyze_prop_group(
         consensus_over = pinnacle_over_price
         consensus_under = pinnacle_under_price
         vig_pct = (total_prob - 1.0) * 100.0
+        print(f"    [PINNACLE-REF] {group_key}: Pinnacle {pinnacle_over_price}/{pinnacle_under_price} "
+              f"no-vig {nv_prob_over:.3f}/{nv_prob_under:.3f}  (falls back to LOO for: {[b for b in all_books if b.lower() == 'pinnacle']})")
 
         # Per-book analysis using Pinnacle as the fair reference
         books = []
