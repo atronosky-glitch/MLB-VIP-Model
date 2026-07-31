@@ -300,6 +300,23 @@ class DB:
 # ── Connection factory ────────────────────────────────────────────
 
 
+def get_connection_dialect_name(conn, default: str = "sqlite") -> str:
+    """Return the dialect name of a connection, safely.
+
+    Handles the ``DB`` wrapper (which stores the dialect as a plain
+    string like ``"sqlite"``/``"postgresql"``), raw driver connections
+    (e.g. a bare ``sqlite3.Connection`` with no ``dialect`` attribute),
+    and driver objects that expose a dialect with a ``.name`` attribute.
+    """
+    dialect = getattr(conn, "dialect", None)
+    if dialect is None:
+        return default
+    if isinstance(dialect, str):
+        return dialect.lower() if dialect else default
+    name = getattr(dialect, "name", None)
+    return name.lower() if name else default
+
+
 def get_connection(
     url: str | None = None,
     db_path: str | None = None,

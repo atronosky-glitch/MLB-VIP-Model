@@ -2,6 +2,84 @@
 
 > Future OpenCode session: read `AGENTS.md`, `PROJECT_STATUS.md`, `TODO.md`, and this file before modifying code.
 
+## Session: 2026-07-30/31 — Phase 18A: Pinnacle-first sharp value model
+
+### What was done
+
+Implemented the Pinnacle-first value model end-to-end (previously the Pinnacle branch was dormant). Pinnacle no-vig probabilities are now the fair reference whenever a `pinnacle` book has both sides; otherwise the model falls back to the market median (LOO). All 23 new tests pass; full suite 1316 passed / 5 pre-existing unrelated failures.
+
+**`src/player_prop_analysis.py`:**
+- New helpers: `is_pinnacle_book` (matches `pinnacle`, `pinnacle sports`, `pinny`, any name containing `pinnacle`), `american_to_implied_prob`, `american_to_decimal`, `calculate_no_vig_probs`, `calculate_ev`.
+- `analyze_prop_group` reworked: when a `pinnacle` book has both Over and Under, `calculate_no_vig_probs` produces the fair reference; each other book gets `pinnacle_fair_prob`, `pinnacle_ev`, `pinnacle_prob_edge`, `pinnacle_approved` (approved when EV >= `MIN_PINNACLE_EV` AND prob edge >= `MIN_PINNACLE_PROB_EDGE`). Pinnacle rows are excluded from target books. Without a valid Pinnacle reference, per-book pinnacle fields are `None` and the LOO market-median path runs unchanged.
+- Strict mode: with `REQUIRE_PINNACLE_FOR_OFFICIAL=True` and no Pinnacle reference, best_ev=None and recommendation=NO_BET (no LOO-based "official" picks).
+- `[PINNACLE-REF]` debug prints: reference used, best recreational side, Pinnacle-approval lines, and fallback reasons.
+
+**`src/prop_config.py`:** new flags — `USE_PINNACLE_VALUE_MODEL=True`, `REQUIRE_PINNACLE_FOR_OFFICIAL=False`, `PINNACLE_FALLBACK_TO_MARKET_MEDIAN=True`, `MIN_PINNACLE_EV=0.04`, `MIN_PINNACLE_PROB_EDGE=0.025`.
+
+**`src/player_prop_scanner.py`:** `Pin` column (Y/N/`-`) in O/U results, verbose Pinnacle block (approved/ref prob/EV/prob edge), results header states the reference source. Also fixed a pre-existing `--help` crash: the `--min-ev` help string embedded `{:.0%}` output (e.g. `5%`) which argparse's `% params` expansion rejected — escaped with `.replace("%", "%%")`.
+
+**`src/control_panel.py`:** Score Calibration metrics guard against `None` (mean/median/std dev show "N/A"), fixing a crash when no graded data exists.
+
+**`tests/test_pinnacle_value_model.py` (NEW, 23 tests):** helper unit tests; Pinnacle reference used + books excluded; Pinnacle variant detection; no-vig correctness; approval thresholds (both/EV-only/edge-only/neither); per-book None fields on fallback; fallback EV equals LOO value; strict-mode suppression vs allowed fallback; single-side Pinnacle falls back; Score Calibration display guard regression.
+
+### Live verification
+
+- `python -m src.player_prop_scanner --market all --market-form ou` against cache: pipeline runs, `Pin` column renders `-`, and `[PINNACLE-REF] ... Pinnacle missing or one-sided — LOO median fallback used` confirms the fallback path. Pinnacle still absent from the feed (books: betmgm, bovada, caesars, draftkings, espnbet, fanduel).
+
+### Test results
+
+- **23/23 new Pinnacle tests pass. Full suite: 1316 passed, 5 failed.**
+- The 5 failures are pre-existing and unrelated: `TestWorkerHeartbeat` ×3 (raw sqlite3 test conns lack `.dialect`, so `_write_heartbeat` swallows an AttributeError → heartbeat never written), `test_guard_bypass_for_load_recs_latest` (postgres env), `test_schedule_pregame_checks` (timing-sensitive, documented earlier as flaky). Not touched by this session.
+
+### Next steps
+
+1. Optional: fix the 3 `TestWorkerHeartbeat` failures by giving `_write_heartbeat`/`_read_heartbeat` a dialect guard (`getattr(conn, "dialect", "sqlite")`) or wrapping test conns in `DB`.
+2. Optional: fix `test_guard_bypass_for_load_recs_latest` and re-verify `test_schedule_pregame_checks`.
+3. Deploy to Render (commit + push); the Pinnacle path stays dormant there until a `pinnacle` key appears.
+4. Pending from Phase 17C: alt-line scanning, website.
+
+---
+
+## Session: 2026-07-30/31 — O/U opportunities fix + Pinnacle investigation
+
+### What was done
+
+Fixed the O/U opportunities always being 0 and investigated using Pinnacle as a sharp reference. Concluded Pinnacle is not in the API feed; LOO consensus remains the reference strategy.
+
+**O/U single-side fix (commit `058040c`):**
+- `src/player_prop_analysis.py` `analyze_prop_group`: consensus computed per-side from ALL books (`set(over_prices) | set(under_prices)`); single-side books contribute to LOO consensus; removed early-return-when-one-side-empty; `_classify_market` counts total unique books, not paired books.
+- `src/player_prop_scanner.py`: removed `if not gdata["over"] or not gdata["under"]: continue` guard.
+- Live-verified on Render: 25 O/U + 8 YN opportunities, 0 errors, 1797 markets scanned.
+
+**Pinnacle reference (commit `5452ded`):**
+- When a `pinnacle` book has BOTH Over and Under, its no-vig probability is used as the fair reference for all other books; Pinnacle's own rows are skipped as targets. Otherwise falls back to same-side LOO median (paired LOO + vig removal when ≥3 paired books). Debug print `[PINNACLE-REF]` (commit `f3de8be`).
+
+**Investigation result:**
+- Searched worker logs for `[PINNACLE-REF]` → never fires. Queried live Postgres from Render shell: `odds` table DISTINCT sportsbooks = `betmgm, bovada, caesars, draftkings, espnbet, fanduel, pointsbet, unibet, williamhill`. No pinnacle key in `byBookmaker`.
+- User decision: **Keep LOO consensus only** — Pinnacle branch stays dormant, no code removal, no alternate sharp-book config.
+- Confirmed `player_prop_odds` being empty is expected: scanner fetches props from the live API and persists only recommendations, not raw props.
+
+**Book listing (commit `be217b3`):**
+- `run_scan` now prints `Books in approved O/U+YN rows (N): ...` before group analysis.
+
+### Files changed
+
+1. `src/player_prop_analysis.py` — per-side all-book consensus, Pinnacle no-vig reference branch, `_classify_market` total unique books
+2. `src/player_prop_scanner.py` — removed single-side skip, added `seen_books` listing print
+3. `PROJECT_STATUS.md`, `TODO.md`, `docs/SESSION_HANDOFF.md` — updated
+
+### Test results
+
+- **1134 passed** (full suite excludes known pre-existing flaky `test_schedule_pregame_checks`). Targeted scanner tests: 107 passed.
+
+### Next steps
+
+1. Optional: if the API ever adds a `pinnacle` byBookmaker key, the `[PINNACLE-REF]` branch activates automatically — no code change needed.
+2. Optional: `git rm --cached mlb_dump.txt` + `.gitignore` entry (file committed accidentally in `058040c`).
+3. Pending from Phase 17C: alt-line scanning, website.
+
+---
+
 ## Session: 2026-07-28 — Phase 17C: Market rationalization, variable staking, pipeline indicator
 
 ### What was done

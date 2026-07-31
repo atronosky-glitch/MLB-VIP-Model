@@ -1676,8 +1676,8 @@ with tabs[8]:
                         "Total": b.get("total", 0),
                         "Wins": b.get("wins", 0),
                         "Losses": b.get("losses", 0),
-                        "Win Rate": f"{b.get('actual_win_rate', 0):.1%}",
-                        "ROI": f"{b.get('roi', 0):.1%}",
+                        "Win Rate": f"{b.get('actual_win_rate', 0):.1%}" if b.get("actual_win_rate") is not None else "N/A",
+                        "ROI": f"{b.get('roi', 0):.1%}" if b.get("roi") is not None else "N/A",
                         "Avg CLV": f"{b.get('avg_clv', 0):.4f}" if b.get("avg_clv") is not None else "N/A",
                         "Sufficient": "✅" if b.get("sample_sufficient") else "⚠️",
                     })
@@ -1685,10 +1685,13 @@ with tabs[8]:
 
                 if _cal.get("score_distribution"):
                     _dist = _cal["score_distribution"]
+                    _mean = _dist.get("mean")
+                    _median = _dist.get("median")
+                    _stdev = _dist.get("stdev")
                     _dist_cols = st.columns(3)
-                    _dist_cols[0].metric("Mean Score", f"{_dist.get('mean', 0):.2f}")
-                    _dist_cols[1].metric("Median Score", f"{_dist.get('median', 0):.2f}")
-                    _dist_cols[2].metric("Std Dev", f"{_dist.get('stdev', 0):.2f}")
+                    _dist_cols[0].metric("Mean Score", f"{_mean:.2f}" if _mean is not None else "N/A")
+                    _dist_cols[1].metric("Median Score", f"{_median:.2f}" if _median is not None else "N/A")
+                    _dist_cols[2].metric("Std Dev", f"{_stdev:.2f}" if _stdev is not None else "N/A")
             else:
                 st.info("Score calibration requires more graded data.")
         except Exception as e:

@@ -40,6 +40,7 @@ sys.path.insert(0, str(_ROOT))
 from src.production_config import load_config
 from src.structured_logging import setup_logging
 from database.db_manager import get_connection
+from database.connection import get_connection_dialect_name
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ def _write_heartbeat(conn) -> None:
         """)
         ts = datetime.now(timezone.utc).isoformat()
         pid = os.getpid()
-        if conn.dialect == "postgresql":
+        if get_connection_dialect_name(conn) == "postgresql":
             conn.execute("""
                 INSERT INTO worker_heartbeat (id, last_heartbeat, worker_pid)
                 VALUES (1, %s, %s)
@@ -424,7 +425,7 @@ def run_worker_persistent(config) -> None:
     logger.info("Starting persistent worker (pid=%d, tz=%s)", os.getpid(), TZ_NAME)
 
     conn = get_connection(config.database_path)
-    if conn.dialect == "sqlite":
+    if get_connection_dialect_name(conn) == "sqlite":
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
 
@@ -512,7 +513,7 @@ def run_worker_once(config) -> None:
     logger.info("Running worker once (one-shot mode)")
 
     conn = get_connection(config.database_path)
-    if conn.dialect == "sqlite":
+    if get_connection_dialect_name(conn) == "sqlite":
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
 
@@ -539,7 +540,7 @@ def run_specific_job(job_type: str, config) -> None:
     logger.info("Running specific job: %s", job_type)
 
     conn = get_connection(config.database_path)
-    if conn.dialect == "sqlite":
+    if get_connection_dialect_name(conn) == "sqlite":
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
 

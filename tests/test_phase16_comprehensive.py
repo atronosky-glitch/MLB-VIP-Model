@@ -670,14 +670,25 @@ class TestAutomation:
         assert len(pending) >= 2
 
     def test_schedule_pregame_checks(self, db_conn):
-        fixed_now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
+        # SQLite's date('now') is the REAL clock (not mockable via
+        # patch("src.automation.datetime")). Anchor the game to today's
+        # real UTC date so the WHERE date(start_time) = date('now') clause
+        # always matches, and keep the Python-side target-time checks
+        # deterministic via the mocked datetime.
+        real_today = datetime.now(timezone.utc).date()
+        start_time = datetime(
+            real_today.year, real_today.month, real_today.day, 15, 0,
+            tzinfo=timezone.utc,
+        )
+        fixed_now = start_time - timedelta(hours=3)  # 12:00 UTC same day
         with patch("src.automation.datetime") as mock_dt:
             mock_dt.now.return_value = fixed_now
             mock_dt.fromisoformat = datetime.fromisoformat
             db_conn.execute("""
                 INSERT INTO games (event_id, away_team, home_team, start_time, status)
                 VALUES ('ev_pg1', 'NYY', 'BOS', ?, 'scheduled')
-            """, ((fixed_now + timedelta(hours=3)).isoformat(),))
+            """, (start_time.isoformat(),))
+            db_conn.commit()
             count = schedule_pregame_checks(db_conn)
             assert count == 1
 

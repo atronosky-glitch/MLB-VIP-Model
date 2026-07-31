@@ -73,6 +73,10 @@
 
 - [x] Phase 17C: Market rationalization (21→8 markets), variable Kelly staking, pipeline completion indicator, worker crash fix (get_connection import), Render PostgreSQL cleanup
 
+- [x] O/U opportunities fix — single-side books now contribute to per-side LOO consensus (`analyze_prop_group`), scanner no longer skips single-side groups; live-verified: 25 O/U + 8 YN opportunities
+- [x] Pinnacle reference investigation — confirmed Pinnacle NOT in feed (9 books: betmgm, bovada, caesars, draftkings, espnbet, fanduel, pointsbet, unibet, williamhill); kept LOO consensus as reference strategy
+- [x] Phase 18A: Pinnacle-first sharp value model — `is_pinnacle_book`, odds/prob helpers, `calculate_no_vig_probs`, `calculate_ev`; Pinnacle no-vig reference when both sides present; per-book `pinnacle_fair_prob`/`pinnacle_ev`/`pinnacle_prob_edge`/`pinnacle_approved`; config flags `USE_PINNACLE_VALUE_MODEL`, `REQUIRE_PINNACLE_FOR_OFFICIAL`, `PINNACLE_FALLBACK_TO_MARKET_MEDIAN`, `MIN_PINNACLE_EV`, `MIN_PINNACLE_PROB_EDGE`; strict mode suppresses LOO official picks; scanner `Pin` column + verbose Pinnacle block + reference-source header; 23 new tests (`tests/test_pinnacle_value_model.py`); pre-existing `--help` crash fixed (bare `%` in `--min-ev` help); Pinnacle branch dormant
+
 ## Next feature stage
 
 - [ ] Run morning pipeline on Render to verify 8-market picks land on dashboard

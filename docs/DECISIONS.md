@@ -395,3 +395,9 @@ Entries are dated. New entries are appended.
 - **Decision**: The dashboard's `_load_recs()` function tries an explicit column list first, then falls back to `SELECT *` on OperationalError.
 - **Reason**: Test databases and older databases may lack newer columns added by recent migrations. The explicit column list is preferred for production stability, but the fallback ensures the dashboard works against any schema version.
 - **Consequence**: The dashboard gracefully handles databases with missing columns. New columns appear as soon as the schema migration runs.
+
+## Pinnacle-first sharp value model (2026-07-30)
+
+- **Decision**: When a `pinnacle` book has BOTH Over and Under, its no-vig probabilities are the fair reference for every other book; Pinnacle's own rows are never targets. Otherwise the model falls back to the market median (paired LOO + vig removal). Config flags: `USE_PINNACLE_VALUE_MODEL=True`, `REQUIRE_PINNACLE_FOR_OFFICIAL=False`, `PINNACLE_FALLBACK_TO_MARKET_MEDIAN=True`, `MIN_PINNACLE_EV=0.04`, `MIN_PINNACLE_PROB_EDGE=0.025`.
+- **Reason**: Pinnacle's Pinnacle-implied fair probability is the sharpest no-vig benchmark available; previously the Pinnacle branch was dormant and LOO was the only reference. The feature is delivered behind runtime flags so it activates automatically the moment a `pinnacle` key appears in the API feed (Pinnacle is currently NOT in the SportsGameOdds feed).
+- **Consequence**: Per-book `pinnacle_fair_prob`/`pinnacle_ev`/`pinnacle_prob_edge`/`pinnacle_approved` are computed when Pinnacle is present. `REQUIRE_PINNACLE_FOR_OFFICIAL=True` suppresses official picks entirely when no Pinnacle reference exists (best_ev=None) rather than emitting LOO-based bets under a false "Pinnacle-verified" label. Scanner `Pin` column, verbose block, and reference-source header make the reference strategy visible in output. Defaults keep today's behavior: fallback to market median with official picks allowed.

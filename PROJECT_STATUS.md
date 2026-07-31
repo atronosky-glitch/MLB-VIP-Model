@@ -2,6 +2,12 @@
 
 ## Completed
 
+- **Pinnacle-first sharp value model (Phase 18A)** — `analyze_prop_group` (`src/player_prop_analysis.py`) now uses Pinnacle no-vig probabilities as the fair reference whenever a `pinnacle` book has BOTH Over and Under. New helpers in `src/player_prop_analysis.py`: `is_pinnacle_book`, `american_to_implied_prob`, `american_to_decimal`, `calculate_no_vig_probs`, `calculate_ev`. Config flags in `src/prop_config.py`: `USE_PINNACLE_VALUE_MODEL=True`, `REQUIRE_PINNACLE_FOR_OFFICIAL=False`, `PINNACLE_FALLBACK_TO_MARKET_MEDIAN=True`, `MIN_PINNACLE_EV=0.04` (4%), `MIN_PINNACLE_PROB_EDGE=0.025` (2.5%). Per-book fields: `pinnacle_fair_prob`, `pinnacle_ev`, `pinnacle_prob_edge`, `pinnacle_approved`. Pinnacle's own rows are never targets. When Pinnacle is missing or one-sided, the market-median (LOO) fallback is used; with `REQUIRE_PINNACLE_FOR_OFFICIAL=True` the model suppresses official picks (best_ev=None) rather than emit LOO-based bets. Scanner shows a `Pin` column (Y/N/`-`), verbose output prints approval + ref prob + EV + edge, and the results header names the reference source. Pinnacle is still NOT in the SportsGameOdds feed (`betmgm, bovada, caesars, draftkings, espnbet, fanduel, pointsbet, unibet, williamhill`), so production currently runs the market-median fallback — the Pinnacle path is live-tested and activates automatically if a `pinnacle` key ever appears.
+- **O/U opportunities fixed (was 0, now 25)** — `analyze_prop_group` (`src/player_prop_analysis.py`) reworked: consensus computed per-side from ALL books (`set(over_prices) | set(under_prices)`), single-side books contribute to LOO consensus, scanner no longer skips single-side groups. Confirmed live on Render: 25 O/U + 8 YN opportunities, 0 errors, 1797 markets scanned.
+- **Pinnacle reference investigation** — Pinnacle is NOT in the SportsGameOdds feed. Live `byBookmaker` keys confirmed via Render shell: `betmgm, bovada, caesars, draftkings, espnbet, fanduel, pointsbet, unibet, williamhill` (9 books). LOO market median is the production reference strategy; the Pinnacle-first branch is implemented, tested, and activates automatically if Pinnacle data appears.
+- **Scanner book listing** — `run_scan` prints the distinct sportsbooks found in approved rows (`Books in approved O/U+YN rows (9): ...`).
+- **Confirmed `player_prop_odds` stays empty by design** — scanner fetches props directly from the live API (does not persist them); recommendations land in `historical_recommendations`. Same Postgres serves both dashboard and worker (`mlb-postgres`).
+
 - **Phase 17C: Market rationalization** — MARKET_REGISTRY cut from 21 to 8 high-signal markets:
   - **Kept (8)**: pitcher_strikeouts, pitcher_hits_allowed, pitcher_walks_allowed (O/U-only), pitcher_wins (YN-only), batter_hits, batter_total_bases (O/U-only), batter_home_runs, batter_stolen_bases
   - **Dropped (13)**: pitcher_outs, pitcher_earned_runs, pitcher_pitches_thrown, batter_hits_runs_rbi, batter_rbi, batter_runs, batter_runs_rbi, batter_singles, batter_doubles, batter_triples, batter_walks, batter_strikeouts, batter_first_hr
@@ -37,7 +43,7 @@
 
 ## Current test status
 
-Full suite: **1297 passing, 1 flaky failure** (`test_schedule_pregame_checks` — timing-sensitive, pre-existing)
+Full suite: **1316 passing, 5 failing** (`test_schedule_pregame_checks`, 3× `TestWorkerHeartbeat`, `test_guard_bypass_for_load_recs_latest` — all pre-existing and unrelated to Pinnacle work; heartbeat tests fail because raw sqlite3 test conns lack the `.dialect` attribute `_write_heartbeat` expects, schedule test is timing-sensitive, postgres guard test is env-dependent). All 23 new Pinnacle value-model tests pass (`tests/test_pinnacle_value_model.py`).
 
 Breakdown:
 - `tests/test_stage1.py` — 7 tests
@@ -106,7 +112,7 @@ All tests are **deterministic** — none depend on live API responses or mutable
 
 ## Current stage
 
-**Completed**: Phase 17C — Market Rationalization, Variable Kelly Staking, Pipeline Completion Indicator. 1297 passed (1 pre-existing flaky).
+**Completed**: Pinnacle-first sharp value model (Phase 18A) — Pinnacle no-vig reference with EV/prob-edge approval flags, configurable fallback and strict-mode, scanner/verbose display. 23 new tests passing. Pinnacle not in feed → market-median fallback is production path. Also fixed pre-existing scanner `--help` crash (bare `%` in `--min-ev` help string). 1316 passed, 5 pre-existing unrelated failures.
 
 Phase 17B deliverables:
 - **Database Connection Layer** (`database/connection.py`): Dialect-aware `DB` wrapper class, auto SQL conversion (`?`→`%s`, `datetime('now')`→`NOW()`, `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, `AUTOINCREMENT`→`SERIAL`, `sqlite_master`→`information_schema`, `GROUP_CONCAT`→`STRING_AGG`), uniform `DBResult` cursor

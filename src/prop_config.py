@@ -66,6 +66,22 @@ ACTIONABLE_EDGE_THRESHOLD = 0.02  # 2%
 # Maximum age of odds data before stale-data warning (in seconds)
 FRESHNESS_THRESHOLD_SECONDS = 3600  # 1 hour
 
+
+# ── Pinnacle-first sharp value model ───────────────────────────────
+# When enabled, Pinnacle's two-sided prices define the no-vig fair
+# probability for a prop group and every other book is compared to it.
+USE_PINNACLE_VALUE_MODEL = True
+# If True and Pinnacle is missing one/both sides, no book in that group
+# can become an official pick (fallback analysis still runs if enabled).
+REQUIRE_PINNACLE_FOR_OFFICIAL = False
+# If True, groups without Pinnacle fall back to the existing LOO
+# market-median consensus (unchanged behaviour).
+PINNACLE_FALLBACK_TO_MARKET_MEDIAN = True
+# Minimum EV for a Pinnacle-approved pick (decimal, 0.04 = 4%).
+MIN_PINNACLE_EV = 0.04
+# Minimum probability edge vs Pinnacle no-vig (decimal, 0.025 = 2.5%).
+MIN_PINNACLE_PROB_EDGE = 0.025
+
 # ── Confidence score weights ───────────────────────────────────────
 # These weights control the relative importance of each component
 # in the confidence score calculation. Adjust to tune scoring.

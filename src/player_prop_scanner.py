@@ -371,6 +371,10 @@ def run_scan(
                 "bet_status": bet_status,
                 "validation_status": book_entry.get("validation_status", ""),
                 "is_alt_line": 0,
+                "pinnacle_approved": book_entry.get("pinnacle_approved"),
+                "pinnacle_ev": book_entry.get("pinnacle_ev"),
+                "pinnacle_prob_edge": book_entry.get("pinnacle_prob_edge"),
+                "pinnacle_fair_prob": book_entry.get("pinnacle_fair_prob"),
             }
             opportunities.append(opp)
 
@@ -688,10 +692,10 @@ def display_results(result: dict, mode: str) -> None:
         print()
         header = (
             f"  {'':>3} {'Pitcher':<20} {'Side':<6} {'Line':>5} {'Book':<14} "
-            f"{'Odds':>7} {'EV%':>8} {'MQ':<18} {'Rec':>4}"
+            f"{'Odds':>7} {'EV%':>8} {'Pin':>3} {'MQ':<18} {'Rec':>4}"
         )
         print(header)
-        print("  " + "-" * 96)
+        print("  " + "-" * 100)
 
         for i, opp in enumerate(opps, 1):
             pitcher = opp["player_name"][:18] if opp["player_name"] else opp["player_id"][:18]
@@ -700,10 +704,11 @@ def display_results(result: dict, mode: str) -> None:
             book = opp["sportsbook"][:12]
             odds = _fmt_odds(opp["american_odds"])
             ev = _fmt_ev(opp["ev_pct"])
+            pin = "Y" if opp.get("pinnacle_approved") else ("N" if opp.get("pinnacle_approved") is not None else "-")
             mq = opp["market_quality"][:16]
             rec = "YES" if opp.get("rec_eligible") else "NO"
             print(f"  {i:>3} {pitcher:<20} {side:<6} {line:>5} {book:<14} "
-                  f"{odds:>7} {ev:>8} {mq:<18} {rec:>4}")
+                  f"{odds:>7} {ev:>8} {pin:>3} {mq:<18} {rec:>4}")
     elif not yn_opps:
         print()
         print("  NO QUALIFYING OPPORTUNITIES")
@@ -768,6 +773,13 @@ def display_verbose(result: dict) -> None:
         print(f"     Fair odds:    {_fmt_odds(fair_odds)}")
         print(f"     Fair prob:    {opp['fair_prob']:.4%}")
         print(f"     EV:           {_fmt_ev(opp['ev_pct'])}")
+        if opp.get("pinnacle_approved") is not None:
+            print(f"     Pinnacle:     {'APPROVED' if opp['pinnacle_approved'] else 'NOT APPROVED'}")
+            print(f"       Ref prob:  {opp.get('pinnacle_fair_prob', 0):.4%}  "
+                  f"EV {opp.get('pinnacle_ev', 0):+.2f}%  "
+                  f"Prob edge {opp.get('pinnacle_prob_edge', 0):+.2f}%")
+        else:
+            print(f"     Pinnacle:     N/A (fallback reference)")
         print(f"     Books:        {opp['n_consensus_books']}")
         print(f"     Market qual:  {opp['market_quality']}")
         print(f"     Bet status:   {opp['bet_status']}")
@@ -813,8 +825,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--actionable-only", action="store_true",
                       help="Show only recommendation-eligible sides above actionable threshold (default)")
     parser.add_argument("--min-ev", type=float, default=None,
-                        help=f"Override actionable EV minimum (default "
-                             f"{cfg.ACTIONABLE_EDGE_THRESHOLD:.0%}). O/U only.")
+                        help=("Override actionable EV minimum (default "
+                              f"{cfg.ACTIONABLE_EDGE_THRESHOLD:.0%}). O/U only.")
+                        .replace("%", "%%"))
     parser.add_argument("--limit", type=int, default=25,
                         help="Max opportunities to display (default 25)")
     parser.add_argument("--market", choices=VALID_MARKETS + ["all"], default="all",

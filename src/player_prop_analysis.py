@@ -4,12 +4,14 @@ For each exact O/U market group (same event, player, market type, line,
 alt-line status), this module:
 
 1. Collects approved Over and Under prices
-2. Computes consensus independently per side using ALL available books
-   (sportsbooks offering only one side contribute to same-side consensus)
-3. Calculates LOO median implied probability as fair reference per side
-4. Removes vig when both sides are available; uses raw implied otherwise
-5. Computes EV for each book using same-side LOO fair probability
-6. Separates market quality from individual bet status
+2. When Pinnacle offers both sides, uses its no-vig probability as the
+   sharp fair reference and compares every other book against it
+3. Otherwise computes consensus independently per side using ALL available
+   books (sportsbooks offering only one side contribute to same-side consensus)
+4. Calculates LOO median implied probability as fair reference per side
+5. Removes vig when both sides are available; uses raw implied otherwise
+6. Computes EV for each book using same-side fair probability
+7. Separates market quality from individual bet status
 
 For YN market groups (same event, player, yes/no type):
 
@@ -34,6 +36,56 @@ logger = logging.getLogger(__name__)
 
 
 # ==================================================================
+# Odds / probability helpers (Pinnacle value model)
+# ==================================================================
+
+def american_to_implied_prob(odds: int) -> float:
+    """Convert American odds to implied probability (0..1)."""
+    if odds > 0:
+        return 100.0 / (odds + 100.0)
+    return abs(odds) / (abs(odds) + 100.0)
+
+
+def american_to_decimal(odds: int) -> float:
+    """Convert American odds to decimal odds (1 + payout fraction)."""
+    if odds > 0:
+        return 1.0 + odds / 100.0
+    return 1.0 + 100.0 / abs(odds)
+
+
+def calculate_no_vig_probs(over_odds: int, under_odds: int) -> tuple[float, float]:
+    """Remove vig from a two-outcome market.
+
+    Returns ``(fair_over_prob, fair_under_prob)`` summing to 1.0.
+    """
+    raw_over = american_to_implied_prob(over_odds)
+    raw_under = american_to_implied_prob(under_odds)
+    total = raw_over + raw_under
+    if total <= 0:
+        return (0.5, 0.5)
+    return (raw_over / total, raw_under / total)
+
+
+def calculate_ev(true_probability: float, offered_odds: int) -> float:
+    """Expected value: ``true_probability * decimal_odds - 1``."""
+    return true_probability * american_to_decimal(offered_odds) - 1.0
+
+
+def is_pinnacle_book(book_name: str) -> bool:
+    """Case-insensitive Pinnacle detection, including common variants.
+
+    Accepts ``pinnacle``, ``pinnacle sports``, ``pinny``, and any name
+    containing ``pinnacle`` (e.g. ``Pinnacle Sportsbook``).
+    """
+    if not book_name:
+        return False
+    name = book_name.strip().lower()
+    if name in ("pinnacle", "pinnacle sports", "pinny"):
+        return True
+    return "pinnacle" in name
+
+
+# ==================================================================
 # Public entry point
 # ==================================================================
 
@@ -47,9 +99,12 @@ def analyze_prop_group(
 ) -> dict:
     """Analyse one market group (Over/Under at same line).
 
-    UPDATED: When Pinnacle offers both sides, its no-vig probability is
-    used as the fair reference for all other books. Otherwise falls back
-    to same-side LOO median consensus using all available books.
+    UPDATED: When Pinnacle offers both sides (and the Pinnacle value model
+    is enabled), its no-vig probability is the fair reference for every
+    other book; EV and probability edge are computed against it and each
+    book is flagged ``pinnacle_approved`` when both thresholds pass.
+    Otherwise falls back to same-side LOO median consensus using all
+    available books (unless ``REQUIRE_PINNACLE_FOR_OFFICIAL``).
 
     Parameters
     ----------
@@ -97,30 +152,43 @@ def analyze_prop_group(
                              n_excluded_rows, n_approved_rows, line=line)
 
     # Check if Pinnacle has both sides — use it as the source of truth when available
-    pinnacle_over_book = next((b for b in over_books_list if b.lower() == 'pinnacle'), None)
-    pinnacle_under_book = next((b for b in under_books_list if b.lower() == 'pinnacle'), None)
-    use_pinnacle_ref = (pinnacle_over_book is not None and pinnacle_under_book is not None
-                        and pinnacle_over_book == pinnacle_under_book)
+    pinnacle_over_book = next((b for b in over_books_list if is_pinnacle_book(b)), None)
+    pinnacle_under_book = next((b for b in under_books_list if is_pinnacle_book(b)), None)
+    use_pinnacle_model = bool(getattr(cfg, "USE_PINNACLE_VALUE_MODEL", True))
+    use_pinnacle_ref = (use_pinnacle_model
+                        and pinnacle_over_book is not None
+                        and pinnacle_under_book is not None)
 
     if use_pinnacle_ref:
         # Pinnacle no-vig probability becomes the fair reference for all books
         pinnacle_over_price = over_prices[pinnacle_over_book]["price"]
         pinnacle_under_price = under_prices[pinnacle_under_book]["price"]
-        pinny_over_prob = american_to_probability(pinnacle_over_price)
-        pinny_under_prob = american_to_probability(pinnacle_under_price)
-        total_prob = pinny_over_prob + pinny_under_prob
-        nv_prob_over = pinny_over_prob / total_prob
-        nv_prob_under = pinny_under_prob / total_prob
+        nv_prob_over, nv_prob_under = calculate_no_vig_probs(
+            pinnacle_over_price, pinnacle_under_price)
+        total_prob = (american_to_implied_prob(pinnacle_over_price)
+                      + american_to_implied_prob(pinnacle_under_price))
         consensus_over = pinnacle_over_price
         consensus_under = pinnacle_under_price
         vig_pct = (total_prob - 1.0) * 100.0
-        print(f"    [PINNACLE-REF] {group_key}: Pinnacle {pinnacle_over_price}/{pinnacle_under_price} "
-              f"no-vig {nv_prob_over:.3f}/{nv_prob_under:.3f}  (falls back to LOO for: {[b for b in all_books if b.lower() == 'pinnacle']})")
+        print(f"    [PINNACLE-REF] {group_key}: Pinnacle ({pinnacle_over_book}) "
+              f"{pinnacle_over_price}/{pinnacle_under_price} "
+              f"no-vig {nv_prob_over:.3f}/{nv_prob_under:.3f}  vig {vig_pct:.1f}%")
+
+        # Best recreational book per side (Pinnacle excluded from best-price search)
+        rec_books = [b for b in all_books if not is_pinnacle_book(b)]
+        over_recs = [b for b in rec_books if b in over_prices]
+        under_recs = [b for b in rec_books if b in under_prices]
+        best_over = max(over_recs, key=lambda b: american_to_decimal(over_prices[b]["price"])) if over_recs else None
+        best_under = max(under_recs, key=lambda b: american_to_decimal(under_prices[b]["price"])) if under_recs else None
+        best_over_odds = over_prices[best_over]["price"] if best_over else None
+        best_under_odds = under_prices[best_under]["price"] if best_under else None
+        print(f"    [PINNACLE-REF] {group_key}: best recreational "
+              f"OVER {best_over}:{best_over_odds}  UNDER {best_under}:{best_under_odds}")
 
         # Per-book analysis using Pinnacle as the fair reference
         books = []
         for book in all_books:
-            if book.lower() == 'pinnacle':
+            if is_pinnacle_book(book):
                 continue  # Skip Pinnacle itself — it's the reference, not a target
             has_over = book in over_prices
             has_under = book in under_prices
@@ -129,7 +197,10 @@ def analyze_prop_group(
                 over_info = over_prices[book]
                 over_price = over_info["price"]
                 over_dec = american_to_decimal(over_price)
-                ev_over = nv_prob_over * over_dec - 1.0
+                ev_over = calculate_ev(nv_prob_over, over_price)
+                prob_edge_over = nv_prob_over - american_to_implied_prob(over_price)
+                approved_over = (ev_over >= cfg.MIN_PINNACLE_EV
+                                 and prob_edge_over >= cfg.MIN_PINNACLE_PROB_EDGE)
                 bet_status_over = _classify_bet(ev_over)
                 books.append({
                     "sportsbook": book,
@@ -143,13 +214,20 @@ def analyze_prop_group(
                     "validation_status": over_info.get("validation_status", "VALID"),
                     "included": True,
                     "reason": "",
+                    "pinnacle_ev": round(ev_over * 100, 4),
+                    "pinnacle_prob_edge": round(prob_edge_over * 100, 4),
+                    "pinnacle_fair_prob": round(nv_prob_over, 6),
+                    "pinnacle_approved": bool(approved_over),
                 })
 
             if has_under:
                 under_info = under_prices[book]
                 under_price = under_info["price"]
                 under_dec = american_to_decimal(under_price)
-                ev_under = nv_prob_under * under_dec - 1.0
+                ev_under = calculate_ev(nv_prob_under, under_price)
+                prob_edge_under = nv_prob_under - american_to_implied_prob(under_price)
+                approved_under = (ev_under >= cfg.MIN_PINNACLE_EV
+                                  and prob_edge_under >= cfg.MIN_PINNACLE_PROB_EDGE)
                 bet_status_under = _classify_bet(ev_under)
                 books.append({
                     "sportsbook": book,
@@ -163,7 +241,17 @@ def analyze_prop_group(
                     "validation_status": under_info.get("validation_status", "VALID"),
                     "included": True,
                     "reason": "",
+                    "pinnacle_ev": round(ev_under * 100, 4),
+                    "pinnacle_prob_edge": round(prob_edge_under * 100, 4),
+                    "pinnacle_fair_prob": round(nv_prob_under, 6),
+                    "pinnacle_approved": bool(approved_under),
                 })
+
+        for b in books:
+            if b.get("pinnacle_approved"):
+                print(f"    [PINNACLE-REF] {group_key}: PINNACLE-APPROVED {b['sportsbook']} "
+                      f"{b['side']} @ {b['american_odds']}  EV {b['pinnacle_ev']:+.2f}%  "
+                      f"prob_edge {b['pinnacle_prob_edge']:+.2f}%")
     else:
         # Fallback: consensus from ALL available prices per side (not just paired)
         over_odds_list = [over_prices[b]["price"] for b in over_books_list]
@@ -236,6 +324,10 @@ def analyze_prop_group(
                     "validation_status": over_info.get("validation_status", "VALID"),
                     "included": True,
                     "reason": "",
+                    "pinnacle_ev": None,
+                    "pinnacle_prob_edge": None,
+                    "pinnacle_fair_prob": None,
+                    "pinnacle_approved": None,
                 })
 
             if has_under:
@@ -264,6 +356,10 @@ def analyze_prop_group(
                     "validation_status": under_info.get("validation_status", "VALID"),
                     "included": True,
                     "reason": "",
+                    "pinnacle_ev": None,
+                    "pinnacle_prob_edge": None,
+                    "pinnacle_fair_prob": None,
+                    "pinnacle_approved": None,
                 })
 
     # If any extreme outlier, demote market quality
@@ -289,6 +385,19 @@ def analyze_prop_group(
             break
 
     recommendation = "BET" if best_ev is not None else "NO_BET"
+
+    # Pinnacle value model logging + strict-mode suppression of official picks
+    if not use_pinnacle_ref:
+        if not use_pinnacle_model:
+            print(f"    [PINNACLE-REF] {group_key}: Pinnacle value model disabled — LOO median used")
+        elif getattr(cfg, "PINNACLE_FALLBACK_TO_MARKET_MEDIAN", True):
+            print(f"    [PINNACLE-REF] {group_key}: Pinnacle missing or one-sided — LOO median fallback used")
+        else:
+            print(f"    [PINNACLE-REF] {group_key}: Pinnacle missing and market-median fallback disabled")
+        if getattr(cfg, "REQUIRE_PINNACLE_FOR_OFFICIAL", False):
+            print(f"    [PINNACLE-REF] {group_key}: REQUIRE_PINNACLE_FOR_OFFICIAL=True — no official picks")
+            best_ev = None
+            recommendation = "NO_BET"
 
     return {
         "group_key": group_key,

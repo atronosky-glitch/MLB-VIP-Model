@@ -393,6 +393,10 @@ class TestPostgresPathGuard:
             ("r1", "e1", "Judge", "homeruns", "run-999",
              0.05, "BET", "2026-07-25T10:30:00", "fresh"),
         )
+        # Commit so the DB wrapper's rollback-on-error (triggered by the
+        # explicit-column query failing against this minimal schema) cannot
+        # wipe the seeded rows during _load_recs' fallback to SELECT *.
+        self.conn.commit()
         self.db = DB(self.conn, dialect="sqlite")
 
     def teardown_method(self):
