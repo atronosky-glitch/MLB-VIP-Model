@@ -47,9 +47,9 @@ def analyze_prop_group(
 ) -> dict:
     """Analyse one market group (Over/Under at same line).
 
-    UPDATED: consensus is computed independently per side using ALL
-    available books (not just paired). Sportsbooks offering only one
-    side contribute to the same-side LOO consensus.
+    UPDATED: When Pinnacle offers both sides, its no-vig probability is
+    used as the fair reference for all other books. Otherwise falls back
+    to same-side LOO median consensus using all available books.
 
     Parameters
     ----------
@@ -96,107 +96,173 @@ def analyze_prop_group(
         return _empty_result(group_key, over_prices, under_prices,
                              n_excluded_rows, n_approved_rows, line=line)
 
-    # Consensus from ALL available prices per side (not just paired)
-    over_odds_list = [over_prices[b]["price"] for b in over_books_list]
-    under_odds_list = [under_prices[b]["price"] for b in under_books_list]
-    consensus_over = _consensus(over_odds_list) if over_odds_list else 0
-    consensus_under = _consensus(under_odds_list) if under_odds_list else 0
+    # Check if Pinnacle has both sides — use it as the source of truth when available
+    pinnacle_over_book = next((b for b in over_books_list if b.lower() == 'pinnacle'), None)
+    pinnacle_under_book = next((b for b in under_books_list if b.lower() == 'pinnacle'), None)
+    use_pinnacle_ref = (pinnacle_over_book is not None and pinnacle_under_book is not None
+                        and pinnacle_over_book == pinnacle_under_book)
 
-    # Vig removal when both sides have data, otherwise use raw implied probability
-    if over_odds_list and under_odds_list:
-        nv_prob_over, nv_prob_under = _remove_vig(consensus_over, consensus_under)
-        vig_pct = _vig_percentage(consensus_over, consensus_under)
+    if use_pinnacle_ref:
+        # Pinnacle no-vig probability becomes the fair reference for all books
+        pinnacle_over_price = over_prices[pinnacle_over_book]["price"]
+        pinnacle_under_price = under_prices[pinnacle_under_book]["price"]
+        pinny_over_prob = american_to_probability(pinnacle_over_price)
+        pinny_under_prob = american_to_probability(pinnacle_under_price)
+        total_prob = pinny_over_prob + pinny_under_prob
+        nv_prob_over = pinny_over_prob / total_prob
+        nv_prob_under = pinny_under_prob / total_prob
+        consensus_over = pinnacle_over_price
+        consensus_under = pinnacle_under_price
+        vig_pct = (total_prob - 1.0) * 100.0
+
+        # Per-book analysis using Pinnacle as the fair reference
+        books = []
+        for book in all_books:
+            if book.lower() == 'pinnacle':
+                continue  # Skip Pinnacle itself — it's the reference, not a target
+            has_over = book in over_prices
+            has_under = book in under_prices
+
+            if has_over:
+                over_info = over_prices[book]
+                over_price = over_info["price"]
+                over_dec = american_to_decimal(over_price)
+                ev_over = nv_prob_over * over_dec - 1.0
+                bet_status_over = _classify_bet(ev_over)
+                books.append({
+                    "sportsbook": book,
+                    "side": "OVER",
+                    "line": line,
+                    "american_odds": over_price,
+                    "decimal_odds": round(over_dec, 4),
+                    "fair_prob": round(nv_prob_over, 6),
+                    "ev_pct": round(ev_over * 100, 4),
+                    "bet_status": bet_status_over,
+                    "validation_status": over_info.get("validation_status", "VALID"),
+                    "included": True,
+                    "reason": "",
+                })
+
+            if has_under:
+                under_info = under_prices[book]
+                under_price = under_info["price"]
+                under_dec = american_to_decimal(under_price)
+                ev_under = nv_prob_under * under_dec - 1.0
+                bet_status_under = _classify_bet(ev_under)
+                books.append({
+                    "sportsbook": book,
+                    "side": "UNDER",
+                    "line": line,
+                    "american_odds": under_price,
+                    "decimal_odds": round(under_dec, 4),
+                    "fair_prob": round(nv_prob_under, 6),
+                    "ev_pct": round(ev_under * 100, 4),
+                    "bet_status": bet_status_under,
+                    "validation_status": under_info.get("validation_status", "VALID"),
+                    "included": True,
+                    "reason": "",
+                })
     else:
-        if over_odds_list:
-            over_implied = [american_to_probability(p) for p in over_odds_list]
-            nv_prob_over = median(over_implied)
+        # Fallback: consensus from ALL available prices per side (not just paired)
+        over_odds_list = [over_prices[b]["price"] for b in over_books_list]
+        under_odds_list = [under_prices[b]["price"] for b in under_books_list]
+        consensus_over = _consensus(over_odds_list) if over_odds_list else 0
+        consensus_under = _consensus(under_odds_list) if under_odds_list else 0
+
+        # Vig removal when both sides have data, otherwise use raw implied probability
+        if over_odds_list and under_odds_list:
+            nv_prob_over, nv_prob_under = _remove_vig(consensus_over, consensus_under)
+            vig_pct = _vig_percentage(consensus_over, consensus_under)
         else:
-            nv_prob_over = 0.0
-        if under_odds_list:
-            under_implied = [american_to_probability(p) for p in under_odds_list]
-            nv_prob_under = median(under_implied)
-        else:
-            nv_prob_under = 0.0
-        vig_pct = 0.0
+            if over_odds_list:
+                over_implied = [american_to_probability(p) for p in over_odds_list]
+                nv_prob_over = median(over_implied)
+            else:
+                nv_prob_over = 0.0
+            if under_odds_list:
+                under_implied = [american_to_probability(p) for p in under_odds_list]
+                nv_prob_under = median(under_implied)
+            else:
+                nv_prob_under = 0.0
+            vig_pct = 0.0
 
-    # Books that have BOTH Over and Under (for paired LOO)
-    paired_books = sorted(set(over_prices) & set(under_prices))
+        # Books that have BOTH Over and Under (for paired LOO)
+        paired_books = sorted(set(over_prices) & set(under_prices))
 
-    # Per-book analysis with LOO fair probability and bet_status
-    books = []
-    for book in all_books:
-        has_over = book in over_prices
-        has_under = book in under_prices
-        is_paired = has_over and has_under
+        # Per-book analysis with LOO fair probability and bet_status
+        books = []
+        for book in all_books:
+            has_over = book in over_prices
+            has_under = book in under_prices
+            is_paired = has_over and has_under
 
-        if is_paired and len(paired_books) >= 3:
-            # Paired LOO with vig removal (most accurate when both sides exist)
-            other_paired = [b for b in paired_books if b != book]
-            other_over_prices = [over_prices[b]["price"] for b in other_paired]
-            other_under_prices = [under_prices[b]["price"] for b in other_paired]
-            loo_cons_over = _consensus(other_over_prices)
-            loo_cons_under = _consensus(other_under_prices)
-            loo_fair_over, loo_fair_under = _remove_vig(loo_cons_over, loo_cons_under)
-        else:
-            # Default fallback (overwritten by side-specific LOO below when relevant)
-            loo_fair_over = nv_prob_over
-            loo_fair_under = nv_prob_under
+            if is_paired and len(paired_books) >= 3:
+                # Paired LOO with vig removal (most accurate when both sides exist)
+                other_paired = [b for b in paired_books if b != book]
+                other_over_prices = [over_prices[b]["price"] for b in other_paired]
+                other_under_prices = [under_prices[b]["price"] for b in other_paired]
+                loo_cons_over = _consensus(other_over_prices)
+                loo_cons_under = _consensus(other_under_prices)
+                loo_fair_over, loo_fair_under = _remove_vig(loo_cons_over, loo_cons_under)
+            else:
+                loo_fair_over = nv_prob_over
+                loo_fair_under = nv_prob_under
 
-        if has_over:
-            over_info = over_prices[book]
-            over_price = over_info["price"]
+            if has_over:
+                over_info = over_prices[book]
+                over_price = over_info["price"]
 
-            if not is_paired or len(paired_books) < 3:
-                # Single-side LOO: median of other Over implied probabilities
-                other_over_probs = [american_to_probability(over_prices[b]["price"])
-                                   for b in over_books_list if b != book]
-                loo_fair_over = median(other_over_probs) if len(other_over_probs) >= 2 else nv_prob_over
+                if not is_paired or len(paired_books) < 3:
+                    # Single-side LOO: median of other Over implied probabilities
+                    other_over_probs = [american_to_probability(over_prices[b]["price"])
+                                       for b in over_books_list if b != book]
+                    loo_fair_over = median(other_over_probs) if len(other_over_probs) >= 2 else nv_prob_over
 
-            over_dec = american_to_decimal(over_price)
-            ev_over = loo_fair_over * over_dec - 1.0
-            bet_status_over = _classify_bet(ev_over)
+                over_dec = american_to_decimal(over_price)
+                ev_over = loo_fair_over * over_dec - 1.0
+                bet_status_over = _classify_bet(ev_over)
 
-            books.append({
-                "sportsbook": book,
-                "side": "OVER",
-                "line": line,
-                "american_odds": over_price,
-                "decimal_odds": round(over_dec, 4),
-                "fair_prob": round(loo_fair_over, 6),
-                "ev_pct": round(ev_over * 100, 4),
-                "bet_status": bet_status_over,
-                "validation_status": over_info.get("validation_status", "VALID"),
-                "included": True,
-                "reason": "",
-            })
+                books.append({
+                    "sportsbook": book,
+                    "side": "OVER",
+                    "line": line,
+                    "american_odds": over_price,
+                    "decimal_odds": round(over_dec, 4),
+                    "fair_prob": round(loo_fair_over, 6),
+                    "ev_pct": round(ev_over * 100, 4),
+                    "bet_status": bet_status_over,
+                    "validation_status": over_info.get("validation_status", "VALID"),
+                    "included": True,
+                    "reason": "",
+                })
 
-        if has_under:
-            under_info = under_prices[book]
-            under_price = under_info["price"]
+            if has_under:
+                under_info = under_prices[book]
+                under_price = under_info["price"]
 
-            if not is_paired or len(paired_books) < 3:
-                # Single-side LOO: median of other Under implied probabilities
-                other_under_probs = [american_to_probability(under_prices[b]["price"])
-                                    for b in under_books_list if b != book]
-                loo_fair_under = median(other_under_probs) if len(other_under_probs) >= 2 else nv_prob_under
+                if not is_paired or len(paired_books) < 3:
+                    # Single-side LOO: median of other Under implied probabilities
+                    other_under_probs = [american_to_probability(under_prices[b]["price"])
+                                        for b in under_books_list if b != book]
+                    loo_fair_under = median(other_under_probs) if len(other_under_probs) >= 2 else nv_prob_under
 
-            under_dec = american_to_decimal(under_price)
-            ev_under = loo_fair_under * under_dec - 1.0
-            bet_status_under = _classify_bet(ev_under)
+                under_dec = american_to_decimal(under_price)
+                ev_under = loo_fair_under * under_dec - 1.0
+                bet_status_under = _classify_bet(ev_under)
 
-            books.append({
-                "sportsbook": book,
-                "side": "UNDER",
-                "line": line,
-                "american_odds": under_price,
-                "decimal_odds": round(under_dec, 4),
-                "fair_prob": round(loo_fair_under, 6),
-                "ev_pct": round(ev_under * 100, 4),
-                "bet_status": bet_status_under,
-                "validation_status": under_info.get("validation_status", "VALID"),
-                "included": True,
-                "reason": "",
-            })
+                books.append({
+                    "sportsbook": book,
+                    "side": "UNDER",
+                    "line": line,
+                    "american_odds": under_price,
+                    "decimal_odds": round(under_dec, 4),
+                    "fair_prob": round(loo_fair_under, 6),
+                    "ev_pct": round(ev_under * 100, 4),
+                    "bet_status": bet_status_under,
+                    "validation_status": under_info.get("validation_status", "VALID"),
+                    "included": True,
+                    "reason": "",
+                })
 
     # If any extreme outlier, demote market quality
     if any(b["ev_pct"] > cfg.OUTLIER_EV_THRESHOLD * 100 or b["ev_pct"] < -cfg.OUTLIER_EV_THRESHOLD * 100
