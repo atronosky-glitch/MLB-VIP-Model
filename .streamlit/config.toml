@@ -1,0 +1,39 @@
+# MLB VIP Model — clean light theme
+# Professional, data-dense palette with a baseball-blue accent.
+
+[theme]
+base = "light"
+primaryColor = "#2563EB"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F7F7F8"
+codeBackgroundColor = "#F1F1F3"
+textColor = "#18181B"
+linkColor = "#2563EB"
+borderColor = "#E4E4E7"
+codeTextColor = "#18181B"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "8px"
+buttonRadius = "8px"
+
+font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 14
+baseFontWeight = 400
+codeFontSize = "0.875rem"
+headingFontSizes = ["32px", "26px", "22px", "18px", "16px", "14px"]
+headingFontWeights = [700, 600, 600, 600, 600, 500]
+linkUnderline = false
+
+chartCategoricalColors = ["#2563EB", "#16A34A", "#7C3AED", "#DC2626", "#D97706", "#0891B2", "#71717A"]
+
+greenColor = "#16A34A"
+redColor = "#DC2626"
+yellowColor = "#D97706"
+orangeColor = "#EA580C"
+blueColor = "#2563EB"
+violetColor = "#7C3AED"
+grayColor = "#71717A"
+
+dataframeBorderColor = "#E4E4E7"
+dataframeHeaderBackgroundColor = "#F7F7F8"
