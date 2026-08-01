@@ -35,6 +35,77 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ── Signature theme: "Sportsbook Ticker" ────────────────────────────
+# Numbers read like an odds board (tabular mono), labels read like a
+# betting-slip stub (uppercase, letter-spaced), and tier badges get a
+# colored left-edge stub instead of a flat pill.
+st.markdown(
+    """
+    <style>
+    /* Odds-board numerals: every metric value renders as tabular mono */
+    [data-testid="stMetricValue"] {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+    }
+    [data-testid="stMetricLabel"] {
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.7rem;
+        font-weight: 600;
+        opacity: 0.65;
+    }
+
+    /* Bordered containers read like betting-slip stubs: a hairline
+       card with a subtle top glow instead of a flat box. */
+    [data-testid="stVerticalBlockBorderWrapper"] > div:has(> [data-testid="stVerticalBlock"]) {
+        border-radius: 12px;
+        transition: border-color 0.15s ease;
+    }
+
+    /* Section subheaders: bold, tight, scoreboard-style */
+    h3 {
+        font-weight: 800 !important;
+        letter-spacing: -0.01em;
+    }
+
+    /* Tabs: bolder, uppercase, green underline on the active tab */
+    button[data-baseweb="tab"] {
+        font-weight: 700;
+        text-transform: uppercase;
+        font-size: 0.78rem;
+        letter-spacing: 0.03em;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #17C964 !important;
+    }
+    div[data-baseweb="tab-highlight"] {
+        background-color: #17C964 !important;
+        height: 3px !important;
+    }
+
+    /* Dataframes: monospace numerals throughout for that ticker feel */
+    [data-testid="stDataFrame"] {
+        font-family: 'JetBrains Mono', monospace;
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* Badges rendered via :orange-background / :violet-background /
+       :gray-background (tier pills) get a stub-style left accent. */
+    span[style*="background-color"] {
+        border-radius: 6px !important;
+        padding: 2px 10px !important;
+        font-weight: 700 !important;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.03em !important;
+        text-transform: uppercase !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ── Lazy imports (after page config) ───────────────────────────────
 
 def _import_config():
@@ -100,6 +171,76 @@ def _status_color(status: str) -> str:
 
 def _format_market_type(mt: str) -> str:
     return mt.replace("_", " ").title() if mt else ""
+
+
+# ── Shared "betting-slip stub" card renderer ────────────────────────
+# Left-edge color encodes tier/outcome; the headline number's color
+# encodes direction (green = positive/win, red = negative/loss).
+_TIER_STUB = {
+    "OFFICIAL_TRACKED": ("#F5A623", "VIP OFFICIAL"),
+    "DISCOVERY_TRACKED": ("#8B5CF6", "DISCOVERY"),
+}
+_OUTCOME_STUB = {
+    "win": ("#17C964", "WIN"),
+    "loss": ("#F31260", "LOSS"),
+    "push": ("#7A8CAB", "PUSH"),
+    "pending": ("#F5A623", "PENDING"),
+}
+
+
+def _render_pick_stub_card(
+    rank: str,
+    stub_hex: str,
+    stub_label: str,
+    title: str,
+    subtitle: str,
+    detail: str,
+    headline: str,
+    headline_hex: str,
+    tail: str = "",
+) -> None:
+    """Render one betting-slip-stub card. Caller supplies pre-formatted strings."""
+    st.markdown(
+        f"""
+        <div style="
+            background: #0F1729;
+            border: 1px solid #1C2740;
+            border-left: 4px solid {stub_hex};
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-bottom: 8px;
+        ">
+            <div style="
+                font-family: 'JetBrains Mono', monospace;
+                font-size: 0.68rem;
+                font-weight: 700;
+                letter-spacing: 0.06em;
+                color: {stub_hex};
+            ">{rank} · {stub_label}</div>
+            <div style="
+                font-weight: 800;
+                font-size: 1.02rem;
+                margin-top: 4px;
+                color: #E8EDF5;
+            ">{title}</div>
+            <div style="color:#7A8CAB; font-size:0.82rem; margin-top:2px;">{subtitle}</div>
+            <div style="
+                font-family: 'JetBrains Mono', monospace;
+                color:#7A8CAB;
+                font-size:0.8rem;
+                margin-top:6px;
+            ">{detail}</div>
+            <div style="
+                font-family: 'JetBrains Mono', monospace;
+                font-weight:700;
+                font-size:0.95rem;
+                color:{headline_hex};
+                margin-top:8px;
+            ">{headline} <span style="color:#7A8CAB; font-weight:500; font-size:0.78rem;">{tail}</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _is_postgres() -> bool:
@@ -433,27 +574,27 @@ if st.session_state.last_run_time is None:
 with st.container(border=True):
     _hcol1, _hcol2 = st.columns([6, 2], vertical_alignment="center")
     with _hcol1:
-        st.markdown("# :material/sports_baseball: MLB VIP Model")
-        st.caption("Model-driven MLB prop research · Shadow mode — no wagers are placed or delivered.")
+        st.markdown("# :material/sports_baseball: MLB VIP MODEL")
+        st.caption(":green[●] Model-driven MLB prop research · Shadow mode — no wagers are placed or delivered.")
     with _hcol2:
         if shadow and shadow.shadow_mode:
-            st.markdown(":gray-background[**SHADOW MODE**]")
+            st.markdown(":gray-background[**:material/visibility: SHADOW MODE**]")
         else:
-            st.markdown(":red-background[**LIVE**]")
+            st.markdown(":red-background[**:material/bolt: LIVE**]")
 
 meta_cols = st.columns(4, border=True)
 with meta_cols[0]:
-    st.markdown(":gray[**Date**]")
-    st.markdown(f"**{datetime.now(timezone.utc).strftime('%A, %B %d, %Y')}**")
+    st.markdown(":gray[**DATE**]")
+    st.markdown(f"`{datetime.now(timezone.utc).strftime('%a %b %d, %Y')}`")
 with meta_cols[1]:
-    st.markdown(":gray[**Timezone**]")
-    st.markdown(f"**{config.timezone if config else 'America/New_York'}**")
+    st.markdown(":gray[**TIMEZONE**]")
+    st.markdown(f"`{config.timezone if config else 'America/New_York'}`")
 with meta_cols[2]:
-    st.markdown(":gray[**Last Run**]")
-    st.markdown(f"**{st.session_state.last_run_time or 'Not yet run'}**")
+    st.markdown(":gray[**LAST RUN**]")
+    st.markdown(f"`{st.session_state.last_run_time or 'Not yet run'}`")
 with meta_cols[3]:
-    st.markdown(":gray[**Database**]")
-    st.markdown(f"**{'PostgreSQL' if _is_postgres() else Path(db_path).name}**")
+    st.markdown(":gray[**DATABASE**]")
+    st.markdown(f"`{'PostgreSQL' if _is_postgres() else Path(db_path).name}`")
 
 # ── Tab Layout ─────────────────────────────────────────────────────
 tabs = st.tabs([
@@ -487,7 +628,7 @@ with tabs[0]:
 
         def _tier_badge(tier: str | None) -> str:
             if tier == "OFFICIAL_TRACKED":
-                return ":blue-background[Official]"
+                return ":orange-background[:material/verified: VIP Official]"
             if tier == "DISCOVERY_TRACKED":
                 return ":violet-background[Discovery]"
             return ":gray-background[Research]"
@@ -511,16 +652,26 @@ with tabs[0]:
         # Top picks by edge
         top = sorted(recs_today, key=lambda r: -(_pick_edge(r) or 0))[:4]
         st.markdown("#### :material/grade: Top Picks")
+
         top_cols = st.columns(4)
         for i, r in enumerate(top):
             edge = _pick_edge(r) or 0.0
-            edge_color = "green" if edge > 0 else ("red" if edge < 0 else "gray")
-            with top_cols[i].container(border=True):
-                st.markdown(f":gray[**#{i + 1}**]  {_tier_badge(r.get('recommendation_tier'))}")
-                st.markdown(f"**{r.get('player_name', '')}**")
-                st.markdown(f"{_format_market_type(r.get('market_type', ''))} · {r.get('side', '').title()} {r.get('line', '')}")
-                st.markdown(f"{r.get('sportsbook', '')} @ {r.get('offered_american_odds', '')}")
-                st.markdown(f":{edge_color}[**{edge:+.2f}%**] edge · score {round(r.get('model_score') or 0, 1)}")
+            edge_hex = "#17C964" if edge > 0 else ("#F31260" if edge < 0 else "#7A8CAB")
+            stub_hex, stub_label = _TIER_STUB.get(
+                r.get("recommendation_tier"), ("#7A8CAB", "RESEARCH")
+            )
+            with top_cols[i]:
+                _render_pick_stub_card(
+                    rank=f"#{i + 1}",
+                    stub_hex=stub_hex,
+                    stub_label=stub_label,
+                    title=r.get("player_name", ""),
+                    subtitle=f"{_format_market_type(r.get('market_type', ''))} · {r.get('side', '').title()} {r.get('line', '')}",
+                    detail=f"{r.get('sportsbook', '')} @ {r.get('offered_american_odds', '')}",
+                    headline=f"{edge:+.2f}%",
+                    headline_hex=edge_hex,
+                    tail=f"edge · score {round(r.get('model_score') or 0, 1)}",
+                )
 
         # Filters
         filter_cols = st.columns(4)
@@ -588,8 +739,8 @@ with tabs[0]:
                 pd.DataFrame(table_data)
                 .style
                 .map(
-                    lambda v: "color:#16A34A" if isinstance(v, float) and v > 0
-                    else ("color:#DC2626" if isinstance(v, float) and v < 0 else ""),
+                    lambda v: "color:#17C964;font-weight:700" if isinstance(v, float) and v > 0
+                    else ("color:#F31260;font-weight:700" if isinstance(v, float) and v < 0 else ""),
                     subset=["Edge %"],
                 )
             )
@@ -674,6 +825,36 @@ with tabs[1]:
             metrics[2].metric("Wins", wins)
             metrics[3].metric("Losses", losses)
             metrics[4].metric("Profit (u)", round(total_profit, 2))
+
+            # Stub cards for the most recent frozen day (max 3/day by rule)
+            latest_date = max((op.get("selected_at") or "")[:10] for op in official_picks if op.get("selected_at"))
+            latest_ops = sorted(
+                [op for op in official_picks if (op.get("selected_at") or "")[:10] == latest_date],
+                key=lambda o: o.get("official_rank") or 99,
+            )
+            if latest_ops:
+                st.markdown(f"##### :material/verified: Frozen — {latest_date}")
+                stub_cols = st.columns(min(len(latest_ops), 3) or 1)
+                for i, op in enumerate(latest_ops):
+                    mform = op.get("market_form", "")
+                    is_yn = mform == "yn"
+                    edge = (op.get("yn_implied_prob_adv") if is_yn else op.get("ev_pct")) or 0.0
+                    edge_hex = "#17C964" if edge > 0 else ("#F31260" if edge < 0 else "#7A8CAB")
+                    outcome_hex, outcome_label = _OUTCOME_STUB.get(op.get("outcome", "pending"), ("#7A8CAB", "PENDING"))
+                    with stub_cols[i % len(stub_cols)]:
+                        _render_pick_stub_card(
+                            rank=f"RANK {op.get('official_rank', '')}",
+                            stub_hex=outcome_hex,
+                            stub_label=outcome_label,
+                            title=op.get("player_name", ""),
+                            subtitle=f"{_format_market_type(op.get('market_type', ''))} · {op.get('side', '').title()} {op.get('line', '')}",
+                            detail=f"{op.get('sportsbook', '')} @ {op.get('offered_american_odds', '')}",
+                            headline=f"{edge:+.2f}%",
+                            headline_hex=edge_hex,
+                            tail=f"· score {round(op.get('model_score') or 0, 1)}"
+                            + (f" · {op.get('profit_units'):+.2f}u" if op.get("profit_units") is not None else ""),
+                        )
+                st.divider()
 
             st.dataframe(pd.DataFrame(op_table), use_container_width=True, hide_index=True)
         else:
@@ -782,6 +963,26 @@ with tabs[2]:
         disc_cols[0].metric("Discovery", len(discovery_recs))
         disc_cols[1].metric("Research Only", len(research_only))
         disc_cols[2].metric("Total Non-Official", len(discovery_recs) + len(research_only))
+
+        top_disc = sorted(discovery_recs, key=lambda r: -(r.get("model_score") or 0))[:3]
+        stub_cols = st.columns(len(top_disc))
+        for i, r in enumerate(top_disc):
+            mform = r.get("market_form", "")
+            is_yn = mform == "yn"
+            edge = (r.get("yn_implied_prob_adv") if is_yn else r.get("ev_pct")) or 0.0
+            edge_hex = "#17C964" if edge > 0 else ("#F31260" if edge < 0 else "#7A8CAB")
+            with stub_cols[i]:
+                _render_pick_stub_card(
+                    rank=f"#{i + 1}",
+                    stub_hex="#8B5CF6",
+                    stub_label="DISCOVERY",
+                    title=r.get("player_name", ""),
+                    subtitle=f"{_format_market_type(r.get('market_type', ''))} · {r.get('side', '').title()} {r.get('line', '')}",
+                    detail=f"{r.get('sportsbook', '')} @ {r.get('offered_american_odds', '')}",
+                    headline=f"{edge:+.2f}%",
+                    headline_hex=edge_hex,
+                    tail=f"· score {round(r.get('model_score') or 0, 1)}",
+                )
 
     all_non_official = discovery_recs + research_only
 
@@ -912,10 +1113,22 @@ with tabs[3]:
                                 try:
                                     from src.observations import compute_movement
                                     movement = compute_movement(conn_mv, rid)
-                                    if movement.get("odds_movement_morning_to_pregame") is not None:
-                                        st.info(f"Odds movement (morning→pregame): {movement['odds_movement_morning_to_pregame']:+d} cents")
-                                    if movement.get("odds_movement_pregame_to_closing") is not None:
-                                        st.info(f"Odds movement (pregame→closing): {movement['odds_movement_pregame_to_closing']:+d} cents")
+                                    mv1 = movement.get("odds_movement_morning_to_pregame")
+                                    mv2 = movement.get("odds_movement_pregame_to_closing")
+                                    if mv1 is not None:
+                                        hex_ = "#17C964" if mv1 > 0 else ("#F31260" if mv1 < 0 else "#7A8CAB")
+                                        st.markdown(
+                                            f"<div style='font-family:JetBrains Mono,monospace; font-size:0.85rem; color:#7A8CAB;'>"
+                                            f"Morning → Pregame: <span style='color:{hex_}; font-weight:700;'>{mv1:+d}¢</span></div>",
+                                            unsafe_allow_html=True,
+                                        )
+                                    if mv2 is not None:
+                                        hex_ = "#17C964" if mv2 > 0 else ("#F31260" if mv2 < 0 else "#7A8CAB")
+                                        st.markdown(
+                                            f"<div style='font-family:JetBrains Mono,monospace; font-size:0.85rem; color:#7A8CAB;'>"
+                                            f"Pregame → Closing: <span style='color:{hex_}; font-weight:700;'>{mv2:+d}¢</span></div>",
+                                            unsafe_allow_html=True,
+                                        )
                                 finally:
                                     conn_mv.close()
                     except Exception as e:
@@ -941,17 +1154,41 @@ with tabs[4]:
         finally:
             conn_perf.close()
 
+        # ── Hero strip: the three numbers that matter most, sign-colored ──
+        profit_hex = "#17C964" if metrics.units_won > 0 else ("#F31260" if metrics.units_won < 0 else "#7A8CAB")
+        roi_hex = "#17C964" if metrics.roi > 0 else ("#F31260" if metrics.roi < 0 else "#7A8CAB")
+        hero_cols = st.columns(3)
+        _hero_specs = [
+            ("TOTAL PROFIT", f"{metrics.units_won:+.2f}u", profit_hex, f"{metrics.wins}W–{metrics.losses}L–{metrics.pushes}P"),
+            ("ROI", f"{metrics.roi:+.1%}", roi_hex, f"{metrics.total} official picks"),
+            ("WIN RATE", f"{metrics.win_rate:.1%}", "#F5A623", f"avg EV {metrics.avg_ev:.2f}%"),
+        ]
+        for col, (label, value, hex_, sub) in zip(hero_cols, _hero_specs):
+            with col:
+                st.markdown(
+                    f"""
+                    <div style="
+                        background: #0F1729;
+                        border: 1px solid #1C2740;
+                        border-top: 3px solid {hex_};
+                        border-radius: 10px;
+                        padding: 16px 18px;
+                        margin-bottom: 8px;
+                    ">
+                        <div style="font-size:0.7rem; font-weight:700; letter-spacing:0.08em; color:#7A8CAB;">{label}</div>
+                        <div style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:1.7rem; color:{hex_}; margin-top:4px;">{value}</div>
+                        <div style="font-size:0.75rem; color:#7A8CAB; margin-top:2px;">{sub}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
         m_cols = st.columns(5, border=True)
         m_cols[0].metric("Total Picks", metrics.total)
         m_cols[1].metric("Wins", metrics.wins)
         m_cols[2].metric("Losses", metrics.losses)
         m_cols[3].metric("Pushes", metrics.pushes)
         m_cols[4].metric("Total Profit (u)", round(metrics.units_won, 2))
-
-        b_cols = st.columns(3, border=True)
-        b_cols[0].metric("Win Rate", f"{metrics.win_rate:.1%}")
-        b_cols[1].metric("ROI", f"{metrics.roi:.1%}")
-        b_cols[2].metric("Avg EV", f"{metrics.avg_ev:.2f}%")
 
         st.divider()
 
@@ -973,8 +1210,10 @@ with tabs[4]:
                     "Profit": [r["profit_units"] or 0 for r in rows],
                 })
                 df_pnl["Cumulative"] = df_pnl["Profit"].cumsum()
+                final_val = df_pnl["Cumulative"].iloc[-1]
+                chart_hex = "#17C964" if final_val >= 0 else "#F31260"
                 st.subheader("Cumulative Profit / Loss")
-                st.line_chart(df_pnl.set_index("Date")["Cumulative"])
+                st.line_chart(df_pnl.set_index("Date")["Cumulative"], color=chart_hex)
         except Exception as e:
             st.caption(f"PnL chart unavailable: {e}")
 
@@ -997,12 +1236,13 @@ with tabs[4]:
                     "Profit (u)": [r["profit_units"] or 0 for r in ev_rows],
                 })
                 st.subheader("EV% vs Profit")
-                st.scatter_chart(df_ev, x="EV%", y="Profit (u)")
+                st.scatter_chart(df_ev, x="EV%", y="Profit (u)", color="#3B82F6")
         except Exception as e:
             st.caption(f"EV chart unavailable: {e}")
 
         st.divider()
 
+        _FIELD_LABELS = {"market_type": "Market", "sportsbook": "Sportsbook", "market_form": "Market Form"}
         breakdown_fields = ["market_type", "sportsbook", "market_form"]
         for field in breakdown_fields:
             try:
@@ -1013,7 +1253,28 @@ with tabs[4]:
                     conn_bd.close()
                 if bd:
                     st.subheader(f"Breakdown by {field.replace('_', ' ').title()}")
-                    st.dataframe(pd.DataFrame(bd), use_container_width=True, hide_index=True)
+                    bd_table = [{
+                        _FIELD_LABELS.get(field, "Bucket"): row.get("bucket") or "—",
+                        "Picks": row.get("total", 0),
+                        "Wins": row.get("wins", 0),
+                        "Win Rate": row.get("win_rate", 0.0),
+                        "Profit (u)": round(row.get("units_won", 0.0), 2),
+                        "ROI": row.get("roi", 0.0),
+                    } for row in bd]
+                    bd_df = pd.DataFrame(bd_table)
+                    styled_bd = bd_df.style.map(
+                        lambda v: "color:#17C964;font-weight:700" if isinstance(v, float) and v > 0
+                        else ("color:#F31260;font-weight:700" if isinstance(v, float) and v < 0 else ""),
+                        subset=["Profit (u)"],
+                    ).format({"Win Rate": "{:.1%}", "ROI": "{:+.1%}"})
+                    st.dataframe(
+                        styled_bd,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Profit (u)": st.column_config.NumberColumn("Profit (u)", format="%.2f"),
+                        },
+                    )
             except Exception:
                 pass
 
@@ -1137,9 +1398,22 @@ with tabs[5]:
             total_official = sum(s["official_count"] for s in market_stats.values())
             total_discovery = sum(s["discovery_count"] for s in market_stats.values())
             total_research = sum(s["research_count"] for s in market_stats.values())
-            st.caption(
-                f"Total: {len(market_stats)} markets | "
-                f"Official: {total_official} | Discovery: {total_discovery} | Research: {total_research}"
+            sum_cols = st.columns(4, border=True)
+            sum_cols[0].metric("Markets Scanned", len(market_stats))
+            sum_cols[1].markdown(
+                f"<div style='font-size:0.7rem; font-weight:600; letter-spacing:0.08em; opacity:0.65; text-transform:uppercase;'>Official</div>"
+                f"<div style='font-family:JetBrains Mono,monospace; font-weight:700; font-size:1.6rem; color:#F5A623;'>{total_official}</div>",
+                unsafe_allow_html=True,
+            )
+            sum_cols[2].markdown(
+                f"<div style='font-size:0.7rem; font-weight:600; letter-spacing:0.08em; opacity:0.65; text-transform:uppercase;'>Discovery</div>"
+                f"<div style='font-family:JetBrains Mono,monospace; font-weight:700; font-size:1.6rem; color:#8B5CF6;'>{total_discovery}</div>",
+                unsafe_allow_html=True,
+            )
+            sum_cols[3].markdown(
+                f"<div style='font-size:0.7rem; font-weight:600; letter-spacing:0.08em; opacity:0.65; text-transform:uppercase;'>Research</div>"
+                f"<div style='font-family:JetBrains Mono,monospace; font-weight:700; font-size:1.6rem; color:#7A8CAB;'>{total_research}</div>",
+                unsafe_allow_html=True,
             )
 
             # Top markets by Market Quality Score
@@ -1153,18 +1427,26 @@ with tabs[5]:
                 (_today_str,),
             ).fetchall()
             if _mqs_rows:
+                _TIER_LABEL = {"OFFICIAL_TRACKED": "VIP Official", "DISCOVERY_TRACKED": "Discovery"}
                 mqs_display = []
                 for row in _mqs_rows:
                     from src.prop_config import get_market_by_ou_type as _gou, get_market_by_yn_type as _gyn
                     cfg2 = _gou(row["market_type"]) or _gyn(row["market_type"])
+                    tier_raw = row["recommendation_tier"] or "RESEARCH_ONLY"
                     mqs_display.append({
                         "Market": cfg2.display_name if cfg2 else row["market_type"],
                         "MQS": round(row["market_quality_score"], 2),
                         "Model Score": round(row["model_score"], 1) if row["model_score"] else 0,
                         "Books": row["n_consensus_books"],
-                        "Tier": row["recommendation_tier"] or "RESEARCH_ONLY",
+                        "Tier": _TIER_LABEL.get(tier_raw, "Research"),
                     })
-                st.dataframe(pd.DataFrame(mqs_display), use_container_width=True, hide_index=True)
+                mqs_df = pd.DataFrame(mqs_display)
+                styled_mqs = mqs_df.style.map(
+                    lambda v: "color:#F5A623;font-weight:700" if v == "VIP Official"
+                    else ("color:#8B5CF6;font-weight:700" if v == "Discovery" else "color:#7A8CAB"),
+                    subset=["Tier"],
+                )
+                st.dataframe(styled_mqs, use_container_width=True, hide_index=True)
             else:
                 st.info("No Market Quality Score data available yet.")
 
@@ -1219,11 +1501,23 @@ with tabs[6]:
                     hb_time = hb_time.replace(tzinfo=_tz.utc)
                 age_s = (_dt.now(_tz.utc) - hb_time).total_seconds()
                 if age_s > 300:
-                    st.metric("Worker Status", "STALE")
+                    st.markdown(
+                        "<div style='font-size:0.7rem; font-weight:600; letter-spacing:0.08em; opacity:0.65; text-transform:uppercase;'>Worker Status</div>"
+                        "<div style='font-family:JetBrains Mono,monospace; font-weight:800; font-size:1.4rem; color:#F31260;'>STALE</div>",
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    st.metric("Worker Status", "ACTIVE")
+                    st.markdown(
+                        "<div style='font-size:0.7rem; font-weight:600; letter-spacing:0.08em; opacity:0.65; text-transform:uppercase;'>Worker Status</div>"
+                        "<div style='font-family:JetBrains Mono,monospace; font-weight:800; font-size:1.4rem; color:#17C964;'>● ACTIVE</div>",
+                        unsafe_allow_html=True,
+                    )
             else:
-                st.metric("Worker Status", "UNKNOWN")
+                st.markdown(
+                    "<div style='font-size:0.7rem; font-weight:600; letter-spacing:0.08em; opacity:0.65; text-transform:uppercase;'>Worker Status</div>"
+                    "<div style='font-family:JetBrains Mono,monospace; font-weight:800; font-size:1.4rem; color:#7A8CAB;'>UNKNOWN</div>",
+                    unsafe_allow_html=True,
+                )
     except Exception:
         st.info("Worker heartbeat not available")
 
@@ -1699,11 +1993,14 @@ with tabs[7]:
         # ── Safety Gate ──
         st.markdown("**System Status**")
         _gate_cols = st.columns(3, border=True)
-        _gate_cols[0].metric(
-            "Auto-Change Gate",
-            "✅ Enabled" if _allowed else "🚫 Blocked",
-            help=_reason,
-        )
+        _gate_hex = "#17C964" if _allowed else "#F31260"
+        _gate_label = "ENABLED" if _allowed else "BLOCKED"
+        with _gate_cols[0]:
+            st.markdown(
+                "<div style='font-size:0.7rem; font-weight:600; letter-spacing:0.08em; opacity:0.65; text-transform:uppercase;'>Auto-Change Gate</div>"
+                f"<div style='font-family:JetBrains Mono,monospace; font-weight:800; font-size:1.3rem; color:{_gate_hex};'>{_gate_label}</div>",
+                unsafe_allow_html=True,
+            )
         _gate_cols[1].metric("Learning Version", ADAPTIVE_LEARNING_VERSION)
         _graded_row = _conn_al.execute(
             "SELECT COUNT(*) AS graded_count FROM historical_recommendations hr "
