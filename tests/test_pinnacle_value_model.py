@@ -470,6 +470,22 @@ class TestScannerPinnacleDiagnostics:
         assert s["pinnacle_missing"] == 1
         assert s["fallback_lean"] == 1
 
+    def test_accumulate_summary_fallback_lean_excludes_insufficient_books(self):
+        from src.player_prop_scanner import (
+            _new_pinnacle_summary, _accumulate_pinnacle_summary,
+        )
+        over = {"b0": _price(120), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110)}
+        under = {"b0": _price(-110), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110)}
+        r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
+        assert r["diagnostics"]["fallback_used"] is True
+        assert r["diagnostics"]["rejection_reason"] == "insufficient_comparison_books"
+
+        s = _new_pinnacle_summary()
+        _accumulate_pinnacle_summary(s, r)
+        assert s["total_groups"] == 1
+        assert s["insufficient_comparison_books"] == 1
+        assert s["fallback_lean"] == 0
+
     def test_accumulate_summary_handles_no_diagnostics_key(self):
         from src.player_prop_scanner import (
             _new_pinnacle_summary, _accumulate_pinnacle_summary,

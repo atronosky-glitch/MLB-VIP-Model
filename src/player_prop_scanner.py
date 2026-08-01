@@ -69,14 +69,20 @@ def _new_pinnacle_summary() -> dict:
 
 
 def _accumulate_pinnacle_summary(summary: dict, analysis: dict) -> None:
-    """Fold one group analysis result into the compact summary counters."""
+    """Fold one group analysis result into the compact summary counters.
+
+    ``fallback_lean`` counts groups that used the LOO median fallback and
+    reached the lean stage; groups rejected for insufficient comparison
+    books are excluded (they never produced a lean).
+    """
     diag = analysis.get("diagnostics") or {}
     summary["total_groups"] += 1
     if diag.get("pinnacle_both_sides"):
         summary["pinnacle_exact_match"] += 1
     if diag.get("pinnacle_reference_used"):
         summary["pinnacle_reference_used"] += 1
-    if diag.get("fallback_used"):
+    if (diag.get("fallback_used")
+            and diag.get("rejection_reason") != "insufficient_comparison_books"):
         summary["fallback_lean"] += 1
     if diag.get("official_approved"):
         summary["official_approved"] += 1

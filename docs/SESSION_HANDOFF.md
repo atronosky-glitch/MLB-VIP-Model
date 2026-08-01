@@ -2,6 +2,31 @@
 
 > Future OpenCode session: read `AGENTS.md`, `PROJECT_STATUS.md`, `TODO.md`, and this file before modifying code.
 
+## Session: 2026-08-01 — API auth fail-fast + Render-verified Pinnacle diagnostics
+
+### What was done
+
+1. **API auth fail-fast fix (commit `72423c7`)** — SportsGameOdds reports invalid keys as HTTP 500 with body `"Internal Server Error: Invalid API key"`, which was inside the retry set, so the client retried ~6 times before failing (45s+ wasted). The old "retrying in 45s - attempt #6" text seen in Render logs exists nowhere in the repo — it was a stale log, not a code path. Now `src/api_client.py`:
+   - `_ENV_VAR = "SPORTSODDS_API_KEY"` (the correct env var — "SPORTSGAMEODDS_API_KEY" was never used; key is sent via `x-api-key` header).
+   - `_is_auth_failure(status, text)`: 401/403 always True; status < 400 always False; HTTP ≥ 400 whose body contains an auth marker (`invalid api key`, `unauthorized`, `authentication failed`, etc.) → True → `logger.critical` + `raise APIKeyError("Invalid SportsGameOdds API key. Check Render environment variable SPORTSODDS_API_KEY.")` — never retried.
+   - Retries preserved for 429/502/503/504/plain-500/timeouts (backoff). Import-time `logger.info` key diagnostic via `_mask_key` (prefix+suffix only). Caveat: `api_client` may be imported before `logging.basicConfig`, so that import-time INFO may not appear in Render logs — not a blocker (fail-fast still works).
+2. **Logging visibility**: default CLI log level `WARNING → INFO` in both `src/daily_pipeline.py` and `src/player_prop_scanner.py` so the `PINNACLE_SUMMARY` INFO line is visible without `--debug`.
+3. **`fallback_lean` counter semantics fix** (this session, uncommitted at doc-write time): `_accumulate_pinnacle_summary` counts `fallback_lean` only when fallback was used AND `rejection_reason != "insufficient_comparison_books"` — groups that reached the lean stage, not every fallback-reference group.
+4. **Live verification on Render** (`cd ~/project && python -m src.daily_pipeline --live`): Pipeline SUCCESS, 0 errors, 190.5s (ingest 184.7s), 10 events, 3122 markets, 9 books, 54220 approved rows, 50 recs (25 O/U + 25 YN).
+   - `PINNACLE_SUMMARY total_groups=2575 exact_match=0 reference_used=0 pinnacle_missing=779 line_mismatch=0 one_side=0 model_disabled=0 insufficient_books=1796 ev_threshold_failed=0 prob_edge_threshold_failed=0 no_positive_edge=0 fallback_lean=2121 official_approved=0`
+   - Interpretation: Pinnacle entirely absent from the feed (`exact_match=0`, `reference_used=0`, `line_mismatch=0`, `one_side=0`). `insufficient_books=1796` = 1342 full-analysis fallback groups below `MIN_COMPARISON_BOOKS` + 454 groups that never reached analysis (no prices / EXCLUDED). With the counter fix, `fallback_lean` ≈ 779 (= the `pinnacle_missing` count; groups that reached the lean stage). `official_approved=0` is correct gating.
+   - `OFFICIAL_BLOCKED_REQUIRE_PINNACLE ... reason=missing_pinnacle` observed → Gate 9 works. YN: 547 groups → 25 opportunities.
+5. **Tests**: full suite **1372 passed, 0 failed** (was 1371; +1 `test_accumulate_summary_fallback_lean_excludes_insufficient_books`). `tests/test_api_client.py` (26 offline tests) from `72423c7`.
+
+### Next steps
+
+1. Commit the `fallback_lean` fix + memory docs (this session) and push → Render auto-deploys.
+2. Next live run should show `fallback_lean≈779` (25 O/U recs) instead of 2121.
+3. If a `pinnacle` book is ever added to the feed: `exact_match>0`, threshold counters active, official picks possible (Gate 9).
+4. Pending from earlier: alt-line scanning, website, multi-league.
+
+---
+
 ## Session: 2026-07-31 — Phase 18C: Pinnacle + alt-line diagnostics only
 
 ### What was done
