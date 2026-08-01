@@ -1265,7 +1265,7 @@ def main(argv: list[str] | None = None) -> int:
     if config.debug:
         logging.basicConfig(level=logging.DEBUG, format="%(name)s %(levelname)s: %(message)s")
     else:
-        logging.basicConfig(level=logging.WARNING, format="%(name)s %(levelname)s: %(message)s")
+        logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s: %(message)s")
 
     return run_pipeline(config)
 

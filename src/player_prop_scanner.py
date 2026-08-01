@@ -986,7 +986,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, format="%(name)s %(levelname)s: %(message)s")
     else:
-        logging.basicConfig(level=logging.WARNING, format="%(name)s %(levelname)s: %(message)s")
+        logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s: %(message)s")
 
     # Validate config at startup
     config_errors = cfg.validate_config()

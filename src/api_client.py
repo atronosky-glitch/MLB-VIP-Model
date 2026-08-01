@@ -20,12 +20,72 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.sportsgameodds.com/v2"
-API_KEY = os.getenv("SPORTSODDS_API_KEY")
+_ENV_VAR = "SPORTSODDS_API_KEY"
+API_KEY = os.getenv(_ENV_VAR)
 
 if not API_KEY:
     raise RuntimeError(
-        "SPORTSODDS_API_KEY not found in .env file. "
-        "Create a .env file with: SPORTSODDS_API_KEY=your_key_here"
+        f"{_ENV_VAR} not found in .env file. "
+        f"Create a .env file with: {_ENV_VAR}=your_key_here"
+    )
+
+
+def _mask_key(key: str) -> str:
+    """Return a masked key (prefix + suffix only). Never the full key."""
+    if not key:
+        return "<unset>"
+    if len(key) <= 8:
+        return key[:2] + "..." + f"({len(key)} chars)"
+    return key[:4] + "..." + key[-2:]
+
+
+def _api_key_diagnostic() -> str:
+    """Safe startup diagnostic: env var name, presence, length, masked prefix."""
+    return (
+        f"API key diagnostic: env var={_ENV_VAR} present={bool(API_KEY)} "
+        f"length={len(API_KEY)} masked={_mask_key(API_KEY)}"
+    )
+
+
+logger.info("%s", _api_key_diagnostic())
+
+
+class APIKeyError(requests.exceptions.RequestException):
+    """Raised when the SportsGameOdds API rejects the configured API key."""
+
+
+_AUTH_TEXT_MARKERS = (
+    "invalid api key",
+    "invalid key",
+    "api key is invalid",
+    "unauthorized",
+    "authentication failed",
+    "not authorized",
+    "invalid credential",
+    "access denied",
+)
+
+
+def _is_auth_failure(status_code: int, text: str) -> bool:
+    """Detect authentication failures by status code or response body.
+
+    Covers both a plain 401/403 and servers that report an invalid key as an
+    HTTP 500 with an auth-style message (e.g. "Internal Server Error: Invalid
+    API key").  Body markers are only consulted for HTTP >= 400 so a 200 body
+    that happens to mention an API key cannot be misclassified.
+    """
+    if status_code in (401, 403):
+        return True
+    if status_code < 400:
+        return False
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _AUTH_TEXT_MARKERS)
+
+
+def _api_key_error_message() -> str:
+    return (
+        f"Invalid SportsGameOdds API key. "
+        f"Check Render environment variable {_ENV_VAR}."
     )
 
 
@@ -141,6 +201,8 @@ class SportsGameOddsClient:
 
         Retries up to *max_retries* times on connection errors, timeouts,
         and HTTP 429/5xx responses.  Sleep intervals are 1 s, 2 s, 4 s …
+        Authentication failures (HTTP 401/403, or any HTTP >= 400 whose body
+        indicates an invalid API key) fail fast and are never retried.
         """
         retry_statuses = {429, 500, 502, 503, 504}
         last_exc: Exception | None = None
@@ -148,13 +210,13 @@ class SportsGameOddsClient:
         for attempt in range(max_retries + 1):
             try:
                 resp = self.session.get(url, params=params, timeout=timeout)
-                if resp.status_code in (401, 403):
+                if _is_auth_failure(resp.status_code, resp.text):
                     logger.critical(
-                        "API key rejected (HTTP %d) — key may be invalid or out of credits. "
-                        "Fix SPORTSODDS_API_KEY in .env / Render env vars.",
-                        resp.status_code,
+                        "%s (HTTP %d, key=%s)",
+                        _api_key_error_message(), resp.status_code,
+                        _mask_key(API_KEY),
                     )
-                    return resp
+                    raise APIKeyError(_api_key_error_message())
                 if resp.status_code in retry_statuses and attempt < max_retries:
                     wait = 2 ** attempt
                     logger.warning(

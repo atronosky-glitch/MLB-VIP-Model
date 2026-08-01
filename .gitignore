@@ -43,3 +43,5 @@ data/_api_cache/
 output/*.csv
 output/*.json
 output/*.txt
+output/*.log
+output/launcher.log
