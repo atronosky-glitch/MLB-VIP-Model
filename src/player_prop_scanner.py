@@ -32,6 +32,7 @@ from . import prop_config as cfg
 from .api_client import SportsGameOddsClient
 from .player_prop_parser import parse_player_props
 from .player_prop_analysis import analyze_prop_group, analyze_yn_group, is_pinnacle_book
+from .pinnacle_feed import PinnacleFeedClient, build_pinnacle_lookup, inject_pinnacle_reference
 from .validation_constants import APPROVED_STATUSES
 from database.db_manager import get_connection, create_run, finish_run
 
@@ -322,7 +323,7 @@ def run_scan(
     except Exception:
         logger.debug("Could not create run record (DB may be unavailable)")
 
-    client = SportsGameOddsClient()
+    client = SportsGameOddsClient(max_cache_age=cfg.LIVE_CACHE_TTL_SECONDS)
 
     logger.info("Fetching MLB events...")
     data, from_cache = client.get_events(
@@ -440,6 +441,31 @@ def run_scan(
                   f"over_books={len(gd['over'])} under_books={len(gd['under'])}  "
                   f"player={gd.get('player_name','?')[:20]}")
     _log_line_fragmentation(ou_groups)
+
+    # Inject Pinnacle reference prices into O/U groups so the frozen
+    # Pinnacle value model can compute a no-vig reference.  Live scans may
+    # trigger a fetch; research (cached) scans reuse only a fresh cache.
+    pinnacle_reference_injected = 0
+    if cfg.PINNACLE_FEED_ENABLED:
+        try:
+            _pinnacle_props = PinnacleFeedClient().get_mlb_props(
+                allow_fetch=not research_only
+                if cfg.PINNACLE_FEED_ONLY_LIVE_SCANS
+                else True
+            )
+        except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
+            logger.warning("Pinnacle feed unavailable: %s", exc)
+            _pinnacle_props = None
+        if _pinnacle_props:
+            _pinnacle_lookup = build_pinnacle_lookup(_pinnacle_props)
+            pinnacle_reference_injected = inject_pinnacle_reference(
+                ou_groups, event_map, _pinnacle_lookup
+            )
+            if pinnacle_reference_injected:
+                print(
+                    f"  Pinnacle reference injected into {pinnacle_reference_injected} "
+                    f"O/U groups"
+                )
 
     pinnacle_summary = _new_pinnacle_summary()
     opportunities = []

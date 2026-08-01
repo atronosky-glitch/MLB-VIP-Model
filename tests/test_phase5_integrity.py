@@ -255,11 +255,13 @@ def _run_scan_with_mocks(events: list[dict], odds_map: dict,
                     return_value="test-run-id"), \
          mock.patch("src.player_prop_scanner.finish_run"), \
          mock.patch("src.player_prop_scanner.SportsGameOddsClient") as mock_cls, \
+         mock.patch("src.player_prop_scanner.PinnacleFeedClient") as mock_pfc, \
          mock.patch("src.player_prop_scanner.parse_player_props") as mock_parse, \
          mock.patch("src.player_prop_scanner.analyze_prop_group") as mock_analyze:
 
         mock_gc.return_value = mock.MagicMock()
         mock_cls.return_value.get_events.return_value = ({"data": events}, False)
+        mock_pfc.return_value.get_mlb_props.return_value = None
 
         def _parse_side(event):
             eid = event.get("eventID", "")

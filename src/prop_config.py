@@ -65,6 +65,9 @@ YN_MIN_COMPARISON_BOOKS = 3
 ACTIONABLE_EDGE_THRESHOLD = 0.02  # 2%
 # Maximum age of odds data before stale-data warning (in seconds)
 FRESHNESS_THRESHOLD_SECONDS = 3600  # 1 hour
+# Max age of the SportsGameOdds disk cache for live scans.  Older data is
+# re-fetched from the API so a live run never analyzes a previous day's slate.
+LIVE_CACHE_TTL_SECONDS = 900  # 15 minutes
 
 
 # ── Pinnacle-first sharp value model ───────────────────────────────
@@ -84,6 +87,24 @@ PINNACLE_FALLBACK_TO_MARKET_MEDIAN = True
 MIN_PINNACLE_EV = 0.04
 # Minimum probability edge vs Pinnacle no-vig (decimal, 0.025 = 2.5%).
 MIN_PINNACLE_PROB_EDGE = 0.025
+
+
+# ── Pinnacle feed (pinnapi.com) ───────────────────────────────────
+# Free-tier Pinnacle-reseller API that serves Pinnacle's sharp O/U
+# player props.  When enabled, the scanner fetches this feed and injects
+# a "pinnacle" book entry into every O/U group at the exact same line,
+# which activates the frozen Pinnacle value model above.
+PINNACLE_FEED_ENABLED = True
+PINNACLE_FEED_API_KEY_ENV = "PINNAPI_API_KEY"
+PINNACLE_FEED_BASE_URL = "https://pinnapi.com"
+PINNACLE_FEED_SPORT_ID = 6      # baseball
+PINNACLE_FEED_LEAGUE = "MLB"    # feed also carries NPB/KBO/Mexican League
+PINNACLE_FEED_TIMEOUT_SECONDS = 30
+PINNACLE_FEED_CACHE_TTL_SECONDS = 300          # reuse a feed for this long
+PINNACLE_FEED_MIN_INTERVAL_SECONDS = 10.0      # min gap between live calls
+# Only live scans (not cached/research scans) may trigger a live fetch.
+# A fresh disk cache is still used for research scans when available.
+PINNACLE_FEED_ONLY_LIVE_SCANS = True
 
 # ── Confidence score weights ───────────────────────────────────────
 # These weights control the relative importance of each component
@@ -215,6 +236,7 @@ PITCHER_EARNED_RUNS = MarketConfig(
     short_label="ER",
     period="game",
     scanner_title="MLB PITCHER EARNED RUNS EDGE SCANNER",
+    supports_yn=False,
 )
 
 PITCHER_PITCHES_THROWN = MarketConfig(
@@ -407,6 +429,8 @@ MARKET_REGISTRY: list[MarketConfig] = [
     PITCHER_STRIKEOUTS,
     PITCHER_HITS_ALLOWED,
     PITCHER_WALKS_ALLOWED,
+    PITCHER_OUTS,
+    PITCHER_EARNED_RUNS,
     PITCHER_WIN,
     BATTER_HITS,
     BATTER_TOTAL_BASES,

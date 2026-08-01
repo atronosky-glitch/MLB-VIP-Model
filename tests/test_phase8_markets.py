@@ -29,6 +29,8 @@ from src.prop_config import (
     PITCHER_STRIKEOUTS,
     PITCHER_HITS_ALLOWED,
     PITCHER_WALKS_ALLOWED,
+    PITCHER_OUTS,
+    PITCHER_EARNED_RUNS,
 )
 from src.player_prop_parser import parse_player_props, _extract_player_name_from_market
 
@@ -37,7 +39,7 @@ from src.player_prop_parser import parse_player_props, _extract_player_name_from
 
 class TestRegistryPhase8:
     def test_total_market_count(self):
-        assert len(MARKET_REGISTRY) == 8
+        assert len(MARKET_REGISTRY) == 10
 
     def test_all_new_markets_registered(self):
         expected = [
@@ -46,6 +48,7 @@ class TestRegistryPhase8:
             BATTER_STOLEN_BASES,
             PITCHER_WIN,
             PITCHER_STRIKEOUTS, PITCHER_HITS_ALLOWED, PITCHER_WALKS_ALLOWED,
+            PITCHER_OUTS, PITCHER_EARNED_RUNS,
         ]
         for mc in expected:
             assert mc in MARKET_REGISTRY

@@ -40,6 +40,7 @@ from src.api_client import SportsGameOddsClient
 from src.player_prop_scanner import run_scan
 from src.odds_parser import parse_odds
 from src.market_analysis import american_to_probability, probability_to_american
+from src import prop_config as cfg
 from src.prop_config import validate_config, MARKET_REGISTRY
 from database.db_manager import (
     DB_PATH, get_connection, create_run, finish_run, log_ingestion,
@@ -311,7 +312,9 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
     t0 = time.monotonic()
 
     try:
-        max_cache_age = None if config.live else 3600.0
+        # Live runs must never analyze a previous day's slate, so bound the
+        # cache TTL; research runs may reuse a recent snapshot (1 hour).
+        max_cache_age = cfg.LIVE_CACHE_TTL_SECONDS if config.live else 3600.0
         client = SportsGameOddsClient(max_cache_age=max_cache_age)
         data, from_cache = client.get_events(
             league="MLB", odds_available=True, include_alt_lines=True,
