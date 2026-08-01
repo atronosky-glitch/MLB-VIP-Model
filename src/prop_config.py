@@ -102,9 +102,6 @@ PINNACLE_FEED_LEAGUE = "MLB"    # feed also carries NPB/KBO/Mexican League
 PINNACLE_FEED_TIMEOUT_SECONDS = 30
 PINNACLE_FEED_CACHE_TTL_SECONDS = 300          # reuse a feed for this long
 PINNACLE_FEED_MIN_INTERVAL_SECONDS = 10.0      # min gap between live calls
-# Only live scans (not cached/research scans) may trigger a live fetch.
-# A fresh disk cache is still used for research scans when available.
-PINNACLE_FEED_ONLY_LIVE_SCANS = True
 
 # ── Confidence score weights ───────────────────────────────────────
 # These weights control the relative importance of each component

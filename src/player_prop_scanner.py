@@ -443,16 +443,16 @@ def run_scan(
     _log_line_fragmentation(ou_groups)
 
     # Inject Pinnacle reference prices into O/U groups so the frozen
-    # Pinnacle value model can compute a no-vig reference.  Live scans may
-    # trigger a fetch; research (cached) scans reuse only a fresh cache.
+    # Pinnacle value model can compute a no-vig reference.  The feed
+    # client reuses a fresh disk cache (5-min TTL) and rate-limits live
+    # calls, so allow_fetch=True is safe for every scan: a fresh cache
+    # never touches the network, and a stale cache refetches sharp prices
+    # even for cached/research scans (otherwise those runs silently have
+    # no Pinnacle reference at all).
     pinnacle_reference_injected = 0
     if cfg.PINNACLE_FEED_ENABLED:
         try:
-            _pinnacle_props = PinnacleFeedClient().get_mlb_props(
-                allow_fetch=not research_only
-                if cfg.PINNACLE_FEED_ONLY_LIVE_SCANS
-                else True
-            )
+            _pinnacle_props = PinnacleFeedClient().get_mlb_props(allow_fetch=True)
         except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
             logger.warning("Pinnacle feed unavailable: %s", exc)
             _pinnacle_props = None
