@@ -176,6 +176,47 @@ def _recover_stale_jobs(conn: sqlite3.Connection) -> int:
     return count
 
 
+FAILED_JOB_RETENTION_DAYS = 7
+STALE_PENDING_HOURS = 24
+
+
+def _maintenance_cleanup(conn: sqlite3.Connection) -> int:
+    """Delete old failed jobs, stale pending jobs, and old worker-lock rows.
+
+    Bounds the ``scheduled_jobs`` table so counters and storage don't grow
+    without limit. Runs once per day from the worker loop.
+    """
+    now = datetime.now(timezone.utc)
+    failed_cutoff = (now - timedelta(days=FAILED_JOB_RETENTION_DAYS)).strftime("%Y-%m-%d")
+    pending_cutoff = (now - timedelta(hours=STALE_PENDING_HOURS)).isoformat()
+    total = 0
+
+    cursor = conn.execute(
+        "DELETE FROM scheduled_jobs WHERE status = 'failed' AND completed_at IS NOT NULL AND completed_at < ?",
+        (failed_cutoff,),
+    )
+    conn.commit()
+    total += cursor.rowcount
+
+    cursor = conn.execute(
+        "DELETE FROM scheduled_jobs WHERE status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at < ?",
+        (pending_cutoff,),
+    )
+    conn.commit()
+    total += cursor.rowcount
+
+    cursor = conn.execute(
+        "DELETE FROM scheduled_jobs WHERE metadata = 'worker-lock' AND created_at < ?",
+        (failed_cutoff,),
+    )
+    conn.commit()
+    total += cursor.rowcount
+
+    if total:
+        logger.info("Maintenance cleanup removed %d stale job(s)", total)
+    return total
+
+
 # ── Job execution ─────────────────────────────────────────────────
 
 
@@ -319,14 +360,31 @@ def _execute_job(job_type: str, conn: sqlite3.Connection, config) -> dict:
 
 
 def _process_pending_jobs(conn: sqlite3.Connection, config) -> int:
-    """Find and execute all pending jobs. Returns count executed."""
+    """Find and execute all due pending jobs. Returns count executed.
+
+    Jobs scheduled for a future time are skipped until their scheduled_at
+    has been reached. Jobs with no scheduled_at run immediately.
+    """
     from src.automation import get_pending_jobs, update_job_status
     pending = get_pending_jobs(conn)
     executed = 0
+    now = datetime.now(timezone.utc)
 
     for job in pending:
         job_id = job["job_id"]
         job_type = job["job_type"]
+
+        # Only run jobs whose scheduled time has been reached.
+        scheduled_at = job.get("scheduled_at")
+        if scheduled_at:
+            try:
+                sched_dt = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+                if sched_dt.tzinfo is None:
+                    sched_dt = sched_dt.replace(tzinfo=timezone.utc)
+                if sched_dt > now:
+                    continue
+            except (ValueError, TypeError):
+                pass  # Unparseable schedule → treat as due
 
         # Try to acquire lock
         lock_key = _acquire_lock(conn, f"exec_{job_id}")
@@ -444,6 +502,7 @@ def run_worker_persistent(config) -> None:
     last_grading_check = 0
     last_morning_check = 0
     last_backup_minute = -1
+    last_maintenance_day = ""
 
     while _running:
         try:
@@ -457,6 +516,12 @@ def run_worker_persistent(config) -> None:
 
             # Recover stale jobs
             _recover_stale_jobs(conn)
+
+            # Daily maintenance cleanup (once per day)
+            day_key = now_local.strftime("%Y-%m-%d")
+            if day_key != last_maintenance_day:
+                _maintenance_cleanup(conn)
+                last_maintenance_day = day_key
 
             # Process pending jobs
             _process_pending_jobs(conn, config)

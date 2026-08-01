@@ -10,6 +10,10 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+
+_MORNING_TZ = ZoneInfo("America/New_York")
+_MORNING_HOUR = 9
 
 
 # ── Job management ─────────────────────────────────────────────────
@@ -115,7 +119,7 @@ def schedule_pregame_checks(
         # Dedup: skip if already has a pending pregame job
         existing = conn.execute(
             "SELECT 1 FROM scheduled_jobs "
-            "WHERE event_id = ? AND job_type = 'pregame' AND status IN ('pending','running')",
+            "WHERE event_id = ? AND job_type = 'pregame-check' AND status IN ('pending','running')",
             (event_id,),
         ).fetchone()
         if existing:
@@ -133,7 +137,7 @@ def schedule_pregame_checks(
 
         create_job(
             conn,
-            job_type="pregame",
+            job_type="pregame-check",
             scheduled_at=scheduled_at,
             event_id=event_id,
             metadata=f"{game['away_team']} @ {game['home_team']}",
@@ -181,12 +185,21 @@ def trigger_morning_run(conn: sqlite3.Connection, scheduled_at: str | None = Non
 
 def trigger_pregame_refresh(conn: sqlite3.Connection, event_id: str) -> str:
     """Create an immediate pregame check job for a specific game."""
-    return create_job(conn, job_type="pregame", event_id=event_id)
+    return create_job(conn, job_type="pregame-check", event_id=event_id)
 
 
 def trigger_grading(conn: sqlite3.Connection) -> str:
     """Create an immediate grading job."""
     return create_job(conn, job_type="grading")
+
+
+def _next_morning_run_fallback() -> str:
+    """Compute the next expected 09:00 ET morning run when none is pending."""
+    now_et = datetime.now(_MORNING_TZ)
+    candidate = now_et.replace(hour=_MORNING_HOUR, minute=0, second=0, microsecond=0)
+    if now_et >= candidate:
+        candidate = candidate + timedelta(days=1)
+    return candidate.astimezone(timezone.utc).isoformat()
 
 
 def get_automation_status(conn: sqlite3.Connection) -> dict:
@@ -213,7 +226,7 @@ def get_automation_status(conn: sqlite3.Connection) -> dict:
 
     pending_pregame = conn.execute(
         "SELECT COUNT(*) AS cnt FROM scheduled_jobs "
-        "WHERE job_type = 'pregame' AND status = 'pending'"
+        "WHERE job_type = 'pregame-check' AND status = 'pending'"
     ).fetchone()["cnt"]
 
     last_grading = conn.execute(
@@ -224,7 +237,7 @@ def get_automation_status(conn: sqlite3.Connection) -> dict:
 
     return {
         "scheduler_enabled": True,
-        "next_morning_run": next_morning["scheduled_at"] if next_morning else None,
+        "next_morning_run": next_morning["scheduled_at"] if next_morning else _next_morning_run_fallback(),
         "last_morning_run": last_morning["completed_at"] if last_morning else None,
         "pending_pregame_checks": pending_pregame,
         "last_grading_run": last_grading["completed_at"] if last_grading else None,
