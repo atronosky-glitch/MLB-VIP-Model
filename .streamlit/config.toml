@@ -1,40 +1,40 @@
-# MLB VIP Model — clean professional light theme
-# Slate neutrals with a strong baseball-blue accent.
+# MLB VIP Model — "Sportsbook Ticker" theme
+# Near-black navy, vivid green for +EV, punchy red for risk, gold for VIP/Official.
 
 [theme]
-base = "light"
-primaryColor = "#2563EB"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F8FAFC"
-codeBackgroundColor = "#F1F5F9"
-textColor = "#0F172A"
-linkColor = "#2563EB"
-borderColor = "#E2E8F0"
-codeTextColor = "#0F172A"
+base = "dark"
+primaryColor = "#17C964"
+backgroundColor = "#060A14"
+secondaryBackgroundColor = "#0F1729"
+codeBackgroundColor = "#0B1220"
+textColor = "#E8EDF5"
+linkColor = "#17C964"
+borderColor = "#1C2740"
+codeTextColor = "#E8EDF5"
 showWidgetBorder = true
 showSidebarBorder = true
-baseRadius = "8px"
+baseRadius = "10px"
 buttonRadius = "8px"
 
-font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800&display=swap"
-codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@700;800;900&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap"
 baseFontSize = 14
 baseFontWeight = 400
 codeFontSize = "0.875rem"
-headingFontSizes = ["28px", "22px", "18px", "16px", "14px", "13px"]
-headingFontWeights = [800, 700, 600, 600, 600, 500]
+headingFontSizes = ["30px", "22px", "18px", "16px", "14px", "13px"]
+headingFontWeights = [900, 800, 700, 600, 600, 500]
 linkUnderline = false
 
-chartCategoricalColors = ["#2563EB", "#16A34A", "#7C3AED", "#DC2626", "#D97706", "#0891B2", "#64748B"]
+chartCategoricalColors = ["#17C964", "#F31260", "#F5A623", "#3B82F6", "#8B5CF6", "#06B6D4", "#7A8CAB"]
 
-greenColor = "#16A34A"
-redColor = "#DC2626"
-yellowColor = "#D97706"
-orangeColor = "#EA580C"
-blueColor = "#2563EB"
-violetColor = "#7C3AED"
-grayColor = "#64748B"
+greenColor = "#17C964"
+redColor = "#F31260"
+yellowColor = "#F5A623"
+orangeColor = "#F97316"
+blueColor = "#3B82F6"
+violetColor = "#8B5CF6"
+grayColor = "#7A8CAB"
 
-dataframeBorderColor = "#E2E8F0"
-dataframeHeaderBackgroundColor = "#F8FAFC"
+dataframeBorderColor = "#1C2740"
+dataframeHeaderBackgroundColor = "#0F1729"
