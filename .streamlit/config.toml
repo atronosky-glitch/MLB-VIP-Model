@@ -1,40 +1,40 @@
-# MLB VIP Model — "Sportsbook Ticker" theme
-# Near-black navy, vivid green for +EV, punchy red for risk, gold for VIP/Official.
+# MLB VIP Model — "Sharp Market Intelligence" theme
+# Near-black navy, vivid lime for positive EV, cyan for secondary, amber for leans, red for risk.
 
 [theme]
 base = "dark"
-primaryColor = "#17C964"
-backgroundColor = "#060A14"
-secondaryBackgroundColor = "#0F1729"
-codeBackgroundColor = "#0B1220"
-textColor = "#E8EDF5"
-linkColor = "#17C964"
-borderColor = "#1C2740"
-codeTextColor = "#E8EDF5"
+primaryColor = "#B9FF45"
+backgroundColor = "#080B12"
+secondaryBackgroundColor = "#101621"
+codeBackgroundColor = "#0B1120"
+textColor = "#F6F8FC"
+linkColor = "#48D8FF"
+borderColor = "#1E2837"
+codeTextColor = "#F6F8FC"
 showWidgetBorder = true
 showSidebarBorder = true
-baseRadius = "10px"
-buttonRadius = "8px"
+baseRadius = "14px"
+buttonRadius = "9px"
 
 font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
 headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@700;800;900&display=swap"
 codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&display=swap"
-baseFontSize = 14
+baseFontSize = 15
 baseFontWeight = 400
 codeFontSize = "0.875rem"
 headingFontSizes = ["30px", "22px", "18px", "16px", "14px", "13px"]
 headingFontWeights = [900, 800, 700, 600, 600, 500]
 linkUnderline = false
 
-chartCategoricalColors = ["#17C964", "#F31260", "#F5A623", "#3B82F6", "#8B5CF6", "#06B6D4", "#7A8CAB"]
+chartCategoricalColors = ["#B9FF45", "#48D8FF", "#FF3D58", "#FFC75F", "#A995FF", "#8E9AAE", "#F6F8FC"]
 
-greenColor = "#17C964"
-redColor = "#F31260"
-yellowColor = "#F5A623"
-orangeColor = "#F97316"
-blueColor = "#3B82F6"
-violetColor = "#8B5CF6"
-grayColor = "#7A8CAB"
+greenColor = "#B9FF45"
+redColor = "#FF3D58"
+yellowColor = "#FFC75F"
+orangeColor = "#FF9F43"
+blueColor = "#48D8FF"
+violetColor = "#A995FF"
+grayColor = "#8E9AAE"
 
-dataframeBorderColor = "#1C2740"
-dataframeHeaderBackgroundColor = "#0F1729"
+dataframeBorderColor = "#1E2837"
+dataframeHeaderBackgroundColor = "#101621"
