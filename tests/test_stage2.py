@@ -1,7 +1,7 @@
 """Verify Stage 2: odds parsing and database storage."""
 
 import sys
-import json
+import copy
 from pathlib import Path
 
 import pytest
@@ -11,27 +11,47 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.odds_parser import parse_odds, parse_odd_id_components
 from database.db_manager import save_odds_batch
+from tests.fixture_data import tb_tor_event as _tb_tor_event
 
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
 
 @pytest.fixture(scope="module")
-def cached_events():
-    """Load a single event from the cached API response."""
-    cache_dir = PROJECT_ROOT / "data" / "_api_cache"
-    events_files = sorted(cache_dir.glob("*events*.json"))
-    assert events_files, "No cached events file found"
-    with open(events_files[0], encoding="utf-8") as f:
-        data = json.load(f)
-    events = data["data"]
-    assert events, "No events in cached data"
-    return events
+def synthetic_events(all_events):
+    """Use the shared deterministic event fixtures instead of API cache data."""
+    return all_events
 
 
 @pytest.fixture
-def first_event(cached_events):
-    return cached_events[0]
+def first_event():
+    """Provide a deterministic full-game event for Stage 2 market checks."""
+    event = copy.deepcopy(_tb_tor_event)
+    event["odds"].update({
+        "points-away-game-sp-away": {
+            "statEntityID": "away",
+            "marketName": "Tampa Bay Rays Spread",
+            "sideID": "away",
+            "opposingOddID": "points-home-game-sp-home",
+            "byBookmaker": {
+                "fanduel": {
+                    "odds": "-110",
+                    "spread": -1.5,
+                    "altLines": [{"odds": "-105", "spread": -2.5}],
+                },
+            },
+        },
+        "points-home-game-sp-home": {
+            "statEntityID": "home",
+            "marketName": "Toronto Blue Jays Spread",
+            "sideID": "home",
+            "opposingOddID": "points-away-game-sp-away",
+            "byBookmaker": {
+                "fanduel": {"odds": "-110", "spread": 1.5},
+            },
+        },
+    })
+    return event
 
 
 # ── oddID parsing tests ──────────────────────────────────────────
@@ -87,14 +107,14 @@ def test_parse_malformed():
 # ── Odds parsing tests ───────────────────────────────────────────
 
 
-def _odds_rows(cached_events, index=0):
-    result = parse_odds(cached_events[index])
+def _odds_rows(synthetic_events, index=0):
+    result = parse_odds(synthetic_events[index])
     return result.odds_rows
 
 
-def test_every_event_produces_odds(cached_events):
+def test_every_event_produces_odds(synthetic_events):
     """Every event should produce at least some odds rows."""
-    for event in cached_events:
+    for event in synthetic_events:
         result = parse_odds(event)
         assert len(result.odds_rows) > 0, f"Event {event.get('eventID')} produced 0 odds rows"
 

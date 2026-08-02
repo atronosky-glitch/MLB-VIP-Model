@@ -1101,7 +1101,7 @@ def _write_completion_flag(config: PipelineConfig, state: PipelineState) -> None
     try:
         flag = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "run_id": state.run_id,
+            "run_id": state.pipeline_run_id,
             "n_recommendations": state.n_recommendations_saved,
             "exit_code": EXIT_SUCCESS if state.n_recommendations_saved > 0 else EXIT_SUCCESS_NO_RECS,
         }

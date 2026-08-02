@@ -1807,17 +1807,18 @@ with tabs[6]:
 
     # Data quality
     st.subheader(":material/rule: Data Quality")
-    if st.button("📊 Run Data Quality Check", use_container_width=False):
+    if st.button("📊 View Data Quality Findings", use_container_width=False):
         try:
-            from src.data_quality import run_data_quality_checks
+            from src.data_quality import get_critical_findings, init_findings_table
             conn5 = get_connection(str(db_path))
             try:
-                findings = run_data_quality_checks(conn5)
+                init_findings_table(conn5)
+                findings = get_critical_findings(conn5)
                 if findings:
                     import pandas as pd
-                    st.dataframe(pd.DataFrame([f.__dict__ for f in findings]), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(findings), use_container_width=True, hide_index=True)
                 else:
-                    st.success("No data quality issues found.")
+                    st.success("No critical data quality findings in the last 24 hours.")
             finally:
                 conn5.close()
         except Exception as exc:
@@ -1880,10 +1881,12 @@ with tabs[6]:
                 _run_subprocess_command(
                     "Closing Prices",
                     [sys.executable, "-c",
-                     "from src.grading import capture_closing_prices; "
+                     "from database.db_manager import capture_closing_prices; "
                      "from database.db_manager import get_connection; "
-                     "conn = get_connection(); capture_closing_prices(conn, 'LIVE'); "
-                     "print('Closing prices captured')"],
+                     "conn = get_connection(); "
+                     "recs = [dict(row) for row in conn.execute(\"SELECT * FROM historical_recommendations WHERE date(scan_timestamp) = date('now')\").fetchall()]; "
+                     "print(f'Closing prices captured: {capture_closing_prices(conn, recs)}'); "
+                     "conn.close()"],
                     result_box4,
                 )
                 if result_box4["status"] == "success":

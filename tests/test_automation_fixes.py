@@ -7,6 +7,7 @@
 """
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import src.worker as worker
 from src.automation import (
@@ -28,16 +29,19 @@ class TestPregameJobTypeConsistency:
     """Pregame jobs must use the job type the worker dispatcher handles."""
 
     def test_schedule_pregame_checks_uses_pregame_check(self, db_conn):
-        start_time = (
-            datetime.now(timezone.utc) + timedelta(hours=3)
-        ).isoformat()
+        today = db_conn.execute("SELECT date('now')").fetchone()[0]
+        fixed_now = datetime.fromisoformat(f"{today}T12:00:00+00:00")
+        start_time = f"{today}T15:00:00+00:00"
         db_conn.execute(
             "INSERT INTO games (event_id, away_team, home_team, start_time, status) "
             "VALUES ('ev_pc', 'NYY', 'BOS', ?, 'scheduled')",
             (start_time,),
         )
         db_conn.commit()
-        count = schedule_pregame_checks(db_conn)
+        with patch("src.automation.datetime") as mock_datetime:
+            mock_datetime.now.return_value = fixed_now
+            mock_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            count = schedule_pregame_checks(db_conn)
         assert count == 1
         types = [t for t, _ in _job_types(db_conn)]
         assert "pregame-check" in types

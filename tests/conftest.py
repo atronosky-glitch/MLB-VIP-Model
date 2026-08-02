@@ -4,10 +4,15 @@ Provides isolated database connections and synthetic API data
 (deterministic, never cache-dependent).
 """
 
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
+
+# Production imports fail fast without an API key.  Tests use a non-secret
+# placeholder so collection is independent of module order and local .env files.
+os.environ.setdefault("SPORTSODDS_API_KEY", "test_api_key_1234567890")
 
 from tests.fixture_data import (
     TB_TOR_EVENT_ID,

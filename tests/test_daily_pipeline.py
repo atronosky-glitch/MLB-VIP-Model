@@ -40,6 +40,7 @@ from src.daily_pipeline import (
     _build_run_summary,
     _build_pipeline_report,
     _parse_status,
+    _write_completion_flag,
     _write_csv,
     _write_json,
     _write_text,
@@ -600,6 +601,19 @@ class TestReportBuilders:
         report = _build_pipeline_report(state)
         assert "validate" in report
         assert "0.123" in report
+
+    def test_completion_flag_uses_pipeline_run_id(self, tmp_path):
+        import src.daily_pipeline as pipeline
+
+        flag_path = tmp_path / ".pipeline_completed"
+        state = PipelineState(pipeline_run_id="run-123")
+        state.n_recommendations_saved = 1
+        with patch.object(pipeline, "_PIPELINE_COMPLETION_FILE", flag_path):
+            _write_completion_flag(PipelineConfig(), state)
+
+        flag = json.loads(flag_path.read_text(encoding="utf-8"))
+        assert flag["run_id"] == "run-123"
+        assert flag["n_recommendations"] == 1
 
 
 # ── File writers ──────────────────────────────────────────────────
