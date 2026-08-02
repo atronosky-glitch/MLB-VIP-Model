@@ -163,6 +163,31 @@ def _import_db_manager():
     return get_connection, init_db
 
 
+def _theme_chart(chart, height: int = 320):
+    """Apply the Sharp Market Intelligence palette to an Altair chart."""
+    import altair as alt
+
+    return (
+        chart.configure(
+            background="transparent",
+            padding={"left": 8, "right": 8, "top": 8, "bottom": 4},
+            view={"stroke": "transparent"},
+            axis={
+                "labelColor": "#8E9AAE",
+                "tickColor": "transparent",
+                "gridColor": "rgba(255,255,255,0.06)",
+                "titleColor": "#8E9AAE",
+                "domainColor": "rgba(255,255,255,0.14)",
+                "titleFontWeight": 700,
+                "labelFontSize": 11,
+                "titleFontSize": 12,
+            },
+            legend={"labelColor": "#8E9AAE", "titleColor": "#8E9AAE", "orient": "top"},
+        )
+        .properties(height=height)
+    )
+
+
 # ==================================================================
 # Helpers
 # ==================================================================
@@ -1164,13 +1189,31 @@ with tabs[4]:
             finally:
                 conn_chart.close()
             if rows:
+                import altair as alt
+
                 df_pnl = pd.DataFrame({
                     "Date": [r["selected_at"][:10] for r in rows],
                     "Profit": [r["profit_units"] or 0 for r in rows],
                 })
                 df_pnl["Cumulative"] = df_pnl["Profit"].cumsum()
+                df_pnl["Date"] = pd.to_datetime(df_pnl["Date"])
                 st.subheader("Cumulative Profit / Loss")
-                st.line_chart(df_pnl.set_index("Date")["Cumulative"])
+                base = alt.Chart(df_pnl)
+                area = base.mark_area(color="#B9FF45", opacity=0.14).encode(
+                    x=alt.X("Date:T", title="", axis=alt.Axis(format="%b %d")),
+                    y=alt.Y("Cumulative:Q", title="Cumulative PnL (u)"),
+                )
+                line = base.mark_line(stroke="#B9FF45", strokeWidth=2.5).encode(
+                    x=alt.X("Date:T", title="", axis=alt.Axis(format="%b %d")),
+                    y=alt.Y("Cumulative:Q", title="Cumulative PnL (u)"),
+                )
+                zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
+                    stroke="rgba(255,255,255,0.15)"
+                ).encode(y="y:Q")
+                st.altair_chart(
+                    _theme_chart((area + line + zero), height=340),
+                    use_container_width=True,
+                )
         except Exception as e:
             st.caption(f"PnL chart unavailable: {e}")
 
@@ -1188,12 +1231,29 @@ with tabs[4]:
             finally:
                 conn_ev.close()
             if ev_rows and len(ev_rows) >= 3:
+                import altair as alt
+
                 df_ev = pd.DataFrame({
                     "EV%": [r["ev_pct"] for r in ev_rows],
                     "Profit (u)": [r["profit_units"] or 0 for r in ev_rows],
                 })
+                df_ev["Sign"] = df_ev["Profit (u)"].apply(
+                    lambda p: "#B9FF45" if p >= 0 else "#FF3D58"
+                )
                 st.subheader("EV% vs Profit")
-                st.scatter_chart(df_ev, x="EV%", y="Profit (u)")
+                scatter = alt.Chart(df_ev).mark_circle(size=70, opacity=0.9).encode(
+                    x=alt.X("EV%:Q", title="Expected Value %"),
+                    y=alt.Y("Profit (u):Q", title="Profit (units)"),
+                    color=alt.Color("Sign:N", legend=None),
+                    tooltip=["EV%", "Profit (u)"],
+                )
+                zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
+                    stroke="rgba(255,255,255,0.15)"
+                ).encode(y="y:Q")
+                st.altair_chart(
+                    _theme_chart((zero + scatter), height=340),
+                    use_container_width=True,
+                )
         except Exception as e:
             st.caption(f"EV chart unavailable: {e}")
 
