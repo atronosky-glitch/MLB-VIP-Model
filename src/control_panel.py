@@ -42,6 +42,41 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    /* Sportsbook Ticker background: force the near-black navy even when a
+       light base theme is applied by the host (e.g. Render CLI flags). */
+    .stApp {
+        background: #060A14;
+    }
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+    [data-testid="stSidebar"] {
+        background: #0B1220;
+    }
+    [data-testid="stSidebar"] * {
+        color: #E8EDF5;
+    }
+    [data-testid="stAppViewContainer"] {
+        background: #060A14;
+        color: #E8EDF5;
+    }
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] li {
+        color: #E8EDF5;
+    }
+    [data-testid="stMetric"] {
+        background: #0F1729;
+        border: 1px solid #1C2740;
+        border-radius: 12px;
+        padding: 12px 14px;
+    }
+    [data-testid="stMetricValue"] {
+        color: #E8EDF5;
+    }
+    [data-testid="stMetricLabel"] {
+        color: #7A8CAB;
+    }
+
     /* Odds-board numerals: every metric value renders as tabular mono */
     [data-testid="stMetricValue"] {
         font-family: 'JetBrains Mono', monospace;
