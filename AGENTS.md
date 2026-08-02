@@ -113,10 +113,12 @@ Exit codes: 0=success, 1=success_no_recs, 2=config_failure, 3=db_failure, 4=api_
 
 ## Required workflow for every task
 
-1. Read `AGENTS.md`.
+Before making code changes, read these files in order:
+
+1. Read `AI_CONTEXT.md`.
 2. Read `PROJECT_STATUS.md`.
-3. Read `TODO.md`.
-4. Read `docs/SESSION_HANDOFF.md`.
+3. Read `docs/SESSION_HANDOFF.md`.
+4. Read `TODO.md`.
 5. Inspect the relevant code.
 6. Make the smallest safe change.
 7. Run targeted tests.

@@ -2,6 +2,7 @@
 
 ## Completed
 
+- [x] Permanent AI onboarding context — added `AI_CONTEXT.md` and required the ordered onboarding read sequence in `AGENTS.md`; no runtime or model logic changed
 - [x] Refactor threshold configuration to use module import (no longer importing by name)
 - [x] Add regression test (`test_config_changes_do_not_leak`) proving config changes propagate
 - [x] Raise strikeout scanner with all, positive-only, actionable-only modes

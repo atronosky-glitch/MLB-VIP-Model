@@ -1,6 +1,21 @@
 # SESSION_HANDOFF.md — End-of-session handoff
 
-> Future OpenCode session: read `AGENTS.md`, `PROJECT_STATUS.md`, `TODO.md`, and this file before modifying code.
+> Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
+
+## Session: 2026-08-02 — Permanent AI onboarding context
+
+### What was done
+
+1. Added `AI_CONTEXT.md` as the concise verified onboarding reference for future AI sessions.
+2. Updated `AGENTS.md` to require this order before code changes: `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, `TODO.md`.
+3. Recorded current architecture, production risks, documentation discrepancies, test-status caveats, and recommended priorities.
+4. No model logic, runtime behavior, or deployment behavior was modified. No commit or push was performed.
+
+### Next steps
+
+1. Use the ordered onboarding files before future implementation work.
+2. Reconcile the documented test counts and current local test failures before claiming a green suite.
+3. Address the production canary/readiness API mismatch and PostgreSQL integration risks before expanding features.
 
 ## Session: 2026-08-01 — API auth fail-fast + Render-verified Pinnacle diagnostics
 
