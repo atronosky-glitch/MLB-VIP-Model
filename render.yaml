@@ -11,8 +11,6 @@ services:
       --server.address 0.0.0.0
       --server.headless true
       --browser.gatherUsageStats false
-      --theme.base light
-      --theme.primaryColor "#1f77b4"
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.5"
