@@ -45,8 +45,11 @@ class TestOfficialPickConfig:
         assert c.official_min_model_score == 7.0
         assert c.official_min_ou_ev_pct == 3.0
         assert c.official_min_yn_price_adv_pp == 3.0
-        assert c.official_min_books == 4
-        assert c.official_allowed_statuses == ("QUALIFIED",)
+        assert c.official_min_books == 2
+        assert c.official_allowed_statuses == (
+            "QUALIFIED", "STRONG_EDGE", "POSITIVE_EDGE",
+            "STRONG_PRICE_OUTLIER", "PRICE_OUTLIER", "MARGINAL_PRICE_OUTLIER",
+        )
 
     def test_config_is_frozen(self):
         c = OfficialPickConfig()
@@ -110,10 +113,10 @@ class TestClassifyOU:
         assert q.passed is False
 
     def test_research_when_books_low(self):
-        rec = _make_rec(model_score=9.0, ev_pct=6.0, n_consensus_books=2)
+        rec = _make_rec(model_score=9.0, ev_pct=6.0, n_consensus_books=1)
         q = classify_recommendation(rec)
         assert q.tier == TIER_RESEARCH
-        assert any("2" in r for r in q.disqualification_reasons)
+        assert any("Only 1" in r for r in q.disqualification_reasons)
 
     def test_research_when_wrong_status(self):
         rec = _make_rec(model_score=9.0, ev_pct=6.0, n_consensus_books=7, rec_status="OPPORTUNITY")

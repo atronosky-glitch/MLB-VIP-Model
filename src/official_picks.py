@@ -42,17 +42,21 @@ class OfficialPickConfig:
     official_min_model_score: float = 7.0
     official_min_ou_ev_pct: float = 3.0
     official_min_yn_price_adv_pp: float = 3.0
-    official_min_books: int = 4
-    official_allowed_statuses: tuple[str, ...] = ("QUALIFIED",)
+    official_min_books: int = 2
+    official_allowed_statuses: tuple[str, ...] = (
+        "QUALIFIED", "STRONG_EDGE", "POSITIVE_EDGE",
+        "STRONG_PRICE_OUTLIER", "PRICE_OUTLIER", "MARGINAL_PRICE_OUTLIER",
+    )
     official_daily_max_picks: int = 3
     official_max_per_game: int = 1
     official_rules_version: str = RULES_VERSION
 
     # Discovery tier (private research only)
     discovery_min_model_score: float = 6.0
-    discovery_min_books: int = 3
+    discovery_min_books: int = 2
     discovery_allowed_statuses: tuple[str, ...] = (
         "QUALIFIED", "STRONG_EDGE", "POSITIVE_EDGE",
+        "STRONG_PRICE_OUTLIER", "PRICE_OUTLIER", "MARGINAL_PRICE_OUTLIER",
     )
 
 

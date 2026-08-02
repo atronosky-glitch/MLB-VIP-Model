@@ -145,10 +145,10 @@ class TestQualification:
         assert result.passed is False
 
     def test_disqualifies_few_books(self):
-        """3 books → DISCOVERY (below official 4 but meets discovery 3)."""
-        rec = _base_rec(n_consensus_books=3)
+        """1 book → RESEARCH (below official 2 and discovery 2)."""
+        rec = _base_rec(n_consensus_books=1)
         result = classify_recommendation(rec)
-        assert result.tier == TIER_DISCOVERY
+        assert result.tier == TIER_RESEARCH
         assert result.passed is False
 
     def test_qualifies_yn_rec(self):

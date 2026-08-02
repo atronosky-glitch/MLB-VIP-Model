@@ -61,7 +61,7 @@ SCORE_CAPS: dict[str, float] = {
 
 # Normalization ranges (raw → 0..1)
 VALUE_MAX_PP = 12.0       # 12 pp → 1.0
-N_BOOKS_MAX = 8           # 8+ books → 1.0
+N_BOOKS_MAX = 4           # 4+ books → 1.0
 RELIABILITY_MAX_PP = 10.0 # 10 pp from consensus → worst
 
 
