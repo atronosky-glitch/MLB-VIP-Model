@@ -184,6 +184,10 @@ def ensure_official_picks_schema() -> None:
                     f"ALTER TABLE official_picks ADD COLUMN {col_name} {col_def}"
                 )
                 logger.info("Added column '%s' to official_picks table", col_name)
+
+        # Postgres uses autocommit=False: ALTER TABLE must be committed
+        # explicitly or it is rolled back when the connection closes.
+        conn.commit()
     finally:
         try:
             conn.close()

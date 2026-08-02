@@ -592,9 +592,9 @@ if not st.session_state.get("_schema_ensured"):
     try:
         from database.db_manager import ensure_official_picks_schema
         ensure_official_picks_schema()
+        st.session_state["_schema_ensured"] = True
     except Exception:
         pass
-    st.session_state["_schema_ensured"] = True
 
 # Populate last_run_time from the most recent completed scan run
 if st.session_state.last_run_time is None:
