@@ -590,6 +590,17 @@ shadow = _get_shadow()
 db_path = config.database_path if config else "database/mlb_model.db"
 output_dir_val = config.output_dir if config else "output"
 
+# Guarantee official_picks schema (risk_units etc.) exists on this database.
+# The web app doesn't run the worker's init_db, so older prod DBs may be
+# missing columns that the scoreboard / analytics queries rely on.
+if not st.session_state.get("_schema_ensured"):
+    try:
+        from database.db_manager import ensure_official_picks_schema
+        ensure_official_picks_schema()
+    except Exception:
+        pass
+    st.session_state["_schema_ensured"] = True
+
 # Populate last_run_time from the most recent completed scan run
 if st.session_state.last_run_time is None:
     try:

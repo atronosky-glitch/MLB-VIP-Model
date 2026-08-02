@@ -147,6 +147,50 @@ def _safe_migrate_player_prop(conn) -> None:
                 logger.info("Added column '%s' to player_prop_odds table", col_name)
 
 
+# Columns that must exist on official_picks for the dashboard/analytics to run.
+# Phase 17C added variable-Kelly staking; older production databases may lack it.
+_OFFICIAL_PICKS_MIGRATIONS = [
+    ("risk_units", "REAL"),
+]
+
+
+def ensure_official_picks_schema() -> None:
+    """Guarantee official_picks has every required column.
+
+    Run at dashboard startup: unlike full ``init_db`` (worker-only), this is
+    safe and cheap to call from the web app, and works on both SQLite and
+    PostgreSQL (checks column existence before issuing ALTER TABLE).
+    """
+    conn = get_connection()
+    try:
+        dialect = getattr(conn, "dialect", "sqlite")
+        if dialect == "postgresql":
+            cols = conn.execute(
+                "SELECT column_name AS name FROM information_schema.columns "
+                "WHERE table_name = 'official_picks'"
+            ).fetchall()
+            existing = {row["name"] for row in cols}
+        else:
+            cursor = conn.execute("PRAGMA table_info(official_picks)")
+            rows = cursor.fetchall()
+            if rows and isinstance(rows[0], dict):
+                existing = {row["name"] for row in rows}
+            else:
+                existing = {row[1] for row in rows}
+
+        for col_name, col_def in _OFFICIAL_PICKS_MIGRATIONS:
+            if col_name not in existing:
+                conn.execute(
+                    f"ALTER TABLE official_picks ADD COLUMN {col_name} {col_def}"
+                )
+                logger.info("Added column '%s' to official_picks table", col_name)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _create_player_prop_audit_table(conn: DB) -> None:
     """Create ``player_prop_mapping_audit`` table if it doesn't exist."""
     conn.execute("""
