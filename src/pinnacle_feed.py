@@ -42,13 +42,30 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # pinnapi special unit -> SGO O/U market_type (registry strings)
+# Names follow pinnapi's PascalCase conventions (observed units from the
+# live feed: Strikeouts, HitsAllowed, EarnedRuns, PitchingOuts, TotalBases,
+# HomeRuns).  Additional entries are best-effort mappings for the markets
+# Pinnacle also prices (hits, RBIs, runs, walks, singles/doubles/triples,
+# stolen bases, pitches thrown); unmapped units are simply ignored.
 UNIT_TO_MARKET_OU = {
     "Strikeouts": "pitching_strikeouts_ou",
     "HitsAllowed": "pitching_hits_ou",
     "EarnedRuns": "pitching_earnedRuns_ou",
     "PitchingOuts": "pitching_outs_ou",
+    "PitchesThrown": "pitching_pitchesThrown_ou",
+    "WalksAllowed": "pitching_basesOnBalls_ou",
     "TotalBases": "batting_totalBases_ou",
     "HomeRuns": "batting_homeRuns_ou",
+    "Hits": "batting_hits_ou",
+    "RBIs": "batting_RBI_ou",
+    "Runs": "batting_runs_ou",
+    "Runs+RBIs": "batting_runs+rbi_ou",
+    "Hits+Runs+RBIs": "batting_hits+runs+rbi_ou",
+    "Singles": "batting_singles_ou",
+    "Doubles": "batting_doubles_ou",
+    "Triples": "batting_triples_ou",
+    "Walks": "batting_basesOnBalls_ou",
+    "StolenBases": "batting_stolenBases_ou",
 }
 MARKET_OU_TO_UNIT = {v: k for k, v in UNIT_TO_MARKET_OU.items()}
 

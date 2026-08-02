@@ -220,6 +220,29 @@ def test_match_unknown_market_returns_none():
     assert pin is None
 
 
+def test_unit_mapping_covers_new_markets():
+    from src.pinnacle_feed import MARKET_OU_TO_UNIT
+    assert MARKET_OU_TO_UNIT["batting_RBI_ou"] == "RBIs"
+    assert MARKET_OU_TO_UNIT["batting_runs_ou"] == "Runs"
+    assert MARKET_OU_TO_UNIT["batting_basesOnBalls_ou"] == "Walks"
+    assert MARKET_OU_TO_UNIT["pitching_pitchesThrown_ou"] == "PitchesThrown"
+    assert MARKET_OU_TO_UNIT["batting_stolenBases_ou"] == "StolenBases"
+
+
+def test_parse_accepts_new_units():
+    payload = _sample_payload()
+    payload["events"].append(
+        _special(100, "Aaron Judge", "RBIs", 1.85, 1.95, 0.5)
+    )
+    payload["events"].append(
+        _special(100, "Shota Imanaga", "PitchesThrown", 1.80, 2.00, 95.0)
+    )
+    props = parse_mlb_props(payload)
+    units = {p.unit for p in props}
+    assert "RBIs" in units
+    assert "PitchesThrown" in units
+
+
 # ==================================================================
 # Injection
 # ==================================================================

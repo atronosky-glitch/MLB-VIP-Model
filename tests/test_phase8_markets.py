@@ -25,12 +25,23 @@ from src.prop_config import (
     BATTER_TOTAL_BASES,
     BATTER_HOME_RUNS,
     BATTER_STOLEN_BASES,
+    BATTER_HITS_RUNS_RBI,
+    BATTER_RBI,
+    BATTER_RUNS,
+    BATTER_RUNS_RBI,
+    BATTER_SINGLES,
+    BATTER_DOUBLES,
+    BATTER_WALKS,
+    BATTER_TRIPLES,
+    BATTER_STRIKEOUTS,
+    BATTER_FIRST_HR,
     PITCHER_WIN,
     PITCHER_STRIKEOUTS,
     PITCHER_HITS_ALLOWED,
     PITCHER_WALKS_ALLOWED,
     PITCHER_OUTS,
     PITCHER_EARNED_RUNS,
+    PITCHER_PITCHES_THROWN,
 )
 from src.player_prop_parser import parse_player_props, _extract_player_name_from_market
 
@@ -39,16 +50,27 @@ from src.player_prop_parser import parse_player_props, _extract_player_name_from
 
 class TestRegistryPhase8:
     def test_total_market_count(self):
-        assert len(MARKET_REGISTRY) == 10
+        assert len(MARKET_REGISTRY) == 21
 
     def test_all_new_markets_registered(self):
         expected = [
             BATTER_HITS, BATTER_TOTAL_BASES,
             BATTER_HOME_RUNS,
             BATTER_STOLEN_BASES,
+            BATTER_HITS_RUNS_RBI,
+            BATTER_RBI,
+            BATTER_RUNS,
+            BATTER_RUNS_RBI,
+            BATTER_SINGLES,
+            BATTER_DOUBLES,
+            BATTER_WALKS,
+            BATTER_TRIPLES,
+            BATTER_STRIKEOUTS,
+            BATTER_FIRST_HR,
             PITCHER_WIN,
             PITCHER_STRIKEOUTS, PITCHER_HITS_ALLOWED, PITCHER_WALKS_ALLOWED,
             PITCHER_OUTS, PITCHER_EARNED_RUNS,
+            PITCHER_PITCHES_THROWN,
         ]
         for mc in expected:
             assert mc in MARKET_REGISTRY
@@ -116,6 +138,49 @@ class TestOUDispatchPhase8:
         m = match_ou_market("pitching_strikeouts-BRANDON_PFAADT_1_MLB-game-ou-over")
         assert m is PITCHER_STRIKEOUTS
 
+    def test_pitches_thrown_ou(self):
+        m = match_ou_market("pitching_pitchesThrown-BRANDON_PFAADT_1_MLB-game-ou-over")
+        assert m is PITCHER_PITCHES_THROWN
+
+    def test_hits_runs_rbi_ou(self):
+        m = match_ou_market("batting_hits+runs+rbi-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_HITS_RUNS_RBI
+
+    def test_rbi_ou(self):
+        m = match_ou_market("batting_RBI-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_RBI
+
+    def test_batter_runs_ou(self):
+        m = match_ou_market("batting_runs-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_RUNS
+
+    def test_runs_rbi_ou(self):
+        m = match_ou_market("batting_runs+rbi-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_RUNS_RBI
+
+    def test_singles_ou(self):
+        m = match_ou_market("batting_singles-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_SINGLES
+
+    def test_doubles_ou(self):
+        m = match_ou_market("batting_doubles-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_DOUBLES
+
+    def test_batter_walks_ou(self):
+        m = match_ou_market("batting_basesOnBalls-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_WALKS
+
+    def test_triples_ou(self):
+        m = match_ou_market("batting_triples-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_TRIPLES
+
+    def test_batter_strikeouts_ou(self):
+        m = match_ou_market("batting_strikeouts-AARON_JUDGE_1_MLB-game-ou-over")
+        assert m is BATTER_STRIKEOUTS
+
+    def test_first_hr_no_ou(self):
+        assert match_ou_market("batting_firstHomeRun-AARON_JUDGE_1_MLB-game-ou-over") is None
+
 
 # ── YN dispatch tests ─────────────────────────────────────────────
 
@@ -137,6 +202,26 @@ class TestYNDispatchPhase8:
 
     def test_total_bases_no_yn(self):
         assert match_yn_market("batting_totalBases-X-game-yn-yes") is None
+
+    def test_hits_runs_rbi_yn(self):
+        m = match_yn_market("batting_hits+runs+rbi-AARON_JUDGE_1_MLB-game-yn-yes")
+        assert m is BATTER_HITS_RUNS_RBI
+
+    def test_rbi_yn(self):
+        m = match_yn_market("batting_RBI-AARON_JUDGE_1_MLB-game-yn-yes")
+        assert m is BATTER_RBI
+
+    def test_batter_runs_yn(self):
+        m = match_yn_market("batting_runs-AARON_JUDGE_1_MLB-game-yn-yes")
+        assert m is BATTER_RUNS
+
+    def test_batter_walks_yn(self):
+        m = match_yn_market("batting_basesOnBalls-AARON_JUDGE_1_MLB-game-yn-yes")
+        assert m is BATTER_WALKS
+
+    def test_first_hr_yn(self):
+        m = match_yn_market("batting_firstHomeRun-AARON_JUDGE_1_MLB-game-yn-yes")
+        assert m is BATTER_FIRST_HR
 
 
 # ── CLI name lookup tests ─────────────────────────────────────────
