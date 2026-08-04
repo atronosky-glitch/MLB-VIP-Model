@@ -40,7 +40,7 @@ sys.path.insert(0, str(_ROOT))
 from src.production_config import load_config
 from src.structured_logging import setup_logging
 from database.db_manager import get_connection
-from database.connection import get_connection_dialect_name
+from database.connection import DB, get_connection_dialect_name
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def _now_local() -> datetime:
 # ── Job locking ───────────────────────────────────────────────────
 
 
-def _acquire_lock(conn: sqlite3.Connection, job_type: str) -> str | None:
+def _acquire_lock(conn: DB, job_type: str) -> str | None:
     """Attempt to acquire a distributed lock for a job type.
 
     Checks for an existing running lock of the same type before inserting.
@@ -161,7 +161,7 @@ def _read_heartbeat(conn) -> dict | None:
 # ── Stale job recovery ────────────────────────────────────────────
 
 
-def _recover_stale_jobs(conn: sqlite3.Connection) -> int:
+def _recover_stale_jobs(conn: DB) -> int:
     """Reset jobs stuck in 'running' for too long."""
     threshold = (datetime.now(timezone.utc) - timedelta(minutes=STALE_JOB_THRESHOLD_MINUTES)).isoformat()
     cursor = conn.execute(
@@ -180,7 +180,7 @@ FAILED_JOB_RETENTION_DAYS = 7
 STALE_PENDING_HOURS = 24
 
 
-def _maintenance_cleanup(conn: sqlite3.Connection) -> int:
+def _maintenance_cleanup(conn: DB) -> int:
     """Delete old failed jobs, stale pending jobs, and old worker-lock rows.
 
     Bounds the ``scheduled_jobs`` table so counters and storage don't grow
@@ -228,14 +228,14 @@ def _run_morning_scan(config) -> dict:
     return {"status": "success" if exit_code == 0 else "failed", "exit_code": exit_code}
 
 
-def _run_pregame_checks(conn: sqlite3.Connection, config) -> dict:
+def _run_pregame_checks(conn: DB, config) -> dict:
     """Schedule pregame checks for upcoming games."""
     from src.automation import schedule_pregame_checks
     count = schedule_pregame_checks(conn)
     return {"status": "success", "jobs_scheduled": count}
 
 
-def _run_grading(conn: sqlite3.Connection, config) -> dict:
+def _run_grading(conn: DB, config) -> dict:
     """Run grading for completed games."""
     from src.automation import schedule_grading
     count = schedule_grading(conn)
@@ -255,7 +255,7 @@ def _run_backup(config) -> dict:
     return {"status": "success", "backup_path": str(backup_path)}
 
 
-def _run_adaptive_learning(conn: sqlite3.Connection, config) -> dict:
+def _run_adaptive_learning(conn: DB, config) -> dict:
     """Collect adaptive learning data."""
     try:
         from src.adaptive_learning import AdaptiveLearningEngine
@@ -280,7 +280,7 @@ def _run_health_check(config) -> dict:
 # ── API quota alerts ──────────────────────────────────────────────
 
 
-def _check_api_quota_and_alert(conn: sqlite3.Connection, config) -> None:
+def _check_api_quota_and_alert(conn: DB, config) -> None:
     """Check API quota usage and send a Discord alert if running low or key has failed.
 
     Only sends one alert per day to avoid spam.
@@ -339,7 +339,7 @@ def _check_api_quota_and_alert(conn: sqlite3.Connection, config) -> None:
 # ── Job dispatcher ────────────────────────────────────────────────
 
 
-def _execute_job(job_type: str, conn: sqlite3.Connection, config) -> dict:
+def _execute_job(job_type: str, conn: DB, config) -> dict:
     """Dispatch and execute a single job."""
     dispatch = {
         "morning-run": lambda: _run_morning_scan(config),
@@ -359,7 +359,7 @@ def _execute_job(job_type: str, conn: sqlite3.Connection, config) -> dict:
 # ── Scheduler loop ────────────────────────────────────────────────
 
 
-def _process_pending_jobs(conn: sqlite3.Connection, config) -> int:
+def _process_pending_jobs(conn: DB, config) -> int:
     """Find and execute all due pending jobs. Returns count executed.
 
     Jobs scheduled for a future time are skipped until their scheduled_at
@@ -429,7 +429,7 @@ def _process_pending_jobs(conn: sqlite3.Connection, config) -> int:
     return executed
 
 
-def _check_and_schedule_pregame(conn: sqlite3.Connection) -> None:
+def _check_and_schedule_pregame(conn: DB) -> None:
     """Check if pregame checks need scheduling (hourly during game windows)."""
     now = _now_local()
     # Only schedule pregame checks between 1 PM and 11 PM ET (game window)
@@ -440,7 +440,7 @@ def _check_and_schedule_pregame(conn: sqlite3.Connection) -> None:
             logger.info("Scheduled %d pregame check(s)", count)
 
 
-def _check_and_schedule_grading(conn: sqlite3.Connection) -> None:
+def _check_and_schedule_grading(conn: DB) -> None:
     """Check if grading needs scheduling (after games complete)."""
     now = _now_local()
     # Only check for grading between 4 PM and 2 AM ET
@@ -456,7 +456,7 @@ def _is_backup_time(now: datetime) -> bool:
     return now.hour == 3 and now.minute == 30
 
 
-def _check_and_schedule_morning_run(conn: sqlite3.Connection) -> None:
+def _check_and_schedule_morning_run(conn: DB) -> None:
     """Auto-schedule a morning run at ~9 AM ET if none exists for today."""
     from src.automation import create_job
     now = _now_local()

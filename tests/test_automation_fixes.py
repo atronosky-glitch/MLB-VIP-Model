@@ -7,6 +7,7 @@
 """
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import src.worker as worker
@@ -16,6 +17,13 @@ from src.automation import (
     schedule_pregame_checks,
     trigger_pregame_refresh,
 )
+
+
+def test_worker_uses_shared_database_connection_layer():
+    source = Path("src/worker.py").read_text(encoding="utf-8")
+    assert "from database.db_manager import get_connection" in source
+    assert "sqlite3.connect" not in source
+    assert "sqlite3.Connection" not in source
 
 
 def _job_types(conn) -> list[tuple[str, str]]:

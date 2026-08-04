@@ -2,6 +2,23 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Render worker database-layer audit
+
+### What was done
+
+1. Audited the reported worker crash. Current `src/worker.py` already contains the required `from database.db_manager import get_connection` import from the earlier worker fix and uses it for persistent startup, preserving PostgreSQL selection through `DATABASE_URL` and SQLite selection for local/test mode.
+2. Replaced remaining `sqlite3.Connection` annotations with the shared `DB` wrapper type. The worker contains no raw `sqlite3.connect()` calls; SQLite-specific WAL and busy-timeout PRAGMAs remain guarded by the runtime dialect check.
+3. Added a regression test asserting the shared import and absence of SQLite connection assumptions. The restored Pinnacle files were not modified or staged.
+
+### Verification
+
+- Worker-related tests: **81 passed** (`test_automation_fixes.py`, `test_phase17_cloud.py`, `test_phase10_jobs.py`).
+- Full suite: **1421 passed, 1 failed**. The failure is pre-existing and unrelated: `tests/test_phase8_markets.py::TestRegistryPhase8::test_total_market_count` expects 21 while the current `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit only the worker type-audit/regression test and project-memory documentation. Do not push this commit. Preserve the four restored Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-04 — Integrated PostgreSQL dashboard fix
 
 ### What was done
