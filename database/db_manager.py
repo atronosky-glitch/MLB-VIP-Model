@@ -495,6 +495,62 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_cp_rec ON closing_prices(recommendation_id);
 
+        -- Phase 19A: append-only recommendation lifecycle evidence
+        CREATE TABLE IF NOT EXISTS recommendation_lifecycle_events (
+            lifecycle_event_id       TEXT PRIMARY KEY,
+            recommendation_id        TEXT NOT NULL,
+            event_type               TEXT NOT NULL,
+            event_key                TEXT NOT NULL UNIQUE,
+            run_id                   TEXT,
+            event_id                 TEXT,
+            player_id                TEXT,
+            player_name              TEXT,
+            market_type              TEXT,
+            side                     TEXT,
+            line                     REAL,
+            sportsbook               TEXT,
+            offered_american_odds    INTEGER,
+            offered_decimal_odds     REAL,
+            implied_probability      REAL,
+            model_fair_probability   REAL,
+            model_edge               REAL,
+            ev                       REAL,
+            confidence_score         REAL,
+            quality_score            REAL,
+            pinnacle_reference_used  INTEGER,
+            pinnacle_book            TEXT,
+            pinnacle_line            REAL,
+            pinnacle_over_odds       INTEGER,
+            pinnacle_under_odds      INTEGER,
+            pinnacle_fair_probability REAL,
+            pinnacle_ev              REAL,
+            pinnacle_probability_edge REAL,
+            snapshot_kind            TEXT,
+            closing_sportsbook       TEXT,
+            closing_line             REAL,
+            closing_american_odds    INTEGER,
+            closing_decimal_odds     REAL,
+            closing_implied_probability REAL,
+            clv_probability          REAL,
+            clv_price_diff           INTEGER,
+            result                   TEXT,
+            final_stat_value         REAL,
+            settlement_reason        TEXT,
+            grader_version           TEXT,
+            event_timestamp          TEXT NOT NULL,
+            data_source              TEXT,
+            source_run_id            TEXT,
+            provenance_json          TEXT,
+            created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rle_recommendation
+            ON recommendation_lifecycle_events(recommendation_id);
+        CREATE INDEX IF NOT EXISTS idx_rle_event_type
+            ON recommendation_lifecycle_events(event_type);
+        CREATE INDEX IF NOT EXISTS idx_rle_run
+            ON recommendation_lifecycle_events(run_id);
+
         -- Manual override audit trail
         CREATE TABLE IF NOT EXISTS manual_override_audit (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1104,6 +1160,161 @@ def generate_recommendation_id() -> str:
     return str(uuid.uuid4())
 
 
+def record_lifecycle_event(
+    conn: DB,
+    event_type: str,
+    event_key: str,
+    *,
+    recommendation: dict | None = None,
+    run_id: str | None = None,
+    snapshot_kind: str | None = None,
+    closing: dict | None = None,
+    result: str | None = None,
+    final_stat_value: float | None = None,
+    settlement_reason: str | None = None,
+    grader_version: str | None = None,
+    event_timestamp: str | None = None,
+    provenance: dict | None = None,
+) -> bool:
+    """Append one idempotent recommendation lifecycle event.
+
+    Lifecycle rows are never updated.  ``event_key`` is the stable idempotency
+    key; a repeated event is ignored while a correction can use a new key.
+    """
+    rec = recommendation or {}
+    closing = closing or {}
+    rec_id = rec.get("recommendation_id")
+    if not rec_id:
+        return False
+
+    reference_used = rec.get("pinnacle_reference_used")
+    pinnacle_line = rec.get("pinnacle_line")
+    if pinnacle_line is None and reference_used:
+        pinnacle_line = rec.get("line")
+
+    columns = [
+        "lifecycle_event_id", "recommendation_id", "event_type", "event_key",
+        "run_id", "event_id", "player_id", "player_name", "market_type", "side",
+        "line", "sportsbook", "offered_american_odds", "offered_decimal_odds",
+        "implied_probability", "model_fair_probability", "model_edge", "ev",
+        "confidence_score", "quality_score", "pinnacle_reference_used",
+        "pinnacle_book", "pinnacle_line", "pinnacle_over_odds",
+        "pinnacle_under_odds", "pinnacle_fair_probability", "pinnacle_ev",
+        "pinnacle_probability_edge", "snapshot_kind", "closing_sportsbook",
+        "closing_line", "closing_american_odds", "closing_decimal_odds",
+        "closing_implied_probability", "clv_probability", "clv_price_diff",
+        "result", "final_stat_value", "settlement_reason", "grader_version",
+        "event_timestamp", "data_source", "source_run_id", "provenance_json",
+    ]
+    values = [
+        str(uuid.uuid4()), rec_id, event_type, event_key,
+        run_id or rec.get("scan_run_id"), rec.get("event_id"), rec.get("player_id"),
+        rec.get("player_name"), rec.get("market_type"), rec.get("side"),
+        rec.get("line"), rec.get("sportsbook"), rec.get("offered_american_odds"),
+        rec.get("offered_decimal_odds"), rec.get("offered_implied_prob"),
+        rec.get("fair_prob"),
+        rec.get("model_edge", rec.get("ev_pct") if rec.get("ev_pct") is not None
+                else rec.get("yn_implied_prob_adv")),
+        rec.get("ev", rec.get("ev_pct")),
+        rec.get("confidence_score", rec.get("confidence")),
+        rec.get("quality_score", rec.get("market_quality_score")),
+        1 if reference_used else 0 if reference_used is not None else None,
+        rec.get("pinnacle_book"), pinnacle_line, rec.get("pinnacle_over_price"),
+        rec.get("pinnacle_under_price"),
+        rec.get("pinnacle_fair_probability", rec.get("pinnacle_fair_prob")),
+        rec.get("pinnacle_ev"),
+        rec.get("pinnacle_probability_edge", rec.get("pinnacle_prob_edge")),
+        snapshot_kind, closing.get("sportsbook"), closing.get("line"),
+        closing.get("american_odds", closing.get("price")),
+        closing.get("decimal_odds"), closing.get("implied_probability"),
+        closing.get("clv_probability"), closing.get("clv_price_diff"), result,
+        final_stat_value, settlement_reason, grader_version,
+        event_timestamp or rec.get("scan_timestamp") or datetime.now(timezone.utc).isoformat(),
+        rec.get("data_source"), run_id or rec.get("scan_run_id"),
+        json.dumps(provenance or {}, sort_keys=True, default=str),
+    ]
+    try:
+        cursor = conn.execute(
+            f"INSERT INTO recommendation_lifecycle_events "
+            f"({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+            "ON CONFLICT (event_key) DO NOTHING",
+            values,
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception as exc:
+        conn.rollback()
+        logger.warning("Could not record lifecycle event %s: %s", event_key, exc)
+        return False
+
+
+def record_recommendation_created(conn: DB, rec: dict) -> int:
+    """Record creation and creation-line evidence for a recommendation."""
+    rec_id = rec.get("recommendation_id")
+    if not rec_id:
+        return 0
+    recorded = 0
+    if record_lifecycle_event(
+        conn, "RECOMMENDATION_CREATED", f"created:{rec_id}",
+        recommendation=rec, run_id=rec.get("scan_run_id"),
+        event_timestamp=rec.get("scan_timestamp"),
+        provenance={"source": rec.get("data_source"), "phase": "freeze"},
+    ):
+        recorded += 1
+    if record_lifecycle_event(
+        conn, "LINE_SNAPSHOT", f"line:{rec_id}:creation",
+        recommendation=rec, run_id=rec.get("scan_run_id"),
+        snapshot_kind="creation", event_timestamp=rec.get("observation_timestamp"),
+        provenance={"source": rec.get("data_source"), "phase": "freeze"},
+    ):
+        recorded += 1
+    return recorded
+
+
+def record_settlement_lifecycle(
+    conn: DB,
+    recommendation_id: str,
+    settlement_status: str,
+    *,
+    final_stat_value: float | None = None,
+    settlement_reason: str | None = None,
+    grader_version: str | None = None,
+) -> bool:
+    """Append a deterministic settlement event using the stored recommendation."""
+    rec = get_recommendation_by_id(conn, recommendation_id)
+    if not rec:
+        return False
+    stat_key = "" if final_stat_value is None else str(final_stat_value)
+    key = f"settlement:{recommendation_id}:{settlement_status}:{stat_key}:{grader_version or ''}"
+    return record_lifecycle_event(
+        conn, "SETTLEMENT", key, recommendation=rec,
+        run_id=rec.get("scan_run_id"), result=settlement_status,
+        final_stat_value=final_stat_value, settlement_reason=settlement_reason,
+        grader_version=grader_version, provenance={"phase": "grading"},
+    )
+
+
+def record_grading_completed(
+    conn: DB,
+    rec: dict,
+    result: str,
+    *,
+    final_stat_value: float | None = None,
+    grader_version: str | None = None,
+) -> bool:
+    """Append an idempotent grading-completed event."""
+    rec_id = rec.get("recommendation_id")
+    if not rec_id:
+        return False
+    key = f"grading:{rec_id}:{result}:{'' if final_stat_value is None else final_stat_value}:{grader_version or ''}"
+    return record_lifecycle_event(
+        conn, "GRADING_COMPLETED", key, recommendation=rec,
+        run_id=rec.get("scan_run_id"), result=result,
+        final_stat_value=final_stat_value, grader_version=grader_version,
+        provenance={"phase": "grading"},
+    )
+
+
 def save_recommendation(conn: DB, rec: dict) -> str | None:
     """Insert a recommendation snapshot. Idempotent via fingerprint UNIQUE.
 
@@ -1171,7 +1382,18 @@ def save_recommendation(conn: DB, rec: dict) -> str | None:
         )
         conn.commit()
         if cursor.rowcount == 0:
+            existing = conn.execute(
+                "SELECT recommendation_id FROM historical_recommendations WHERE fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
+            if existing:
+                rec_with_id = dict(rec)
+                rec_with_id["recommendation_id"] = existing["recommendation_id"]
+                record_recommendation_created(conn, rec_with_id)
             return None
+        rec_with_id = dict(rec)
+        rec_with_id["recommendation_id"] = rec_id
+        record_recommendation_created(conn, rec_with_id)
         return rec_id
     except Exception:
         conn.rollback()
@@ -1349,6 +1571,14 @@ def settle_recommendation(
                  final_stat_value, now, settlement_reason, grader_version),
             )
         conn.commit()
+        record_settlement_lifecycle(
+            conn,
+            recommendation_id,
+            settlement_status,
+            final_stat_value=final_stat_value,
+            settlement_reason=settlement_reason,
+            grader_version=grader_version,
+        )
         return True
     except Exception as e:
         conn.rollback()
@@ -1552,12 +1782,16 @@ def get_player_stat_result(
 def capture_closing_prices(
     conn: DB,
     recommendations: list[dict],
+    *,
+    run_id: str | None = None,
+    snapshot_kind: str = "final",
 ) -> int:
     """Capture closing prices for recommendations from current odds data.
 
     For each recommendation, looks up the latest odds for the same
-    (event_id, player_id, market_type, side, line) in player_prop_odds
-    and stores them as closing prices.
+    (event_id, player_id, market_type, side) in player_prop_odds and
+    records an append-only lifecycle snapshot. ``final`` snapshots also
+    populate the existing canonical closing_prices table.
 
     Returns the number of closing prices captured.
     """
@@ -1567,11 +1801,14 @@ def capture_closing_prices(
         if not rec_id:
             continue
 
-        # Check if closing price already exists
-        existing = conn.execute(
-            "SELECT id FROM closing_prices WHERE recommendation_id = ?",
-            (rec_id,),
-        ).fetchone()
+        # The canonical closing_prices table has one final snapshot. Lifecycle
+        # evidence can retain separate pregame and final snapshots.
+        existing = None
+        if snapshot_kind == "final":
+            existing = conn.execute(
+                "SELECT id FROM closing_prices WHERE recommendation_id = ?",
+                (rec_id,),
+            ).fetchone()
         if existing:
             continue
 
@@ -1589,6 +1826,13 @@ def capture_closing_prices(
         closing_row = cur.fetchone()
 
         if not closing_row:
+            record_lifecycle_event(
+                conn, "CLOSING_SNAPSHOT", f"closing:{rec_id}:{snapshot_kind}",
+                recommendation=rec, run_id=run_id,
+                snapshot_kind=snapshot_kind,
+                event_timestamp=rec.get("scan_timestamp"),
+                provenance={"source": rec.get("data_source"), "available": False},
+            )
             continue
 
         closing = dict(closing_row)
@@ -1625,20 +1869,38 @@ def capture_closing_prices(
             clv_price = closing_american - bet_american
             clv_available = True
 
-        save_closing_price(
-            conn, rec_id,
-            closing_american=closing_american,
-            closing_decimal=closing_decimal,
-            closing_implied_prob=closing_implied,
-            closing_line=closing_line,
-            closing_observed_at=closing.get("captured_at"),
-            closing_sportsbook=closing.get("sportsbook"),
-            line_move_type=line_move_type,
-            clv_probability=clv_prob,
-            clv_price_diff=clv_price,
-            clv_available=clv_available,
+        if snapshot_kind == "final":
+            save_closing_price(
+                conn, rec_id,
+                closing_american=closing_american,
+                closing_decimal=closing_decimal,
+                closing_implied_prob=closing_implied,
+                closing_line=closing_line,
+                closing_observed_at=closing.get("captured_at"),
+                closing_sportsbook=closing.get("sportsbook"),
+                line_move_type=line_move_type,
+                clv_probability=clv_prob,
+                clv_price_diff=clv_price,
+                clv_available=clv_available,
+            )
+            captured += 1
+
+        record_lifecycle_event(
+            conn, "CLOSING_SNAPSHOT", f"closing:{rec_id}:{snapshot_kind}",
+            recommendation=rec, run_id=run_id,
+            snapshot_kind=snapshot_kind,
+            closing={
+                "sportsbook": closing.get("sportsbook"),
+                "line": closing_line,
+                "american_odds": closing_american,
+                "decimal_odds": closing_decimal,
+                "implied_probability": closing_implied,
+                "clv_probability": clv_prob,
+                "clv_price_diff": clv_price,
+            },
+            event_timestamp=closing.get("captured_at") or rec.get("scan_timestamp"),
+            provenance={"source": rec.get("data_source"), "available": True},
         )
-        captured += 1
 
     return captured
 

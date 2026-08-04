@@ -2,6 +2,25 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Phase 19A immutable lifecycle and CLV capture
+
+### What was done
+
+1. Added the append-only `recommendation_lifecycle_events` table with PostgreSQL/SQLite-compatible SQL, deterministic unique event keys, lifecycle indexes, evidence fields, closing/CLV fields, results, timestamps, and provenance JSON.
+2. Recommendation freeze now records `RECOMMENDATION_CREATED` and creation `LINE_SNAPSHOT` events. The existing closing path records idempotent `CLOSING_SNAPSHOT` events for pregame and final snapshots; final snapshots also populate the canonical `closing_prices` table.
+3. Settlement and grading record `SETTLEMENT` and `GRADING_COMPLETED` events. Pinnacle reference values are carried from analysis opportunities into lifecycle evidence when available. Missing closing data is recorded without fabricated CLV.
+4. Added tests for SQLite, PostgreSQL placeholder conversion, append-only behavior, idempotent reruns, CLV formulas, missing closes, push/void results, and provenance. No thresholds, classification, delivery, betting, or automatic learning behavior changed.
+5. The four restored Pinnacle files were not modified, staged, or committed.
+
+### Verification
+
+- Targeted Phase 19A/lifecycle/grading/pipeline/PostgreSQL tests: **234 passed**.
+- Full suite: **1432 passed, 1 failed**. The failure is pre-existing and unrelated: `tests/test_phase8_markets.py::TestRegistryPhase8::test_total_market_count` expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit Phase 19A runtime/schema/tests and required memory documentation only. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-04 — Phase 19 Adaptive Learning architecture
 
 ### What was done

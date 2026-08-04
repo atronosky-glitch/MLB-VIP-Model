@@ -280,6 +280,28 @@ def db_conn():
             captured_at           TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (recommendation_id) REFERENCES historical_recommendations(recommendation_id)
         );
+        CREATE TABLE IF NOT EXISTS recommendation_lifecycle_events (
+            lifecycle_event_id TEXT PRIMARY KEY,
+            recommendation_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            event_key TEXT NOT NULL UNIQUE,
+            run_id TEXT, event_id TEXT, player_id TEXT, player_name TEXT,
+            market_type TEXT, side TEXT, line REAL, sportsbook TEXT,
+            offered_american_odds INTEGER, offered_decimal_odds REAL,
+            implied_probability REAL, model_fair_probability REAL,
+            model_edge REAL, ev REAL, confidence_score REAL, quality_score REAL,
+            pinnacle_reference_used INTEGER, pinnacle_book TEXT, pinnacle_line REAL,
+            pinnacle_over_odds INTEGER, pinnacle_under_odds INTEGER,
+            pinnacle_fair_probability REAL, pinnacle_ev REAL,
+            pinnacle_probability_edge REAL, snapshot_kind TEXT,
+            closing_sportsbook TEXT, closing_line REAL,
+            closing_american_odds INTEGER, closing_decimal_odds REAL,
+            closing_implied_probability REAL, clv_probability REAL,
+            clv_price_diff INTEGER, result TEXT, final_stat_value REAL,
+            settlement_reason TEXT, grader_version TEXT, event_timestamp TEXT NOT NULL,
+            data_source TEXT, source_run_id TEXT, provenance_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS market_settlements (
             recommendation_id     TEXT PRIMARY KEY,
             settlement_status     TEXT NOT NULL DEFAULT 'ungraded',

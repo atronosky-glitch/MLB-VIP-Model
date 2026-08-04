@@ -140,6 +140,7 @@ class PipelineConfig:
     as_json: bool = False
     as_csv: bool = False
     debug: bool = False
+    lifecycle_snapshot_kind: str = "final"
 
 
 @dataclass
@@ -665,6 +666,14 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     "rec_eligible": opp.get("rec_eligible", False),
                     "pinnacle_approved": opp.get("pinnacle_approved"),
                     "is_official": opp.get("is_official", False),
+                    "pinnacle_reference_used": opp.get("pinnacle_reference_used"),
+                    "pinnacle_book": opp.get("pinnacle_book"),
+                    "pinnacle_line": opp.get("pinnacle_line"),
+                    "pinnacle_over_price": opp.get("pinnacle_over_price"),
+                    "pinnacle_under_price": opp.get("pinnacle_under_price"),
+                    "pinnacle_fair_prob": opp.get("pinnacle_fair_prob"),
+                    "pinnacle_ev": opp.get("pinnacle_ev"),
+                    "pinnacle_prob_edge": opp.get("pinnacle_prob_edge"),
                     "data_source": state.data_source,
                     "observation_timestamp": scan_ts,
                     "scan_timestamp": scan_ts,
@@ -793,7 +802,12 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     (state.scan_run_id,),
                 ).fetchall()
                 run_recs = [dict(r) for r in run_recs]
-                n_captured = capture_closing_prices(conn, run_recs)
+                n_captured = capture_closing_prices(
+                    conn,
+                    run_recs,
+                    run_id=state.scan_run_id,
+                    snapshot_kind=config.lifecycle_snapshot_kind,
+                )
                 if n_captured > 0:
                     print(f"  Closing prices captured: {n_captured}")
 

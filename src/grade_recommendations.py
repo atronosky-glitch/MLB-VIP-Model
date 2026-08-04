@@ -29,6 +29,7 @@ from database.db_manager import (
     save_player_stat_result,
     settle_recommendation,
     save_bet_units,
+    record_grading_completed,
 )
 from src.grading import (
     GRADER_VERSION,
@@ -208,6 +209,13 @@ def _grade_single_rec(rec: dict, dry_run: bool = False) -> str | None:
         )
         if ok and status in ("WIN", "LOSS", "PUSH", "VOID", "CANCELLED"):
             save_bet_units(conn, rec["recommendation_id"], status, rec["offered_american_odds"])
+            record_grading_completed(
+                conn,
+                rec,
+                status,
+                final_stat_value=stat_result.get("final_stat_value") if not is_yn and stat_result else None,
+                grader_version=GRADER_VERSION,
+            )
     finally:
         conn.close()
 

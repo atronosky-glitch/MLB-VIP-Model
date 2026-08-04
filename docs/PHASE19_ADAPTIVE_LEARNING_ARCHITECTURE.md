@@ -1,6 +1,6 @@
 # Phase 19 — Adaptive Learning Engine Architecture
 
-**Status:** Architecture only. No runtime implementation, threshold change, delivery change, or betting behavior is included.
+**Status:** Phase 19A lifecycle/CLV capture implemented. Rolling analytics, calibration, and learning proposals remain architecture-only. No threshold change, delivery change, or betting behavior is included.
 
 ## 1. Objectives
 

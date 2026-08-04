@@ -245,6 +245,7 @@ def _run_pregame_scan(config) -> dict:
         auto=True,
         output_dir=config.output_dir,
         actionable_only=True,
+        lifecycle_snapshot_kind="pregame",
     ))
     return {
         "status": "success" if exit_code in (0, 1) else "failed",

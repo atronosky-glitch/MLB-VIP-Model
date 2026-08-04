@@ -530,6 +530,11 @@ def run_scan(
                 "pinnacle_ev": book_entry.get("pinnacle_ev"),
                 "pinnacle_prob_edge": book_entry.get("pinnacle_prob_edge"),
                 "pinnacle_fair_prob": book_entry.get("pinnacle_fair_prob"),
+                "pinnacle_reference_used": analysis.get("pinnacle_reference_used"),
+                "pinnacle_book": analysis.get("pinnacle_book"),
+                "pinnacle_line": analysis.get("line") if analysis.get("pinnacle_reference_used") else None,
+                "pinnacle_over_price": analysis.get("pinnacle_over_price"),
+                "pinnacle_under_price": analysis.get("pinnacle_under_price"),
             }
             opportunities.append(opp)
 

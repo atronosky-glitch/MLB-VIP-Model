@@ -11,6 +11,13 @@ Entries are dated. New entries are appended.
 - **Reason**: Historical learning must be traceable from recommendation creation through settlement, while small samples, market mix, missing closing data, and Pinnacle line differences can make naive optimization unsafe.
 - **Consequence**: Every proposal must include its population, window, sample size, uncertainty, baseline, expected effect, current/proposed values, reviewer, and resulting config version. Pinnacle is a reference and predictive benchmark, not infallible ground truth. Runtime implementation requires explicit approval of this architecture and separate migrations/tests.
 
+## Phase 19A lifecycle evidence is append-only
+
+- **Date**: 2026-08-04
+- **Decision**: Phase 19A records recommendation creation, creation-line evidence, pregame/final closing snapshots, settlement, and grading completion in `recommendation_lifecycle_events`. Existing recommendation, closing-price, settlement, and units tables remain authoritative; lifecycle events are immutable audit evidence with unique deterministic event keys for idempotent reruns.
+- **Reason**: Learning inputs must preserve the exact prices, model/Pinnacle references, CLV, outcomes, and provenance that existed at each lifecycle point. Historical evidence must not be overwritten by later corrections or repeated jobs.
+- **Consequence**: Same-line CLV uses `bet_implied_prob - closing_implied_prob` and `closing_american - bet_american`; missing or line-changed closes remain unavailable. PostgreSQL and SQLite use the shared DB abstraction. Phase 19A does not alter thresholds, classification, delivery, betting, or automatic learning.
+
 ## SQLite is the source of truth
 
 - **Decision**: Store all parsed odds, audit records, and raw API responses in SQLite.
