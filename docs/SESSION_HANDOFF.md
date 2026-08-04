@@ -2,6 +2,24 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Integrated PostgreSQL dashboard fix
+
+### What was done
+
+1. Compared current `main` with backup commit `fe9b16b` and reapplied only its intended dashboard and health changes; the stashed Pinnacle work was not touched.
+2. `src/control_panel.py` now uses `DATABASE_URL` for production connections, retains SQLite compatibility, removes PostgreSQL-blocking file guards, uses completed `scan_runs` for latest-run and freshness values, reads market intelligence from `odds`, supports named PostgreSQL rows, and displays PostgreSQL as the production database.
+3. `src/health_check.py` now uses the active database connection, discovers PostgreSQL tables via `information_schema`, and evaluates freshness from completed `scan_runs` while retaining SQLite behavior.
+4. Updated dashboard and health regression fixtures/tests without replacing newer `main` dashboard or documentation changes.
+
+### Verification
+
+- Targeted dashboard, health, and PostgreSQL tests: **199 passed**.
+- Full suite: **1420 passed, 0 failed**.
+
+### Commit scope
+
+The local commit contains only the integrated dashboard/health fixes, their tests, and project-memory documentation. `stash@{0}` remains untouched and no push is performed.
+
 ## Session: 2026-08-02 — Permanent AI onboarding context
 
 ### What was done

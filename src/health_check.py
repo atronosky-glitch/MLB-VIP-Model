@@ -10,8 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import sqlite3
 import time
+from database.connection import get_database_url
 from database.db_manager import get_connection
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -19,6 +19,14 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _open_connection(db_path: str | Path):
+    """Open PostgreSQL when DATABASE_URL is configured, otherwise SQLite."""
+    url = get_database_url()
+    if url:
+        return get_connection(url=url)
+    return get_connection(db_path=str(db_path))
 
 
 @dataclass
@@ -148,7 +156,7 @@ def run_health_checks(
 def _check_database(db_path: str | Path) -> HealthCheck:
     """Verify database is accessible and has correct schema."""
     db_path = Path(db_path)
-    if not db_path.exists():
+    if not get_database_url() and not db_path.exists():
         return HealthCheck(
             name="database",
             status="error",
@@ -156,13 +164,17 @@ def _check_database(db_path: str | Path) -> HealthCheck:
         )
 
     try:
-        conn = get_connection(str(db_path))
+        conn = _open_connection(db_path)
         try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            if get_database_url():
+                cursor = conn.execute(
+                    "SELECT table_name AS name FROM information_schema.tables "
+                    "WHERE table_schema = 'public'"
+                )
+            else:
+                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = {row["name"] for row in cursor.fetchall()}
-            row_count = conn.execute("SELECT COUNT(*) AS cnt FROM sqlite_master").fetchone()["cnt"]
+            row_count = len(tables)
         finally:
             conn.close()
 
@@ -183,7 +195,7 @@ def _check_database(db_path: str | Path) -> HealthCheck:
             message=f"Database OK ({len(tables)} tables, {row_count} objects)",
             details={"tables": sorted(tables), "table_count": len(tables)},
         )
-    except sqlite3.Error as e:
+    except Exception as e:
         return HealthCheck(
             name="database",
             status="error",
@@ -233,11 +245,12 @@ def _check_disk_space(output_dir: str | Path, min_mb: int) -> HealthCheck:
 def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
     """Check if the latest pipeline run was within the freshness window."""
     try:
-        conn = get_connection(str(db_path))
+        conn = _open_connection(db_path)
         try:
             row = conn.execute(
-                "SELECT completed_at, status FROM job_runs "
-                "ORDER BY started_at DESC LIMIT 1"
+                "SELECT finished_at, error_message FROM scan_runs "
+                "WHERE run_type = 'scan' AND finished_at IS NOT NULL "
+                "ORDER BY finished_at DESC LIMIT 1"
             ).fetchone()
         finally:
             conn.close()
@@ -249,7 +262,10 @@ def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
                 message="No pipeline runs found in database",
             )
 
-        completed_str, status = row
+        completed_str = row["finished_at"]
+        status = "success" if not row["error_message"] else "failed"
+        if not isinstance(completed_str, str):
+            completed_str = completed_str.isoformat()
         if completed_str:
             completed = datetime.fromisoformat(completed_str)
             if completed.tzinfo is None:
@@ -288,7 +304,7 @@ def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
             message=f"Data fresh: last run {age_seconds / 60:.0f}m ago",
             details={"age_seconds": round(age_seconds)},
         )
-    except sqlite3.Error as e:
+    except Exception as e:
         return HealthCheck(
             name="data_freshness",
             status="warning",
@@ -376,7 +392,7 @@ def _check_discord() -> HealthCheck:
 def _check_worker_heartbeat(db_path: str | Path) -> HealthCheck:
     """Check if the background worker has sent a recent heartbeat."""
     try:
-        conn = get_connection(str(db_path))
+        conn = _open_connection(db_path)
         try:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS worker_heartbeat (
@@ -418,7 +434,7 @@ def _check_worker_heartbeat(db_path: str | Path) -> HealthCheck:
             message=f"Worker active: heartbeat {age_seconds:.0f}s ago (pid={row['worker_pid']})",
             details={"age_seconds": round(age_seconds), "worker_pid": row["worker_pid"]},
         )
-    except sqlite3.Error as e:
+    except Exception as e:
         return HealthCheck(
             name="worker_heartbeat",
             status="warning",

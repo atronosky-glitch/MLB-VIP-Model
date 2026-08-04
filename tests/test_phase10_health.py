@@ -18,12 +18,13 @@ def _make_db(tmp_path: Path) -> Path:
     conn.execute("CREATE TABLE odds (id TEXT)")
     conn.execute("CREATE TABLE historical_recommendations (id TEXT)")
     conn.execute(
-        "CREATE TABLE job_runs (started_at TEXT, completed_at TEXT, status TEXT)"
+        "CREATE TABLE scan_runs (run_id TEXT, started_at TEXT, finished_at TEXT, "
+        "run_type TEXT, error_message TEXT)"
     )
     conn.execute(
-        "INSERT INTO job_runs VALUES (?, ?, ?)",
-        (datetime.now(timezone.utc).isoformat(),
-         datetime.now(timezone.utc).isoformat(), "success"),
+        "INSERT INTO scan_runs VALUES (?, ?, ?, ?, ?)",
+        ("run-001", datetime.now(timezone.utc).isoformat(),
+         datetime.now(timezone.utc).isoformat(), "scan", None),
     )
     conn.commit()
     conn.close()
@@ -73,7 +74,10 @@ class TestHealthCheck:
         from src.health_check import _check_data_freshness
         db_path = tmp_path / "empty.db"
         conn = sqlite3.connect(str(db_path))
-        conn.execute("CREATE TABLE job_runs (started_at TEXT)")
+        conn.execute(
+            "CREATE TABLE scan_runs (started_at TEXT, finished_at TEXT, "
+            "run_type TEXT, error_message TEXT)"
+        )
         conn.commit()
         conn.close()
         check = _check_data_freshness(db_path, 3600)

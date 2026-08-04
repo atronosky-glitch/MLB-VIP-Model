@@ -10,7 +10,6 @@ import csv
 import io
 import json
 import os
-import sqlite3
 import subprocess
 from database.connection import get_database_url
 from database.db_manager import get_connection
@@ -312,6 +311,14 @@ def _should_query(db_path: str) -> bool:
     return _is_postgres() or Path(db_path).exists()
 
 
+def _open_dashboard_connection(db_path: str):
+    """Open the configured production database, or the local test database."""
+    url = get_database_url()
+    if url:
+        return get_connection(url=url)
+    return get_connection(db_path=str(db_path))
+
+
 def _load_todays_recs(db_path: str) -> list[dict[str, Any]]:
     """Load today's frozen recommendations from the database."""
     return _load_recs(db_path, "today")
@@ -328,7 +335,7 @@ def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]
     if not _should_query(db_path):
         return []
     try:
-        conn = get_connection(str(db_path))
+        conn = _open_dashboard_connection(db_path)
         try:
             cols = (
                 "recommendation_id, event_id, player_name, market_type, "
@@ -347,14 +354,14 @@ def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]
                 "market_quality_score, score_components"
             )
 
-            def _run_query(where_clause: str, params: tuple = ()) -> list[sqlite3.Row]:
+            def _run_query(where_clause: str, params: tuple = ()) -> list:
                 for col_list in (cols, "*"):
                     try:
                         return conn.execute(
                             f"SELECT {col_list} FROM historical_recommendations {where_clause}",
                             params,
                         ).fetchall()
-                    except sqlite3.OperationalError:
+                    except Exception:
                         continue
                 return []
 
@@ -386,7 +393,7 @@ def _get_latest_run_id(db_path: str) -> str:
     if not _should_query(db_path):
         return ""
     try:
-        conn = get_connection(str(db_path))
+        conn = _open_dashboard_connection(db_path)
         row = conn.execute(
             "SELECT run_id FROM scan_runs "
             "WHERE run_type = 'scan' AND finished_at IS NOT NULL "
@@ -396,6 +403,33 @@ def _get_latest_run_id(db_path: str) -> str:
         return row["run_id"] if row else ""
     except Exception:
         return ""
+
+
+def _get_data_freshness(db_path: str, threshold_seconds: int = 3600) -> str:
+    """Return a human-readable age for the latest completed scan run."""
+    if not _should_query(db_path):
+        return "No data"
+    try:
+        conn = _open_dashboard_connection(db_path)
+        row = conn.execute(
+            "SELECT finished_at FROM scan_runs "
+            "WHERE run_type = 'scan' AND finished_at IS NOT NULL "
+            "ORDER BY finished_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if not row or not row["finished_at"]:
+            return "No data"
+        finished = row["finished_at"]
+        if isinstance(finished, str):
+            finished = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=timezone.utc)
+        age = max(0, int((datetime.now(timezone.utc) - finished).total_seconds()))
+        if age > threshold_seconds:
+            return f"Stale ({age // 3600}h ago)"
+        return f"Fresh ({age // 60}m ago)"
+    except Exception:
+        return "No data"
 
 
 def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict[str, Any]:
@@ -417,7 +451,7 @@ def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict
     if not _should_query(db_path):
         return result
     try:
-        conn = get_connection(str(db_path))
+        conn = _open_dashboard_connection(db_path)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         total = conn.execute(
             "SELECT COUNT(*) AS total FROM games WHERE date(start_time) = ?", (today,)
@@ -488,7 +522,7 @@ def _get_live_game_warnings(db_path: str, run_id: str) -> list[dict]:
     if not _should_query(db_path) or not run_id:
         return warnings
     try:
-        conn = get_connection(str(db_path))
+        conn = _open_dashboard_connection(db_path)
         rows = conn.execute(
             "SELECT recommendation_id, matchup, event_status, player_name, "
             "market_type, sportsbook FROM historical_recommendations "
@@ -607,7 +641,7 @@ def _run_subprocess_command(label: str, cmd: list[str], result_container: dict, 
 
 config = _get_config()
 shadow = _get_shadow()
-db_path = config.database_path if config else "database/mlb_model.db"
+db_path = config.database_path if config else os.environ.get("MLB_DB_PATH", "")
 output_dir_val = config.output_dir if config else "output"
 
 # Guarantee official_picks schema (risk_units etc.) exists on this database.
@@ -624,14 +658,14 @@ if not st.session_state.get("_schema_ensured"):
 # Populate last_run_time from the most recent completed scan run
 if st.session_state.last_run_time is None:
     try:
-        _conn = get_connection(str(db_path))
+        _conn = _open_dashboard_connection(db_path)
         _row = _conn.execute(
             "SELECT COALESCE(finished_at, started_at) AS ts FROM scan_runs "
             "WHERE run_type = 'scan' AND finished_at IS NOT NULL "
             "ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         _conn.close()
-        if _row and _row.get("ts"):
+        if _row and _row["ts"]:
             st.session_state.last_run_time = _row["ts"]
     except Exception:
         pass
@@ -679,7 +713,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-meta_cols = st.columns(4, border=True)
+meta_cols = st.columns(5, border=True)
 with meta_cols[0]:
     st.metric("DATE", datetime.now(timezone.utc).strftime("%a %b %d, %Y"))
 with meta_cols[1]:
@@ -687,6 +721,8 @@ with meta_cols[1]:
 with meta_cols[2]:
     st.metric("LAST RUN", st.session_state.last_run_time or "Not yet run")
 with meta_cols[3]:
+    st.metric("DATA FRESHNESS", _get_data_freshness(db_path, config.freshness_threshold_seconds if config else 3600))
+with meta_cols[4]:
     st.metric("DATABASE", "PostgreSQL" if _is_postgres() else Path(db_path).name)
 
 # ── Tab Layout ─────────────────────────────────────────────────────
@@ -718,7 +754,7 @@ with tabs[0]:
         PUSH,
     )
 
-    conn_tab1 = get_connection(str(db_path))
+    conn_tab1 = _open_dashboard_connection(db_path)
     try:
         picks_board = get_official_picks(conn_tab1)
         board_metrics = compute_performance(conn_tab1)
@@ -843,7 +879,7 @@ with tabs[1]:
 
     try:
         import pandas as pd
-        conn = get_connection(str(db_path))
+        conn = _open_dashboard_connection(db_path)
         try:
             op_rows = conn.execute("""
                 SELECT op.*, hr.player_name, hr.market_type, hr.market_form,
@@ -907,7 +943,7 @@ with tabs[1]:
     st.subheader(":material/help: Why No Official Picks Today")
     try:
         import pandas as pd
-        conn_why = get_connection(str(db_path))
+        conn_why = _open_dashboard_connection(db_path)
         try:
             today_recs = conn_why.execute(
                 "SELECT * FROM historical_recommendations "
@@ -974,7 +1010,7 @@ with tabs[1]:
     if st.button("Grade Pending Official Picks", use_container_width=False):
         try:
             from src.tracker import grade_pending_picks
-            conn = get_connection(str(db_path))
+            conn = _open_dashboard_connection(db_path)
             try:
                 graded = grade_pending_picks(conn)
                 st.success(f"Graded {graded} official pick(s)")
@@ -1077,7 +1113,7 @@ with tabs[3]:
 
     try:
         import pandas as pd
-        conn = get_connection(str(db_path))
+        conn = _open_dashboard_connection(db_path)
         try:
             official_rows = conn.execute("""
                 SELECT op.recommendation_id, hr.player_name, hr.market_type, hr.side,
@@ -1099,7 +1135,7 @@ with tabs[3]:
                 label = f"{op.get('player_name', '?')} — {op.get('market_type', '?')} ({op.get('side', '?')}) @ {op.get('sportsbook', '?')}"
                 with st.expander(label, expanded=False):
                     try:
-                        conn2 = get_connection(str(db_path))
+                        conn2 = _open_dashboard_connection(db_path)
                         try:
                             obs_rows = conn2.execute("""
                                 SELECT * FROM pick_observations
@@ -1129,7 +1165,7 @@ with tabs[3]:
                             st.dataframe(pd.DataFrame(obs_table), use_container_width=True, hide_index=True)
 
                             if len(observations) >= 2:
-                                conn_mv = get_connection(str(db_path))
+                                conn_mv = _open_dashboard_connection(db_path)
                                 try:
                                     from src.observations import compute_movement
                                     movement = compute_movement(conn_mv, rid)
@@ -1155,7 +1191,7 @@ with tabs[4]:
         import pandas as pd
         from src.tracker import compute_performance, breakdown_by_field, get_official_picks
 
-        conn_perf = get_connection(str(db_path))
+        conn_perf = _open_dashboard_connection(db_path)
         try:
             official_all = get_official_picks(conn_perf)
             metrics = compute_performance(conn_perf)
@@ -1178,7 +1214,7 @@ with tabs[4]:
 
         # ── Cumulative PnL Chart ──
         try:
-            conn_chart = get_connection(str(db_path))
+            conn_chart = _open_dashboard_connection(db_path)
             try:
                 rows = conn_chart.execute("""
                     SELECT op.selected_at, op.profit_units
@@ -1219,7 +1255,7 @@ with tabs[4]:
 
         # ── EV vs Actual Profit ──
         try:
-            conn_ev = get_connection(str(db_path))
+            conn_ev = _open_dashboard_connection(db_path)
             try:
                 ev_rows = conn_ev.execute("""
                     SELECT op.profit_units, hr.ev_pct
@@ -1262,7 +1298,7 @@ with tabs[4]:
         breakdown_fields = ["market_type", "sportsbook", "market_form"]
         for field in breakdown_fields:
             try:
-                conn_bd = get_connection(str(db_path))
+                conn_bd = _open_dashboard_connection(db_path)
                 try:
                     bd = breakdown_by_field(conn_bd, field)
                 finally:
@@ -1284,16 +1320,16 @@ with tabs[4]:
 with tabs[5]:
     st.subheader(":material/insights: Market Intelligence")
 
-    _conn_mi = get_connection(str(db_path))
+    _conn_mi = _open_dashboard_connection(db_path)
     try:
         _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # Load all odds rows from today
         _mi_rows = _conn_mi.execute(
-            "SELECT market_type, event_id, player_id, player_name, sportsbook, "
-            "validation_status, mapping_confidence, is_alt_line, available, "
-            "captured_at, line, side "
-            "FROM player_prop_odds WHERE date(captured_at) = ?",
+            "SELECT market AS market_type, event_id, NULL AS player_id, NULL AS player_name, sportsbook, "
+            "'VALID' AS validation_status, '' AS mapping_confidence, is_alt_line, available, "
+            "pulled_at AS captured_at, points AS line, selection AS side "
+            "FROM odds WHERE date(pulled_at) = ?",
             (_today_str,),
         ).fetchall()
 
@@ -1450,7 +1486,7 @@ with tabs[6]:
 
     # ── Worker heartbeat ──────────────────────────────────────────
     try:
-        hb_conn = get_connection(str(db_path))
+        hb_conn = _open_dashboard_connection(db_path)
         try:
             hb_row = hb_conn.execute(
                 "SELECT last_heartbeat, worker_pid FROM worker_heartbeat WHERE id = 1"
@@ -1543,7 +1579,7 @@ with tabs[6]:
             with st.expander("📋 Pipeline Output", expanded=(status == "failed")):
                 st.code(output, language=None)
         with st.expander("🔧 Technical Details", expanded=False):
-            st.json({"exit_code": exit_code, "status": status, "timestamp": _now_str(), "database_path": db_path, "output_dir": output_dir_val, "error": error or None})
+            st.json({"exit_code": exit_code, "status": status, "timestamp": _now_str(), "database": "PostgreSQL" if _is_postgres() else db_path, "output_dir": output_dir_val, "error": error or None})
 
     # Pipeline completion indicator
     _pipeline_flag = Path(__file__).resolve().parent.parent / "database" / ".pipeline_completed"
@@ -1618,7 +1654,7 @@ with tabs[6]:
     try:
         from src.automation import get_automation_status, schedule_pregame_checks, schedule_grading, trigger_morning_run, trigger_grading, get_pending_jobs, get_failed_jobs, retry_failed_jobs
 
-        conn = get_connection(str(db_path))
+        conn = _open_dashboard_connection(db_path)
         try:
             status = get_automation_status(conn)
         finally:
@@ -1657,7 +1693,7 @@ with tabs[6]:
         with trig_cols[0]:
             if st.button("🌅 Run Full Slate Now", use_container_width=True):
                 if st.session_state.get("_confirm_morning"):
-                    conn3 = get_connection(str(db_path))
+                    conn3 = _open_dashboard_connection(db_path)
                     try:
                         jid = trigger_morning_run(conn3)
                         st.success(f"Morning run job created: {jid[:8]}")
@@ -1669,7 +1705,7 @@ with tabs[6]:
                     st.warning("Click again to confirm full-slate run")
         with trig_cols[1]:
             if st.button("📈 Schedule Pregame Checks", use_container_width=True):
-                conn3 = get_connection(str(db_path))
+                conn3 = _open_dashboard_connection(db_path)
                 try:
                     count = schedule_pregame_checks(conn3)
                     st.success(f"Scheduled {count} pregame check(s)")
@@ -1678,7 +1714,7 @@ with tabs[6]:
         with trig_cols[2]:
             if st.button("✅ Run Grading Now", use_container_width=True):
                 if st.session_state.get("_confirm_grading"):
-                    conn3 = get_connection(str(db_path))
+                    conn3 = _open_dashboard_connection(db_path)
                     try:
                         count = schedule_grading(conn3)
                         st.success(f"Grading jobs created: {count}")
@@ -1690,7 +1726,7 @@ with tabs[6]:
                     st.warning("Click again to confirm grading")
         with trig_cols[3]:
             if st.button("🔄 Retry Failed Jobs", use_container_width=True):
-                conn3 = get_connection(str(db_path))
+                conn3 = _open_dashboard_connection(db_path)
                 try:
                     count = retry_failed_jobs(conn3)
                     st.success(f"Reset {count} failed job(s) to pending")
@@ -1715,7 +1751,7 @@ with tabs[6]:
 
         # ── Pending jobs ──────────────────────────────────────────
         st.subheader("Pending Jobs")
-        conn4 = get_connection(str(db_path))
+        conn4 = _open_dashboard_connection(db_path)
         try:
             pending = get_pending_jobs(conn4)
             failed = get_failed_jobs(conn4)
@@ -1810,7 +1846,7 @@ with tabs[6]:
     if st.button("📊 View Data Quality Findings", use_container_width=False):
         try:
             from src.data_quality import get_critical_findings, init_findings_table
-            conn5 = get_connection(str(db_path))
+            conn5 = _open_dashboard_connection(db_path)
             try:
                 init_findings_table(conn5)
                 findings = get_critical_findings(conn5)
@@ -1908,13 +1944,13 @@ with tabs[6]:
                         st.code(result_box5["output"], language=None)
             if st.button("📋 View Traces", use_container_width=True, key="view_traces_btn"):
                 try:
-                    conn6 = get_connection(str(db_path))
+                    conn6 = _open_dashboard_connection(db_path)
                     try:
                         traces = conn6.execute(
                             "SELECT recommendation_id, step, message, timestamp FROM recommendation_traces ORDER BY timestamp DESC LIMIT 20"
                         ).fetchall()
                         if traces:
-                            trace_data = [{"ID": t[0][:12], "Step": t[1], "Message": t[2], "Time": t[3]} for t in traces]
+                            trace_data = [{"ID": t["recommendation_id"][:12], "Step": t["step"], "Message": t["message"], "Time": t["timestamp"]} for t in traces]
                             import pandas as pd
                             st.dataframe(pd.DataFrame(trace_data), use_container_width=True, hide_index=True)
                         else:
@@ -1940,7 +1976,7 @@ with tabs[6]:
 with tabs[7]:
     st.subheader(":material/psychology: Adaptive Learning & Model Calibration")
 
-    _conn_al = get_connection(str(db_path))
+    _conn_al = _open_dashboard_connection(db_path)
 
     try:
         from src.adaptive_learning import (
