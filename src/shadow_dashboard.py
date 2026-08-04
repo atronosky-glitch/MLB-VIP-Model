@@ -249,6 +249,11 @@ def _fill_health(conn: sqlite3.Connection, dash: ShadowDashboard) -> None:
             api_key=config.api_key,
             output_dir=config.output_dir,
             freshness_threshold=config.freshness_threshold_seconds,
+            environment=config.environment,
+            timezone_name=config.timezone,
+            backup_dir=config.backup_dir,
+            scheduler_enabled=config.scheduler_enabled,
+            scheduling_pregame_interval_minutes=config.scheduling_pregame_interval_minutes,
         )
         dash.health_status = report.overall_status
     except Exception:

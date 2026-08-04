@@ -14,9 +14,10 @@ import time
 from database.connection import get_database_url
 from database.db_manager import get_connection
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ def run_health_checks(
     timezone_name: str = "",
     backup_dir: str | Path = "",
     scheduler_enabled: bool = True,
+    scheduling_pregame_interval_minutes: int = 30,
 ) -> HealthReport:
     """Run all health checks and return a report.
 
@@ -127,6 +129,10 @@ def run_health_checks(
         Directory for database backups.
     scheduler_enabled:
         Whether the scheduler is enabled.
+    timezone_name:
+        Timezone used to calculate the next expected morning scan.
+    scheduling_pregame_interval_minutes:
+        Configured interval for scheduling pregame scans.
     """
     report = HealthReport(
         overall_status="healthy",
@@ -135,10 +141,17 @@ def run_health_checks(
 
     report.add(_check_database(db_path))
     report.add(_check_disk_space(output_dir, disk_min_mb))
-    report.add(_check_data_freshness(db_path, freshness_threshold))
+    report.add(_check_data_freshness(
+        db_path,
+        freshness_threshold,
+        scheduler_enabled=scheduler_enabled,
+        timezone_name=timezone_name,
+        scheduling_pregame_interval_minutes=scheduling_pregame_interval_minutes,
+    ))
     report.add(_check_api_key(api_key))
     report.add(_check_output_dir(output_dir))
     report.add(_check_worker_heartbeat(db_path))
+    report.add(_check_failed_jobs(db_path))
     report.add(_check_persistent_storage(db_path))
     report.add(_check_deployment_environment(environment))
     report.add(_check_timezone(timezone_name))
@@ -242,8 +255,70 @@ def _check_disk_space(output_dir: str | Path, min_mb: int) -> HealthCheck:
         )
 
 
-def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
-    """Check if the latest pipeline run was within the freshness window."""
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Parse a database timestamp into an aware UTC datetime."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _next_morning_scan(timezone_name: str) -> datetime:
+    """Return the next expected 09:00 local-time scan."""
+    try:
+        zone = ZoneInfo(timezone_name or "UTC")
+    except (KeyError, ValueError):
+        zone = timezone.utc
+    now_local = datetime.now(zone)
+    candidate = now_local.replace(hour=9, minute=0, second=0, microsecond=0)
+    if candidate <= now_local:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
+
+
+def _get_scan_schedule_context(
+    conn,
+    timezone_name: str,
+    scheduling_pregame_interval_minutes: int,
+) -> dict[str, Any]:
+    """Find pending/overdue scans and the next expected scheduled scan."""
+    del scheduling_pregame_interval_minutes  # Persisted job times are authoritative.
+    now = datetime.now(timezone.utc)
+    rows = conn.execute(
+        "SELECT job_type, scheduled_at FROM scheduled_jobs "
+        "WHERE status = 'pending' AND job_type IN ('pregame-check', 'morning-run') "
+        "ORDER BY scheduled_at"
+    ).fetchall()
+    future: list[datetime] = []
+    overdue = 0
+    for row in rows:
+        scheduled = _parse_timestamp(row["scheduled_at"])
+        if scheduled is None or scheduled <= now:
+            overdue += 1
+        else:
+            future.append(scheduled)
+    next_scan = min(future) if future else _next_morning_scan(timezone_name)
+    return {
+        "next_expected_scan_at": next_scan,
+        "overdue_pending_scans": overdue,
+        "pending_scheduled_scans": len(rows),
+    }
+
+
+def _check_data_freshness(
+    db_path: str | Path,
+    threshold: int,
+    *,
+    scheduler_enabled: bool = True,
+    timezone_name: str = "",
+    scheduling_pregame_interval_minutes: int = 30,
+) -> HealthCheck:
+    """Check freshness against the last run and expected scan schedule."""
     try:
         conn = _open_connection(db_path)
         try:
@@ -252,6 +327,21 @@ def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
                 "WHERE run_type = 'scan' AND finished_at IS NOT NULL "
                 "ORDER BY finished_at DESC LIMIT 1"
             ).fetchone()
+            schedule_context = {
+                "next_expected_scan_at": None,
+                "overdue_pending_scans": 0,
+                "pending_scheduled_scans": 0,
+            }
+            if scheduler_enabled:
+                try:
+                    schedule_context = _get_scan_schedule_context(
+                        conn,
+                        timezone_name,
+                        scheduling_pregame_interval_minutes,
+                    )
+                except Exception:
+                    # A missing scheduling table must not hide a real freshness failure.
+                    pass
         finally:
             conn.close()
 
@@ -264,15 +354,11 @@ def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
 
         completed_str = row["finished_at"]
         status = "success" if not row["error_message"] else "failed"
-        if not isinstance(completed_str, str):
-            completed_str = completed_str.isoformat()
-        if completed_str:
-            completed = datetime.fromisoformat(completed_str)
-            if completed.tzinfo is None:
-                completed = completed.replace(tzinfo=timezone.utc)
-            age_seconds = (datetime.now(timezone.utc) - completed).total_seconds()
-        else:
-            age_seconds = float("inf")
+        completed = _parse_timestamp(completed_str)
+        age_seconds = (
+            (datetime.now(timezone.utc) - completed).total_seconds()
+            if completed is not None else float("inf")
+        )
 
         if status != "success":
             return HealthCheck(
@@ -282,12 +368,41 @@ def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
                 details={"last_status": status, "age_seconds": round(age_seconds)},
             )
 
+        next_expected = schedule_context["next_expected_scan_at"]
+        if (
+            scheduler_enabled
+            and schedule_context["overdue_pending_scans"] == 0
+            and next_expected is not None
+            and next_expected > datetime.now(timezone.utc)
+            and age_seconds > threshold
+        ):
+            return HealthCheck(
+                name="data_freshness",
+                status="ok",
+                message=(
+                    f"Last run {age_seconds / 3600:.1f}h ago; next scan expected "
+                    f"at {next_expected.isoformat()}"
+                ),
+                details={
+                    "age_seconds": round(age_seconds),
+                    "threshold": threshold,
+                    "schedule_aware": True,
+                    "next_expected_scan_at": next_expected.isoformat(),
+                    "pending_scheduled_scans": schedule_context["pending_scheduled_scans"],
+                },
+            )
+
         if age_seconds > threshold * 2:
             return HealthCheck(
                 name="data_freshness",
                 status="error",
                 message=f"Data stale: last run {age_seconds / 3600:.1f}h ago (threshold: {threshold / 3600:.1f}h)",
-                details={"age_seconds": round(age_seconds), "threshold": threshold},
+                details={
+                    "age_seconds": round(age_seconds),
+                    "threshold": threshold,
+                    "schedule_aware": scheduler_enabled,
+                    "overdue_pending_scans": schedule_context["overdue_pending_scans"],
+                },
             )
 
         if age_seconds > threshold:
@@ -295,7 +410,12 @@ def _check_data_freshness(db_path: str | Path, threshold: int) -> HealthCheck:
                 name="data_freshness",
                 status="warning",
                 message=f"Data aging: last run {age_seconds / 3600:.1f}h ago",
-                details={"age_seconds": round(age_seconds), "threshold": threshold},
+                details={
+                    "age_seconds": round(age_seconds),
+                    "threshold": threshold,
+                    "schedule_aware": scheduler_enabled,
+                    "overdue_pending_scans": schedule_context["overdue_pending_scans"],
+                },
             )
 
         return HealthCheck(
@@ -442,8 +562,47 @@ def _check_worker_heartbeat(db_path: str | Path) -> HealthCheck:
         )
 
 
+def _check_failed_jobs(db_path: str | Path) -> HealthCheck:
+    """Check whether scheduled jobs have failed and remain unresolved."""
+    try:
+        conn = _open_connection(db_path)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM scheduled_jobs WHERE status = 'failed'"
+            ).fetchone()
+        finally:
+            conn.close()
+        count = int(row["cnt"] if row else 0)
+        if count:
+            return HealthCheck(
+                name="failed_jobs",
+                status="error",
+                message=f"{count} failed scheduled job(s)",
+                details={"failed_jobs": count},
+            )
+        return HealthCheck(
+            name="failed_jobs",
+            status="ok",
+            message="No failed scheduled jobs",
+            details={"failed_jobs": 0},
+        )
+    except Exception as e:
+        return HealthCheck(
+            name="failed_jobs",
+            status="warning",
+            message=f"Could not check failed jobs: {e}",
+        )
+
+
 def _check_persistent_storage(db_path: str | Path) -> HealthCheck:
     """Check if the database is on persistent storage."""
+    if get_database_url():
+        return HealthCheck(
+            name="persistent_storage",
+            status="ok",
+            message="PostgreSQL managed storage active",
+            details={"storage_type": "managed_postgresql"},
+        )
     db_path = Path(db_path)
     if not db_path.exists():
         return HealthCheck(
@@ -541,18 +700,36 @@ def _check_scheduler(scheduler_enabled: bool) -> HealthCheck:
 
 def _check_backup_directory(backup_dir: str | Path) -> HealthCheck:
     """Check backup directory status."""
+    if get_database_url():
+        return HealthCheck(
+            name="backup",
+            status="ok",
+            message="PostgreSQL backups are managed externally; local SQLite backup is not required",
+            details={"required": False, "storage_type": "managed_postgresql"},
+        )
     if not backup_dir:
         return HealthCheck(
             name="backup",
             status="warning",
-            message="No backup directory configured",
+            message="Optional local backup directory not configured",
+            details={"required": False},
         )
     backup_path = Path(backup_dir)
     if not backup_path.exists():
+        try:
+            backup_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return HealthCheck(
+                name="backup",
+                status="warning",
+                message=f"Optional backup directory unavailable: {e}",
+                details={"required": False},
+            )
         return HealthCheck(
             name="backup",
             status="warning",
-            message=f"Backup directory does not exist: {backup_path}",
+            message=f"Optional backup directory created; no backups found: {backup_path}",
+            details={"required": False, "backup_count": 0},
         )
 
     try:

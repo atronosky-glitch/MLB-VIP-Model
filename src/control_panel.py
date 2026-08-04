@@ -1803,10 +1803,14 @@ with tabs[6]:
             report = health_fn(
                 db_path=db_path, api_key=config.api_key if config else "",
                 output_dir=output_dir_val,
+                freshness_threshold=config.freshness_threshold_seconds if config else 3600,
                 environment=config.environment if config else "",
                 timezone_name=config.timezone if config else "",
                 backup_dir=config.backup_dir if config else "backups",
                 scheduler_enabled=config.scheduler_enabled if config else True,
+                scheduling_pregame_interval_minutes=(
+                    config.scheduling_pregame_interval_minutes if config else 30
+                ),
             )
             st.session_state.health_report = report
         except Exception:
@@ -1829,10 +1833,14 @@ with tabs[6]:
                 report = health_fn(
                     db_path=db_path, api_key=config.api_key if config else "",
                     output_dir=output_dir_val,
+                    freshness_threshold=config.freshness_threshold_seconds if config else 3600,
                     environment=config.environment if config else "",
                     timezone_name=config.timezone if config else "",
                     backup_dir=config.backup_dir if config else "backups",
                     scheduler_enabled=config.scheduler_enabled if config else True,
+                    scheduling_pregame_interval_minutes=(
+                        config.scheduling_pregame_interval_minutes if config else 30
+                    ),
                 )
                 st.session_state.health_report = report
                 st.json(report.to_dict())

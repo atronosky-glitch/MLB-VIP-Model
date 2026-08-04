@@ -63,7 +63,9 @@ class TestPregameJobTypeConsistency:
         assert row["job_type"] == "pregame-check"
 
     def test_execute_pregame_check_dispatches(self, db_conn):
-        result = worker._execute_job("pregame-check", db_conn, None)
+        with patch.object(worker, "_run_pregame_scan", return_value={"status": "success"}) as scan:
+            result = worker._execute_job("pregame-check", db_conn, None)
+        scan.assert_called_once_with(None)
         assert result["status"] == "success"
 
     def test_legacy_pregame_type_no_longer_dispatched(self, db_conn):

@@ -235,6 +235,23 @@ def _run_pregame_checks(conn: DB, config) -> dict:
     return {"status": "success", "jobs_scheduled": count}
 
 
+def _run_pregame_scan(config) -> dict:
+    """Run a scheduled pregame pipeline so it records a scan_run."""
+    from src.daily_pipeline import run_pipeline, PipelineConfig
+
+    exit_code = run_pipeline(PipelineConfig(
+        live=True,
+        use_cache=False,
+        auto=True,
+        output_dir=config.output_dir,
+        actionable_only=True,
+    ))
+    return {
+        "status": "success" if exit_code in (0, 1) else "failed",
+        "exit_code": exit_code,
+    }
+
+
 def _run_grading(conn: DB, config) -> dict:
     """Run grading for completed games."""
     from src.automation import schedule_grading
@@ -273,6 +290,12 @@ def _run_health_check(config) -> dict:
         db_path=config.database_path,
         api_key=config.api_key,
         output_dir=config.output_dir,
+        freshness_threshold=config.freshness_threshold_seconds,
+        environment=config.environment,
+        timezone_name=config.timezone,
+        backup_dir=config.backup_dir,
+        scheduler_enabled=config.scheduler_enabled,
+        scheduling_pregame_interval_minutes=config.scheduling_pregame_interval_minutes,
     )
     return {"status": report.overall_status, "report": report.to_dict()}
 
@@ -343,7 +366,7 @@ def _execute_job(job_type: str, conn: DB, config) -> dict:
     """Dispatch and execute a single job."""
     dispatch = {
         "morning-run": lambda: _run_morning_scan(config),
-        "pregame-check": lambda: _run_pregame_checks(conn, config),
+        "pregame-check": lambda: _run_pregame_scan(config),
         "grading": lambda: _run_grading(conn, config),
         "backup": lambda: _run_backup(config),
         "adaptive-learning": lambda: _run_adaptive_learning(conn, config),

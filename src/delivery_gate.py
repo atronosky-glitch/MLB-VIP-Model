@@ -156,6 +156,11 @@ def _check_critical_health(config: ProductionConfig) -> bool:
             api_key=config.api_key,
             output_dir=config.output_dir,
             freshness_threshold=config.freshness_threshold_seconds,
+            environment=config.environment,
+            timezone_name=config.timezone,
+            backup_dir=config.backup_dir,
+            scheduler_enabled=config.scheduler_enabled,
+            scheduling_pregame_interval_minutes=config.scheduling_pregame_interval_minutes,
         )
         return report.overall_status != "unhealthy"
     except Exception:

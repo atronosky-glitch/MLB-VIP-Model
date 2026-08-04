@@ -194,6 +194,11 @@ def _handle_health_check(config: ProductionConfig, *, job_id: str = "", **kw: An
         freshness_threshold=config.freshness_threshold_seconds,
         google_sheets_enabled=bool(config.spreadsheet_id),
         discord_enabled=bool(config.discord_webhook_urls),
+        environment=config.environment,
+        timezone_name=config.timezone,
+        backup_dir=config.backup_dir,
+        scheduler_enabled=config.scheduler_enabled,
+        scheduling_pregame_interval_minutes=config.scheduling_pregame_interval_minutes,
     )
 
     if report.overall_status == "unhealthy":

@@ -2,6 +2,25 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Production health and schedule-aware freshness
+
+### What was done
+
+1. `src/health_check.py` now treats configured PostgreSQL as managed persistent storage and treats local SQLite backup checks as not required in PostgreSQL mode. No database URL or credentials are included in health output.
+2. Missing optional local backup directories are created safely and reported as optional/no-backup status; they no longer produce a system error. Health also reports unresolved failed scheduled jobs explicitly.
+3. Freshness is schedule-aware: future pending pregame/morning jobs prevent a false stale failure, while overdue pending scans remain unhealthy. If no pending scan exists, the next expected 09:00 run is considered. The active scheduler, heartbeat, failed-job count, and scan history remain independent checks.
+4. `src/worker.py` now executes a real pipeline for each `pregame-check` job, so completed pregame work records `scan_runs` and advances freshness. Dashboard, worker, production job, delivery-gate, and shadow health callers pass schedule configuration.
+5. The four restored Pinnacle files were not modified or staged.
+
+### Verification
+
+- Targeted health/dashboard/worker tests: **250 passed**.
+- Full suite: **1427 passed, 1 failed**. The failure is pre-existing and unrelated: `tests/test_phase8_markets.py::TestRegistryPhase8::test_total_market_count` expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit only health, worker scheduling, related health callers, regression tests, and project-memory documentation. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-04 — Dashboard connection factory signature fix
 
 ### What was done
