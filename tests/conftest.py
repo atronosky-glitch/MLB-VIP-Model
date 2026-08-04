@@ -296,8 +296,10 @@ def db_conn():
             pinnacle_probability_edge REAL, snapshot_kind TEXT,
             closing_sportsbook TEXT, closing_line REAL,
             closing_american_odds INTEGER, closing_decimal_odds REAL,
-            closing_implied_probability REAL, clv_probability REAL,
-            clv_price_diff INTEGER, result TEXT, final_stat_value REAL,
+            closing_implied_probability REAL, line_move_type TEXT,
+            closing_available INTEGER, clv_probability REAL,
+            clv_price_diff INTEGER, clv_available INTEGER,
+            result TEXT, final_stat_value REAL,
             settlement_reason TEXT, grader_version TEXT, event_timestamp TEXT NOT NULL,
             data_source TEXT, source_run_id TEXT, provenance_json TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))

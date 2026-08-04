@@ -66,8 +66,10 @@ def _lifecycle_table(conn):
             pinnacle_probability_edge REAL, snapshot_kind TEXT,
             closing_sportsbook TEXT, closing_line REAL,
             closing_american_odds INTEGER, closing_decimal_odds REAL,
-            closing_implied_probability REAL, clv_probability REAL,
-            clv_price_diff INTEGER, result TEXT, final_stat_value REAL,
+            closing_implied_probability REAL, line_move_type TEXT,
+            closing_available INTEGER, clv_probability REAL,
+            clv_price_diff INTEGER, clv_available INTEGER,
+            result TEXT, final_stat_value REAL,
             settlement_reason TEXT, grader_version TEXT, event_timestamp TEXT NOT NULL,
             data_source TEXT, source_run_id TEXT, provenance_json TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -149,7 +151,28 @@ def test_clv_formula_and_closing_lifecycle_snapshot():
     assert close["clv_price_diff"] == expected["clv_price_diff"]
     assert event["clv_probability"] == expected["clv_probability"]
     assert event["closing_sportsbook"] == "fanduel"
+    assert event["line_move_type"] == "same_line"
+    assert event["closing_available"] == 1
+    assert event["clv_available"] == 1
     assert event["source_run_id"] == "run-final"
+
+    changed = {**rec, "recommendation_id": "rec-line-changed"}
+    conn.execute(
+        "INSERT INTO player_prop_odds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("event-19a", "player-19a", "pitching_strikeouts_ou", "over",
+         "fanduel", -105, 1.9524, 7.0, 1, "2026-08-04T13:01:00+00:00"),
+    )
+    conn.commit()
+    assert capture_closing_prices(conn, [changed], snapshot_kind="final") == 1
+    changed_event = conn.execute(
+        "SELECT line_move_type, closing_available, clv_probability, clv_available "
+        "FROM recommendation_lifecycle_events WHERE recommendation_id = ?",
+        ("rec-line-changed",),
+    ).fetchone()
+    assert changed_event["line_move_type"] == "line_changed"
+    assert changed_event["closing_available"] == 1
+    assert changed_event["clv_probability"] is None
+    assert changed_event["clv_available"] == 0
 
 
 def test_missing_closing_data_is_audited_without_fabricating_clv():
@@ -176,12 +199,16 @@ def test_missing_closing_data_is_audited_without_fabricating_clv():
     rec = _recommendation()
     assert capture_closing_prices(conn, [rec], snapshot_kind="pregame") == 0
     event = conn.execute(
-        "SELECT closing_american_odds, clv_probability, clv_price_diff, snapshot_kind "
+        "SELECT closing_american_odds, line_move_type, closing_available, "
+        "clv_probability, clv_price_diff, clv_available, snapshot_kind "
         "FROM recommendation_lifecycle_events"
     ).fetchone()
     assert event["closing_american_odds"] is None
+    assert event["line_move_type"] == "no_close"
+    assert event["closing_available"] == 0
     assert event["clv_probability"] is None
     assert event["clv_price_diff"] is None
+    assert event["clv_available"] == 0
     assert event["snapshot_kind"] == "pregame"
 
 

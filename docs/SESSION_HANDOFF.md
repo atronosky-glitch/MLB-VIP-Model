@@ -2,6 +2,20 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Phase 19A review hardening
+
+### What was done
+
+1. Review found that lifecycle closing events did not explicitly store line-move or availability state. Added `line_move_type`, `closing_available`, and `clv_available` to the lifecycle evidence schema and capture path.
+2. Confirmed probability CLV remains canonical: `bet_implied_prob - closing_implied_prob`. `closing_american - bet_american` remains a secondary diagnostic and is not used as the canonical CLV metric.
+3. Added direct line-change regression coverage. Same-line snapshots are CLV-available; line-changed and missing-close snapshots are explicitly unavailable without fabricated values.
+4. No thresholds, classification, delivery, betting, or automatic learning behavior changed. The four Pinnacle files were not modified, staged, or committed.
+
+### Verification
+
+- Phase 19A tests: **5 passed**.
+- The original `cc43712` commit was not pushed because this review found the evidence-state gap. A follow-up commit contains the fix.
+
 ## Session: 2026-08-04 — Phase 19A immutable lifecycle and CLV capture
 
 ### What was done
