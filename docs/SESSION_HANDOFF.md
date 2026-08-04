@@ -2,6 +2,23 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Phase 19A production verification
+
+### What was done
+
+1. Added read-only `scripts/verify_phase19a_production.py` using `database.db_manager.get_connection()`, so it supports PostgreSQL through `DATABASE_URL` and SQLite through the existing fallback.
+2. The verifier reports lifecycle schema presence, counts by event type, recent non-secret event summaries, duplicate event keys, closing/CLV availability, line-move types, orphaned recommendation IDs, and canonical probability-CLV integrity checks. It returns nonzero only for missing schema, unreadable required integrity data, duplicates, or contradictory lifecycle state.
+3. Added verifier tests for clean data, missing schema, duplicate/orphan/invalid CLV failures, JSON output, and read-only behavior. No production lifecycle or Pinnacle files were modified.
+
+### Verification
+
+- Verifier and Phase 19A tests: **9 passed**.
+- Full suite: **1436 passed, 1 failed**. The failure is pre-existing and unrelated: the market registry test expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit only the verifier, verifier tests, and project-memory documentation. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-04 — Phase 19A review hardening
 
 ### What was done
