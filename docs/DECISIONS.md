@@ -4,6 +4,13 @@ Entries are dated. New entries are appended.
 
 ---
 
+## Phase 19 adaptive learning is advisory-only
+
+- **Date**: 2026-08-04
+- **Decision**: Phase 19 will extend the existing recommendation, closing-price, settlement, units, trace, and adaptive-learning foundation with append-only recommendation evidence/observations, reproducible rolling metric runs, statistically gated segment metrics, and human-reviewed learning proposals. It will never place bets or automatically modify thresholds, weights, markets, sportsbooks, or delivery settings.
+- **Reason**: Historical learning must be traceable from recommendation creation through settlement, while small samples, market mix, missing closing data, and Pinnacle line differences can make naive optimization unsafe.
+- **Consequence**: Every proposal must include its population, window, sample size, uncertainty, baseline, expected effect, current/proposed values, reviewer, and resulting config version. Pinnacle is a reference and predictive benchmark, not infallible ground truth. Runtime implementation requires explicit approval of this architecture and separate migrations/tests.
+
 ## SQLite is the source of truth
 
 - **Decision**: Store all parsed odds, audit records, and raw API responses in SQLite.

@@ -2,6 +2,24 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Phase 19 Adaptive Learning architecture
+
+### What was done
+
+1. Added `docs/PHASE19_ADAPTIVE_LEARNING_ARCHITECTURE.md`, defining lifecycle evidence from recommendation creation through settlement, rolling metrics, confidence/EV/Pinnacle calibration, statistical sample gates, proposal workflow, data-quality handling, implementation sequence, and acceptance criteria.
+2. Recorded the architecture decision in `docs/DECISIONS.md`: Phase 19 is advisory-only and cannot place bets or automatically modify thresholds, weights, market eligibility, sportsbook selection, or delivery settings.
+3. Updated project status and TODO to mark the architecture as planned, not implemented. Existing `src/adaptive_learning.py` remains unchanged.
+4. The four restored Pinnacle files were not modified, staged, or committed.
+
+### Verification
+
+- Documentation-only change; no runtime tests were required.
+- Existing working-tree modifications remain limited to the four Pinnacle files.
+
+### Commit scope
+
+No commit or push was performed. Implementation requires explicit approval of the Phase 19 architecture first.
+
 ## Session: 2026-08-04 — Production health and schedule-aware freshness
 
 ### What was done
