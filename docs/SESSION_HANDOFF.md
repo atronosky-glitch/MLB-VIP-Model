@@ -2,6 +2,23 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Dashboard connection factory signature fix
+
+### What was done
+
+1. Inspected both factories: `database.db_manager.get_connection(db_path=None)` is the shared application factory and auto-selects PostgreSQL from `DATABASE_URL`; `database.connection.get_connection(url=None, db_path=None)` is the lower-level dialect factory.
+2. Corrected the two invalid `url=` calls in `src/control_panel.py` and `src/health_check.py`. Both now call the db-manager factory with no keyword, so PostgreSQL production behavior and SQLite local/test fallback are preserved.
+3. Audited every repository `get_connection(` occurrence and found no other signature mismatch. Updated the dashboard regression assertion. The four restored Pinnacle files were not modified or staged.
+
+### Verification
+
+- Dashboard/health/PostgreSQL tests: **199 passed**.
+- Full suite: **1421 passed, 1 failed**. The failure is pre-existing and unrelated: `tests/test_phase8_markets.py::TestRegistryPhase8::test_total_market_count` expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit only the two corrected production callers, the dashboard regression test, and project-memory documentation. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-04 — Render worker database-layer audit
 
 ### What was done

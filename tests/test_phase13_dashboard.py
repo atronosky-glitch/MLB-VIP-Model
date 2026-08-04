@@ -608,7 +608,8 @@ class TestControlPanelHelpers:
     def test_dashboard_uses_postgres_url_and_supported_run_tables(self):
         source = Path("src/control_panel.py").read_text(encoding="utf-8")
         assert "def _open_dashboard_connection" in source
-        assert "get_connection(url=url)" in source
+        assert "get_connection()" in source
+        assert "get_connection(url=url)" not in source
         assert "pipeline_runs" not in source
         assert "rowid" not in source
         assert "sqlite_master" not in source

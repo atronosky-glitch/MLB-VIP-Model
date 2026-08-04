@@ -25,7 +25,7 @@ def _open_connection(db_path: str | Path):
     """Open PostgreSQL when DATABASE_URL is configured, otherwise SQLite."""
     url = get_database_url()
     if url:
-        return get_connection(url=url)
+        return get_connection()
     return get_connection(db_path=str(db_path))
 
 

@@ -315,7 +315,7 @@ def _open_dashboard_connection(db_path: str):
     """Open the configured production database, or the local test database."""
     url = get_database_url()
     if url:
-        return get_connection(url=url)
+        return get_connection()
     return get_connection(db_path=str(db_path))
 
 
