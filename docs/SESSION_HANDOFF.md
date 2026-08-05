@@ -2,6 +2,24 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-05 — Phase 19A lifecycle creation control-flow fix
+
+### What was done
+
+1. Traced `recommendation_lifecycle_events` and confirmed no helper existed; the DDL was only embedded in the large `init_db()` `executescript()` body. This made helper-spy coverage impossible and left the production failure dependent on script control flow.
+2. Extracted `create_recommendation_lifecycle_table(conn)` with table and index DDL, removed the duplicate inline DDL, and call it exactly once after the main schema script and before required-table verification/commit.
+3. `init_db()` now returns a safe diagnostic containing `lifecycle_helper_ran`; `scripts/init_and_verify_schema.py` reports init start, lifecycle helper completion, commit completion, and verification phases without credentials.
+4. Added tests for helper invocation, fresh SQLite catalog creation, PostgreSQL-like initialization, rollback/stop behavior, missing-table verification, repeated initialization, and script behavior. The four Pinnacle files were not modified, staged, or committed.
+
+### Verification
+
+- Targeted lifecycle/startup/schema tests: **50 passed**.
+- Full suite: **1446 passed, 1 failed**. The failure is pre-existing and unrelated: the market registry test expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit only lifecycle initialization control flow, schema diagnostics/script, tests, and memory documentation. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-05 — Production schema initialization fail-fast hardening
 
 ### What was done

@@ -24,7 +24,13 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = None
     try:
-        init_db(args.db_path)
+        print("SCHEMA INIT START")
+        init_diagnostic = init_db(args.db_path)
+        if not init_diagnostic or not init_diagnostic.get("lifecycle_helper_ran"):
+            raise RuntimeError("lifecycle creation helper did not report completion")
+        print("SCHEMA INIT PHASE lifecycle_helper=completed")
+        print("SCHEMA INIT COMMIT completed")
+        print("SCHEMA VERIFY START")
         conn = get_connection(args.db_path)
         diagnostic = verify_required_schema(conn)
         print(

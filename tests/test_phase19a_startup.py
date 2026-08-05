@@ -79,6 +79,19 @@ def test_init_db_calls_required_schema_verification(tmp_path):
         dbm.init_db(str(tmp_path / "verified.db"))
     verify.assert_called_once()
 
+
+def test_init_db_calls_lifecycle_creation_helper_exactly_once(tmp_path):
+    import database.db_manager as dbm
+
+    with patch.object(
+        dbm,
+        "create_recommendation_lifecycle_table",
+        wraps=dbm.create_recommendation_lifecycle_table,
+    ) as create_lifecycle:
+        diagnostic = dbm.init_db(str(tmp_path / "lifecycle.db"))
+    create_lifecycle.assert_called_once()
+    assert diagnostic["lifecycle_helper_ran"] is True
+
 def test_init_db_generates_postgresql_compatible_full_schema():
     import database.db_manager as dbm
     from database.connection import DB

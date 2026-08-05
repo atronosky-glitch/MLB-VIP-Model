@@ -85,6 +85,74 @@ def verify_required_schema(conn: DB) -> dict:
         )
     return diagnostic
 
+
+def create_recommendation_lifecycle_table(conn: DB) -> None:
+    """Create the Phase 19A lifecycle table and indexes exactly once per init."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS recommendation_lifecycle_events (
+            lifecycle_event_id       TEXT PRIMARY KEY,
+            recommendation_id        TEXT NOT NULL,
+            event_type               TEXT NOT NULL,
+            event_key                TEXT NOT NULL UNIQUE,
+            run_id                   TEXT,
+            event_id                 TEXT,
+            player_id                TEXT,
+            player_name              TEXT,
+            market_type              TEXT,
+            side                     TEXT,
+            line                     REAL,
+            sportsbook               TEXT,
+            offered_american_odds    INTEGER,
+            offered_decimal_odds     REAL,
+            implied_probability      REAL,
+            model_fair_probability   REAL,
+            model_edge               REAL,
+            ev                       REAL,
+            confidence_score         REAL,
+            quality_score            REAL,
+            pinnacle_reference_used  INTEGER,
+            pinnacle_book            TEXT,
+            pinnacle_line            REAL,
+            pinnacle_over_odds       INTEGER,
+            pinnacle_under_odds      INTEGER,
+            pinnacle_fair_probability REAL,
+            pinnacle_ev              REAL,
+            pinnacle_probability_edge REAL,
+            snapshot_kind            TEXT,
+            closing_sportsbook       TEXT,
+            closing_line             REAL,
+            closing_american_odds    INTEGER,
+            closing_decimal_odds     REAL,
+            closing_implied_probability REAL,
+            line_move_type           TEXT,
+            closing_available        INTEGER,
+            clv_probability          REAL,
+            clv_price_diff           INTEGER,
+            clv_available            INTEGER,
+            result                   TEXT,
+            final_stat_value         REAL,
+            settlement_reason        TEXT,
+            grader_version           TEXT,
+            event_timestamp          TEXT NOT NULL,
+            data_source              TEXT,
+            source_run_id            TEXT,
+            provenance_json          TEXT,
+            created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rle_recommendation "
+        "ON recommendation_lifecycle_events(recommendation_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rle_event_type "
+        "ON recommendation_lifecycle_events(event_type)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rle_run "
+        "ON recommendation_lifecycle_events(run_id)"
+    )
+
 # Column names added by schema migrations — for safe ALTER TABLE.
 _ODDS_MIGRATIONS = [
     ("odd_id", "TEXT DEFAULT ''"),
@@ -550,65 +618,6 @@ def init_db(db_path: str | None = None) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_cp_rec ON closing_prices(recommendation_id);
 
-        -- Phase 19A: append-only recommendation lifecycle evidence
-        CREATE TABLE IF NOT EXISTS recommendation_lifecycle_events (
-            lifecycle_event_id       TEXT PRIMARY KEY,
-            recommendation_id        TEXT NOT NULL,
-            event_type               TEXT NOT NULL,
-            event_key                TEXT NOT NULL UNIQUE,
-            run_id                   TEXT,
-            event_id                 TEXT,
-            player_id                TEXT,
-            player_name              TEXT,
-            market_type              TEXT,
-            side                     TEXT,
-            line                     REAL,
-            sportsbook               TEXT,
-            offered_american_odds    INTEGER,
-            offered_decimal_odds     REAL,
-            implied_probability      REAL,
-            model_fair_probability   REAL,
-            model_edge               REAL,
-            ev                       REAL,
-            confidence_score         REAL,
-            quality_score            REAL,
-            pinnacle_reference_used  INTEGER,
-            pinnacle_book            TEXT,
-            pinnacle_line            REAL,
-            pinnacle_over_odds       INTEGER,
-            pinnacle_under_odds      INTEGER,
-            pinnacle_fair_probability REAL,
-            pinnacle_ev              REAL,
-            pinnacle_probability_edge REAL,
-            snapshot_kind            TEXT,
-            closing_sportsbook       TEXT,
-            closing_line             REAL,
-            closing_american_odds    INTEGER,
-            closing_decimal_odds     REAL,
-            closing_implied_probability REAL,
-            line_move_type           TEXT,
-            closing_available        INTEGER,
-            clv_probability          REAL,
-            clv_price_diff           INTEGER,
-            clv_available            INTEGER,
-            result                   TEXT,
-            final_stat_value         REAL,
-            settlement_reason        TEXT,
-            grader_version           TEXT,
-            event_timestamp          TEXT NOT NULL,
-            data_source              TEXT,
-            source_run_id            TEXT,
-            provenance_json          TEXT,
-            created_at               TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_rle_recommendation
-            ON recommendation_lifecycle_events(recommendation_id);
-        CREATE INDEX IF NOT EXISTS idx_rle_event_type
-            ON recommendation_lifecycle_events(event_type);
-        CREATE INDEX IF NOT EXISTS idx_rle_run
-            ON recommendation_lifecycle_events(run_id);
-
         -- Manual override audit trail
         CREATE TABLE IF NOT EXISTS manual_override_audit (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -622,6 +631,9 @@ def init_db(db_path: str | None = None) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_moa_rec ON manual_override_audit(recommendation_id);
     """)
+
+    create_recommendation_lifecycle_table(conn)
+    logger.info("Phase 19A lifecycle table creation phase completed")
 
     _safe_migrate_odds(conn)
     _create_audit_table(conn)
@@ -875,6 +887,8 @@ def init_db(db_path: str | None = None) -> None:
         diagnostic["dialect"], diagnostic["database_name"],
         diagnostic["schema_name"], len(diagnostic["required_tables"]),
     )
+    diagnostic["lifecycle_helper_ran"] = True
+    return diagnostic
 
 
 def save_game(conn: DB, game: dict) -> None:
