@@ -29,6 +29,10 @@ class _FakeCursor:
     def fetchone(self):
         if "current_database()" in getattr(self, "last_sql", ""):
             return {"database_name": "test_db", "schema_name": "public"}
+        if "to_regclass" in getattr(self, "last_sql", ""):
+            return {"table_name": "recommendation_lifecycle_events"}
+        if "information_schema.tables" in getattr(self, "last_sql", ""):
+            return {"name": "recommendation_lifecycle_events"}
         return None
 
 
@@ -178,6 +182,16 @@ def test_init_and_verify_schema_script_fails_when_verification_fails(tmp_path, m
         lambda conn: (_ for _ in ()).throw(RuntimeError("missing required tables")),
     )
     assert init_and_verify_schema.main(["--db-path", str(tmp_path / "missing.db")]) == 1
+
+
+def test_debug_lifecycle_script_creates_and_verifies_sqlite(tmp_path, capsys):
+    from scripts.debug_lifecycle_table_creation import main
+
+    assert main(["--db-path", str(tmp_path / "lifecycle.db")]) == 0
+    output = capsys.readouterr().out
+    assert "LIFECYCLE DDL BEFORE COMMIT" in output
+    assert "LIFECYCLE DDL AFTER COMMIT" in output
+    assert "to_regclass=recommendation_lifecycle_events" in output
 
 
 def test_worker_schema_startup_uses_full_initializer():

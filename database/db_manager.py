@@ -86,8 +86,41 @@ def verify_required_schema(conn: DB) -> dict:
     return diagnostic
 
 
+def lifecycle_table_diagnostic(conn: DB) -> dict:
+    """Inspect lifecycle table catalogs and transaction state safely."""
+    dialect = getattr(conn, "dialect", "sqlite")
+    if dialect == "postgresql":
+        regclass = conn.execute(
+            "SELECT to_regclass('public.recommendation_lifecycle_events') AS table_name"
+        ).fetchone()
+        info = conn.execute(
+            "SELECT table_name AS name FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'recommendation_lifecycle_events'"
+        ).fetchone()
+        table_name = regclass["table_name"] if regclass else None
+        info_present = info is not None
+        raw = getattr(conn, "_conn", None)
+        transaction_status = getattr(raw, "status", None)
+    else:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'recommendation_lifecycle_events'"
+        ).fetchone()
+        table_name = row["name"] if isinstance(row, dict) else row[0] if row else None
+        info_present = row is not None
+        transaction_status = "sqlite"
+    return {
+        "dialect": dialect,
+        "to_regclass": table_name,
+        "information_schema_present": info_present,
+        "transaction_status": transaction_status,
+        "present": table_name == "recommendation_lifecycle_events" and info_present,
+    }
+
+
 def create_recommendation_lifecycle_table(conn: DB) -> None:
     """Create the Phase 19A lifecycle table and indexes exactly once per init."""
+    logger.info("LIFECYCLE DDL START table=recommendation_lifecycle_events")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS recommendation_lifecycle_events (
             lifecycle_event_id       TEXT PRIMARY KEY,
@@ -152,6 +185,19 @@ def create_recommendation_lifecycle_table(conn: DB) -> None:
         "CREATE INDEX IF NOT EXISTS idx_rle_run "
         "ON recommendation_lifecycle_events(run_id)"
     )
+    state = lifecycle_table_diagnostic(conn)
+    logger.info(
+        "LIFECYCLE DDL EXECUTED table=recommendation_lifecycle_events "
+        "to_regclass=%s information_schema=%s transaction_status=%s",
+        state["to_regclass"], state["information_schema_present"],
+        state["transaction_status"],
+    )
+    if not state["present"]:
+        raise RuntimeError(
+            "LIFECYCLE DDL EXECUTED but catalog verification failed: "
+            f"to_regclass={state['to_regclass']} "
+            f"information_schema={state['information_schema_present']}"
+        )
 
 # Column names added by schema migrations — for safe ALTER TABLE.
 _ODDS_MIGRATIONS = [
@@ -197,26 +243,7 @@ def _safe_migrate_odds(conn) -> None:
     Safe to run against both new and existing databases.
     Never drops or modifies existing data.
     """
-    dialect = getattr(conn, "dialect", "sqlite")
-    if dialect == "postgresql":
-        for col_name, col_def in _ODDS_MIGRATIONS:
-            pg_type = col_def.split("DEFAULT")[0].strip() if "DEFAULT" in col_def else col_def
-            pg_type = pg_type.replace("TEXT", "TEXT").replace("INTEGER", "INTEGER").replace("REAL", "REAL")
-            try:
-                conn.execute(f"ALTER TABLE odds ADD COLUMN {col_name} {col_def}")
-            except Exception:
-                pass  # Column already exists
-    else:
-        cursor = conn.execute("PRAGMA table_info(odds)")
-        rows = cursor.fetchall()
-        if rows and isinstance(rows[0], dict):
-            existing = {row["name"] for row in rows}
-        else:
-            existing = {row[1] for row in rows}
-        for col_name, col_def in _ODDS_MIGRATIONS:
-            if col_name not in existing:
-                conn.execute(f"ALTER TABLE odds ADD COLUMN {col_name} {col_def}")
-                logger.info("Added column '%s' to odds table", col_name)
+    _add_columns_if_missing(conn, "odds", _ODDS_MIGRATIONS)
 
 
 def _create_audit_table(conn: DB) -> None:
@@ -248,26 +275,32 @@ _PLAYER_PROP_MIGRATIONS = [
 ]
 
 
+def _existing_columns(conn: DB, table_name: str) -> set[str]:
+    """Return existing columns without issuing failing ALTER statements."""
+    if getattr(conn, "dialect", "sqlite") == "postgresql":
+        rows = conn.execute(
+            "SELECT column_name AS name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ?",
+            (table_name,),
+        ).fetchall()
+        return {row["name"] for row in rows}
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] if isinstance(row, dict) else row[1] for row in rows}
+
+
+def _add_columns_if_missing(conn: DB, table_name: str, migrations: list[tuple[str, str]]) -> None:
+    """Apply additive migrations without rolling back prior DDL on PostgreSQL."""
+    existing = _existing_columns(conn, table_name)
+    for col_name, col_def in migrations:
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}")
+            logger.info("Added column '%s' to %s table", col_name, table_name)
+            existing.add(col_name)
+
+
 def _safe_migrate_player_prop(conn) -> None:
     """Add columns to ``player_prop_odds`` if they don't exist yet."""
-    dialect = getattr(conn, "dialect", "sqlite")
-    if dialect == "postgresql":
-        for col_name, col_def in _PLAYER_PROP_MIGRATIONS:
-            try:
-                conn.execute(f"ALTER TABLE player_prop_odds ADD COLUMN {col_name} {col_def}")
-            except Exception:
-                pass  # Column already exists
-    else:
-        cursor = conn.execute("PRAGMA table_info(player_prop_odds)")
-        rows = cursor.fetchall()
-        if rows and isinstance(rows[0], dict):
-            existing = {row["name"] for row in rows}
-        else:
-            existing = {row[1] for row in rows}
-        for col_name, col_def in _PLAYER_PROP_MIGRATIONS:
-            if col_name not in existing:
-                conn.execute(f"ALTER TABLE player_prop_odds ADD COLUMN {col_name} {col_def}")
-                logger.info("Added column '%s' to player_prop_odds table", col_name)
+    _add_columns_if_missing(conn, "player_prop_odds", _PLAYER_PROP_MIGRATIONS)
 
 
 # Columns that must exist on official_picks for the dashboard/analytics to run.
@@ -641,34 +674,22 @@ def init_db(db_path: str | None = None) -> None:
     _create_player_prop_audit_table(conn)
 
     # Phase 13: Add matchup, event_status columns
-    for col, typedef in [
+    _add_columns_if_missing(conn, "historical_recommendations", [
         ("matchup", "TEXT"),
         ("event_status", "TEXT"),
-    ]:
-        try:
-            conn.execute(
-                f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
-            )
-        except Exception:
-            pass  # column already exists
+    ])
 
     # Phase 14: Add model score columns
-    for col, typedef in [
+    _add_columns_if_missing(conn, "historical_recommendations", [
         ("model_score", "REAL"),
         ("score_version", "TEXT DEFAULT 'model_score_v1'"),
         ("score_components", "TEXT"),
         ("score_cap", "REAL"),
         ("score_explanation", "TEXT"),
-    ]:
-        try:
-            conn.execute(
-                f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
-            )
-        except Exception:
-            pass  # column already exists
+    ])
 
     # Phase 15: Add official pick qualification columns
-    for col, typedef in [
+    _add_columns_if_missing(conn, "historical_recommendations", [
         ("recommendation_tier", "TEXT DEFAULT 'RESEARCH_ONLY'"),
         ("qualification_passed", "INTEGER DEFAULT 0"),
         ("qualification_reasons", "TEXT DEFAULT ''"),
@@ -679,41 +700,23 @@ def init_db(db_path: str | None = None) -> None:
         ("applicable_edge_threshold", "REAL DEFAULT 0.0"),
         ("model_score_threshold", "REAL DEFAULT 8.0"),
         ("qualification_rules_version", "TEXT DEFAULT ''"),
-    ]:
-        try:
-            conn.execute(
-                f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
-            )
-        except Exception:
-            pass  # column already exists
+    ])
 
     # Phase 16: Add qualification_timestamp, official_rank columns
-    for col, typedef in [
+    _add_columns_if_missing(conn, "historical_recommendations", [
         ("qualification_timestamp", "TEXT DEFAULT ''"),
         ("official_rank", "INTEGER"),
-    ]:
-        try:
-            conn.execute(
-                f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
-            )
-        except Exception:
-            pass  # column already exists
+    ])
 
     # Phase 16A: Add score diagnostics columns
-    for col, typedef in [
+    _add_columns_if_missing(conn, "historical_recommendations", [
         ("points_to_7", "REAL DEFAULT 0.0"),
         ("price_outlier_capped", "INTEGER DEFAULT 0"),
         ("true_ev_unavailable", "INTEGER DEFAULT 0"),
         ("one_sided_market", "INTEGER DEFAULT 0"),
         ("insufficient_books_failure", "INTEGER DEFAULT 0"),
         ("market_quality_score", "REAL DEFAULT 0.0"),
-    ]:
-        try:
-            conn.execute(
-                f"ALTER TABLE historical_recommendations ADD COLUMN {col} {typedef}"
-            )
-        except Exception:
-            pass  # column already exists
+    ])
 
     # Phase 16: Official picks frozen snapshot table
     conn.execute("""
@@ -741,11 +744,7 @@ def init_db(db_path: str | None = None) -> None:
     )
 
     # Phase 17C: Variable staking - add risk_units to official_picks
-    for col, typedef in [("risk_units", "REAL")]:
-        try:
-            conn.execute(f"ALTER TABLE official_picks ADD COLUMN {col} {typedef}")
-        except Exception:
-            pass
+    _add_columns_if_missing(conn, "official_picks", [("risk_units", "REAL")])
 
     # Phase 16: Odds observations (append-only)
     conn.execute("""

@@ -2,6 +2,24 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-05 — Phase 19A lifecycle transaction rollback fix
+
+### What was done
+
+1. Traced the production control flow: `create_recommendation_lifecycle_table()` ran and returned, but `_safe_migrate_odds()`, `_safe_migrate_player_prop()`, and later additive migration loops attempted `ALTER TABLE ADD COLUMN` on already-existing PostgreSQL columns. `DB.execute()` rolled back on those expected errors; the migration handlers swallowed the errors, erasing the lifecycle DDL before final verification.
+2. Replaced expected-error migration handling with catalog-based `_existing_columns()` / `_add_columns_if_missing()` logic. Existing columns are skipped without issuing failing DDL; genuinely missing columns are added and real errors propagate.
+3. Added `lifecycle_table_diagnostic()` with PostgreSQL `to_regclass`, `information_schema`, and transaction-state logging immediately after lifecycle DDL. Added `scripts/debug_lifecycle_table_creation.py` to run the helper, verify before commit, commit, and verify after commit.
+4. Added tests for actual lifecycle SQL/catalog behavior, rollback and stop-on-error, helper invocation, repeated initialization, and debug-script verification. The four Pinnacle files were not modified, staged, or committed.
+
+### Verification
+
+- Targeted lifecycle/startup/schema tests: **68 passed**.
+- Full suite: **1447 passed, 1 failed**. The failure is pre-existing and unrelated: the market registry test expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit only the lifecycle transaction/migration fix, diagnostics/scripts, tests, and memory documentation. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-05 — Phase 19A lifecycle creation control-flow fix
 
 ### What was done
