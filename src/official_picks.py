@@ -222,14 +222,24 @@ def classify_recommendation(
     pinnacle_approved = rec.get("pinnacle_approved")
     if market_form == "ou" and getattr(cfg, "REQUIRE_PINNACLE_FOR_OFFICIAL", False):
         if not pinnacle_approved:
-            disq.append("Pinnacle approval required for official status")
-            logger.warning(
-                "OFFICIAL_BLOCKED_REQUIRE_PINNACLE player=%s market=%s line=%s "
-                "reason=%s",
-                rec.get("player_id", "?"), rec.get("market_type", "?"),
-                rec.get("line", "?"),
-                "missing_pinnacle" if pinnacle_approved is None else "pinnacle_threshold_failed",
+            # LOO fallback is allowed only when no Pinnacle entry exists at
+            # the exact market. A present but one-sided/mismatched Pinnacle
+            # record remains blocked rather than being treated as unsupported.
+            loo_fallback = (
+                rec.get("pinnacle_found") is False
+                and getattr(cfg, "PINNACLE_FALLBACK_TO_MARKET_MEDIAN", True)
             )
+            if not loo_fallback:
+                disq.append("Pinnacle approval required for official status")
+                logger.warning(
+                    "OFFICIAL_BLOCKED_REQUIRE_PINNACLE player=%s market=%s line=%s "
+                    "reason=%s",
+                    rec.get("player_id", "?"), rec.get("market_type", "?"),
+                    rec.get("line", "?"),
+                    "missing_pinnacle" if pinnacle_approved is None else "pinnacle_threshold_failed",
+                )
+            else:
+                reasons.append("Qualified via exact-market LOO fallback; Pinnacle unavailable")
 
     # ── Gate 10: Valid identity fields ──────────────────────────
 
@@ -304,7 +314,7 @@ def classify_recommendation(
                 f"{n_books} books, {freshness} data — "
                 f"does not count toward official record."
             )
-            disq = []  # clear official disqualifications for display
+            # Preserve official disqualification reasons for auditability.
         else:
             tier = TIER_RESEARCH
             reasons.append("Not official: " + "; ".join(disq[:5]))
@@ -313,7 +323,9 @@ def classify_recommendation(
         tier=tier,
         passed=passed,
         reasons=reasons,
-        disqualification_reasons=disq if tier != TIER_DISCOVERY else discovery_disq,
+        # Keep the official-gate failures for Discovery rows so production
+        # audits can distinguish Pinnacle blocks from other failures.
+        disqualification_reasons=disq if tier != TIER_OFFICIAL else [],
         contributing_book_count=contributing_book_count,
         contributing_books=contributing_books_str,
         applicable_edge_metric=applicable_metric if passed else "",
@@ -381,6 +393,12 @@ def rank_and_select_official_picks(
         freshness_penalty = 0 if (rec.get("freshness_status") or "").upper() == "FRESH" else 1
         return (-ms, -edge, -books, freshness_penalty)
 
+    if any("recommendation_tier" in rec for rec in qualified_recs):
+        qualified_recs = [
+            rec for rec in qualified_recs
+            if rec.get("recommendation_tier") == TIER_OFFICIAL
+            and rec.get("qualification_passed", 0)
+        ]
     candidates = sorted(qualified_recs, key=sort_key)
 
     for rec in candidates:

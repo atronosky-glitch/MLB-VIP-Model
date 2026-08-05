@@ -2,6 +2,24 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-05 — Exact-market LOO fallback for unavailable Pinnacle markets
+
+### What was done
+
+1. Added a bounded official fallback: O/U recommendations use the existing LOO market-median consensus for Official eligibility only when `pinnacle_found is False` and the existing `PINNACLE_FALLBACK_TO_MARKET_MEDIAN` setting is enabled.
+2. Kept one-sided, line-mismatched, and Pinnacle-threshold-failed markets blocked. Y/N markets remain unaffected because they do not have a Pinnacle counterpart.
+3. Preserved official-gate rejection reasons for Discovery rows and filtered official selection to persisted `OFFICIAL_TRACKED` rows with `qualification_passed`, preventing Discovery recommendations from being frozen as Official Picks.
+4. Added tests for fallback qualification, strict Pinnacle cases, and tier-safe selection. The existing read-only production gate diagnostic remains available; the four Pinnacle files were not modified, staged, or committed.
+
+### Verification
+
+- Targeted qualification/Pinnacle/pipeline tests: **224 passed**.
+- Full suite: **1450 passed, 1 failed**. The failure is pre-existing and unrelated: the market registry test expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit fallback gate/selection safety, tests, diagnostics, and memory documentation only. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-05 — Phase 19A lifecycle transaction rollback fix
 
 ### What was done

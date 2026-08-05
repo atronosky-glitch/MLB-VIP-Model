@@ -667,6 +667,7 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     "pinnacle_approved": opp.get("pinnacle_approved"),
                     "is_official": opp.get("is_official", False),
                     "pinnacle_reference_used": opp.get("pinnacle_reference_used"),
+                    "pinnacle_found": opp.get("pinnacle_found"),
                     "pinnacle_book": opp.get("pinnacle_book"),
                     "pinnacle_line": opp.get("pinnacle_line"),
                     "pinnacle_over_price": opp.get("pinnacle_over_price"),

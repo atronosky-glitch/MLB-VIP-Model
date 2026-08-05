@@ -190,6 +190,39 @@ class TestPinnacleOfficialGate:
         finally:
             cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
 
+    def test_no_pinnacle_uses_explicit_loo_fallback(self):
+        old_require = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        old_fallback = cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN = True
+        try:
+            q = classify_recommendation(self._strong_rec(
+                pinnacle_found=False, pinnacle_approved=None,
+            ))
+            assert q.tier == TIER_OFFICIAL
+            assert q.passed is True
+            assert any("LOO fallback" in reason for reason in q.reasons)
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = old_require
+            cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN = old_fallback
+
+    def test_one_sided_or_mismatched_pinnacle_still_blocks(self):
+        old_require = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        old_fallback = cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN = True
+        try:
+            q = classify_recommendation(self._strong_rec(
+                pinnacle_found=True, pinnacle_reference_used=False,
+                pinnacle_approved=None,
+            ))
+            assert q.tier == TIER_DISCOVERY
+            assert q.passed is False
+            assert any("Pinnacle approval required" in reason for reason in q.disqualification_reasons)
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = old_require
+            cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN = old_fallback
+
     def test_research_reports_pinnacle_reason(self):
         orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
         cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
@@ -283,6 +316,27 @@ class TestEdgeMetricTracking:
         q = classify_recommendation(rec)
         assert q.applicable_edge_metric == "yn_implied_prob_adv"
         assert q.applicable_edge_threshold == 3.0
+
+
+class TestOfficialSelectionTierSafety:
+    def test_discovery_rows_are_not_selected_as_official(self):
+        from src.official_picks import rank_and_select_official_picks
+
+        rows = [
+            _make_rec(
+                recommendation_id="official",
+                recommendation_tier=TIER_OFFICIAL,
+                qualification_passed=1,
+            ),
+            _make_rec(
+                recommendation_id="discovery",
+                recommendation_tier=TIER_DISCOVERY,
+                qualification_passed=0,
+                model_score=10.0,
+            ),
+        ]
+        selected = rank_and_select_official_picks(rows)
+        assert [row["recommendation_id"] for row in selected] == ["official"]
 
 
 class TestCustomConfig:
