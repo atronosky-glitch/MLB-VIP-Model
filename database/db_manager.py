@@ -30,6 +30,61 @@ if _DB_PATH_ENV:
 else:
     DB_PATH = Path(__file__).resolve().parent / "mlb_model.db"
 
+REQUIRED_SCHEMA_TABLES = frozenset({
+    "recommendation_lifecycle_events",
+    "scan_runs",
+    "games",
+    "odds",
+    "historical_recommendations",
+    "closing_prices",
+    "market_settlements",
+})
+
+
+def schema_diagnostic(conn: DB) -> dict:
+    """Return safe dialect/database/schema/table diagnostics."""
+    dialect = getattr(conn, "dialect", "sqlite")
+    if dialect == "postgresql":
+        identity = conn.execute(
+            "SELECT current_database() AS database_name, current_schema() AS schema_name"
+        ).fetchone() or {}
+        rows = conn.execute(
+            "SELECT table_name AS name FROM information_schema.tables "
+            "WHERE table_schema = current_schema()"
+        ).fetchall()
+        database_name = identity.get("database_name") if isinstance(identity, dict) else None
+        schema_name = identity.get("schema_name") if isinstance(identity, dict) else None
+    else:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        database_name = str(DB_PATH)
+        schema_name = "main"
+    present = sorted({row["name"] if isinstance(row, dict) else row[0] for row in rows})
+    return {
+        "dialect": dialect,
+        "database_name": database_name,
+        "schema_name": schema_name,
+        "required_tables": sorted(REQUIRED_SCHEMA_TABLES),
+        "present_tables": present,
+        "missing_tables": sorted(REQUIRED_SCHEMA_TABLES - set(present)),
+    }
+
+
+def verify_required_schema(conn: DB) -> dict:
+    """Verify all required tables exist, raising a safe actionable error."""
+    diagnostic = schema_diagnostic(conn)
+    missing = diagnostic["missing_tables"]
+    if missing:
+        raise RuntimeError(
+            "Required database schema tables are missing: "
+            f"{', '.join(missing)} "
+            f"(dialect={diagnostic['dialect']}, "
+            f"database={diagnostic['database_name']}, "
+            f"schema={diagnostic['schema_name']})"
+        )
+    return diagnostic
+
 # Column names added by schema migrations — for safe ALTER TABLE.
 _ODDS_MIGRATIONS = [
     ("odd_id", "TEXT DEFAULT ''"),
@@ -806,9 +861,20 @@ def init_db(db_path: str | None = None) -> None:
         "CREATE INDEX IF NOT EXISTS idx_lr_category ON learning_recommendations(category)"
     )
 
-    conn.commit()
+    try:
+        diagnostic = verify_required_schema(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        logger.exception("Database schema initialization failed")
+        raise
     conn.close()
-    logger.info("Database initialised at %s", DB_PATH)
+    logger.info(
+        "Database schema initialized: dialect=%s database=%s schema=%s required_tables=%d",
+        diagnostic["dialect"], diagnostic["database_name"],
+        diagnostic["schema_name"], len(diagnostic["required_tables"]),
+    )
 
 
 def save_game(conn: DB, game: dict) -> None:

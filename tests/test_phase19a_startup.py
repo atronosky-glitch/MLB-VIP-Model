@@ -16,11 +16,19 @@ class _FakeCursor:
 
     def execute(self, sql, params=()):
         self.statements.append(sql)
+        self.last_sql = sql
 
     def fetchall(self):
+        if "information_schema.tables" in getattr(self, "last_sql", ""):
+            return [{"name": name} for name in (
+                "recommendation_lifecycle_events", "scan_runs", "games", "odds",
+                "historical_recommendations", "closing_prices", "market_settlements",
+            )]
         return []
 
     def fetchone(self):
+        if "current_database()" in getattr(self, "last_sql", ""):
+            return {"database_name": "test_db", "schema_name": "public"}
         return None
 
 
@@ -64,6 +72,13 @@ def test_init_db_creates_complete_schema_and_preserves_sqlite_data(tmp_path):
     conn.close()
 
 
+def test_init_db_calls_required_schema_verification(tmp_path):
+    import database.db_manager as dbm
+
+    with patch.object(dbm, "verify_required_schema", wraps=dbm.verify_required_schema) as verify:
+        dbm.init_db(str(tmp_path / "verified.db"))
+    verify.assert_called_once()
+
 def test_init_db_generates_postgresql_compatible_full_schema():
     import database.db_manager as dbm
     from database.connection import DB
@@ -77,6 +92,79 @@ def test_init_db_generates_postgresql_compatible_full_schema():
     assert "CREATE TABLE IF NOT EXISTS games" in statements
     assert "DROP TABLE" not in statements.upper()
     assert "AUTOINCREMENT" not in statements.upper()
+
+
+def test_postgresql_script_failure_rolls_back_and_stops():
+    from database.connection import DB
+
+    class FailingRaw(_FakePostgresRaw):
+        def __init__(self):
+            super().__init__()
+            self.rollback_count = 0
+
+        def cursor(self):
+            raw = self
+
+            class Cursor(_FakeCursor):
+                def execute(self, sql, params=()):
+                    self.statements.append(sql)
+                    if "FAIL_DDL" in sql:
+                        raise RuntimeError("ddl failed")
+
+            return Cursor(raw.statements)
+
+        def rollback(self):
+            self.rollback_count += 1
+
+    raw = FailingRaw()
+    conn = DB(raw, dialect="postgresql")
+    try:
+        conn.executescript("CREATE TABLE ok (id INTEGER); CREATE TABLE FAIL_DDL (id INTEGER); CREATE TABLE never (id INTEGER);")
+    except RuntimeError as exc:
+        assert "statement 2" in str(exc)
+    else:
+        raise AssertionError("Expected schema DDL failure")
+    assert raw.rollback_count == 1
+    assert not any("never" in statement for statement in raw.statements)
+
+
+def test_required_schema_verification_names_missing_tables(tmp_path):
+    import database.db_manager as dbm
+
+    conn = sqlite3.connect(tmp_path / "partial.db")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE games (event_id TEXT)")
+    conn.commit()
+    try:
+        try:
+            dbm.verify_required_schema(conn)
+        except RuntimeError as exc:
+            assert "recommendation_lifecycle_events" in str(exc)
+            assert "market_settlements" in str(exc)
+        else:
+            raise AssertionError("Expected missing-schema failure")
+    finally:
+        conn.close()
+
+
+def test_init_and_verify_schema_script_supports_sqlite(tmp_path, capsys):
+    from scripts.init_and_verify_schema import main
+
+    db_path = tmp_path / "script.db"
+    assert main(["--db-path", str(db_path)]) == 0
+    assert "SCHEMA VERIFIED dialect=sqlite" in capsys.readouterr().out
+
+
+def test_init_and_verify_schema_script_fails_when_verification_fails(tmp_path, monkeypatch):
+    from scripts import init_and_verify_schema
+
+    monkeypatch.setattr(init_and_verify_schema, "init_db", lambda db_path: None)
+    monkeypatch.setattr(
+        init_and_verify_schema,
+        "verify_required_schema",
+        lambda conn: (_ for _ in ()).throw(RuntimeError("missing required tables")),
+    )
+    assert init_and_verify_schema.main(["--db-path", str(tmp_path / "missing.db")]) == 1
 
 
 def test_worker_schema_startup_uses_full_initializer():

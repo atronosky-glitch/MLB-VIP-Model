@@ -243,15 +243,19 @@ class DB:
             self._conn.executescript(sql_script)
         else:
             # Split on semicolons and execute each statement
-            for statement in sql_script.split(";"):
+            for statement_number, statement in enumerate(sql_script.split(";"), 1):
                 statement = statement.strip()
                 if statement:
                     converted = _convert_sql(statement, "postgresql")
                     try:
                         cursor = self._conn.cursor()
                         cursor.execute(converted)
-                    except Exception:
+                    except Exception as exc:
                         self._conn.rollback()
+                        raise RuntimeError(
+                            f"PostgreSQL schema statement {statement_number} failed: "
+                            f"{exc}; SQL={statement[:240]}"
+                        ) from exc
 
 
     def executemany(self, sql: str, params_list: list[tuple]) -> DBResult:

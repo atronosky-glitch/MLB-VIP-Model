@@ -2,6 +2,24 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-05 — Production schema initialization fail-fast hardening
+
+### What was done
+
+1. Fixed `database.connection.DB.executescript()` for PostgreSQL: DDL exceptions now rollback and raise immediately instead of being swallowed while subsequent statements run in an aborted transaction.
+2. Added `REQUIRED_SCHEMA_TABLES`, `schema_diagnostic()`, and `verify_required_schema()` in `database.db_manager`. `init_db()` verifies all required tables before commit, names missing tables in exceptions, and logs only safe dialect/database/schema metadata.
+3. Added read-only-safe operational script `scripts/init_and_verify_schema.py` to initialize the complete idempotent schema and verify it using `information_schema` through the shared abstraction on PostgreSQL or `sqlite_master` on SQLite.
+4. Added tests for helper invocation, PostgreSQL-like schema generation, rollback/stop-on-DDL-failure, missing-table failures, repeated SQLite initialization, and script exit behavior. The four Pinnacle files were not modified, staged, or committed.
+
+### Verification
+
+- Targeted startup/schema tests: **66 passed**.
+- Full suite: **1445 passed, 1 failed**. The failure is pre-existing and unrelated: the market registry test expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit schema execution/verification, the init/verify script, tests, and memory documentation only. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-04 — Phase 19A production schema startup initialization
 
 ### What was done
