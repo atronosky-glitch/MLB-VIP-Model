@@ -2,6 +2,24 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-04 — Phase 19A production schema startup initialization
+
+### What was done
+
+1. Confirmed `database.db_manager.init_db()` is the complete current schema initializer and includes `recommendation_lifecycle_events`; it does not drop existing tables or data.
+2. Added an optional SQLite path to `init_db()` while preserving `DATABASE_URL` PostgreSQL selection, then wired full initialization into worker persistent/one-shot/specific-job startup, Streamlit dashboard startup, and `run_pipeline()` before database activity.
+3. Schema initialization failures are logged clearly and fail fast. Existing dashboard-only `official_picks` migration remains after the full initializer for compatibility.
+4. Added fresh SQLite persistence/idempotency tests, PostgreSQL-like SQL generation tests, worker startup tests, and source-path checks. The four Pinnacle files were not modified, staged, or committed.
+
+### Verification
+
+- Startup/lifecycle/dashboard/PostgreSQL targeted tests: **192 passed**.
+- Full suite: **1440 passed, 1 failed**. The failure is pre-existing and unrelated: the market registry test expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Commit scope
+
+Commit startup initialization, regression tests, and project-memory documentation only. Do not push. Preserve the four Pinnacle files as uncommitted work.
+
 ## Session: 2026-08-04 — Phase 19A production verification
 
 ### What was done

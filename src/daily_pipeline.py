@@ -1137,6 +1137,18 @@ def run_pipeline(config: PipelineConfig) -> int:
         if not _stage_validate_config(config, state):
             return EXIT_CONFIG_FAILURE
 
+        # Initialize the complete current schema before creating runs or
+        # writing lifecycle evidence. CREATE/ALTER operations are idempotent.
+        from database.db_manager import init_db
+        try:
+            init_db()
+        except Exception as exc:
+            state.errors.append(f"Database schema initialization failed: {exc}")
+            state.status = "DB_FAILURE"
+            state.n_errors += 1
+            logger.exception("Database schema initialization failed")
+            return EXIT_DB_FAILURE
+
         # Stage 2: Create run
         _stage_create_run(config, state)
 

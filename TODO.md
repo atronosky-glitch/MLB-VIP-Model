@@ -87,6 +87,7 @@
 - [x] Phase 19A immutable lifecycle and CLV capture — append-only recommendation lifecycle events, creation/line snapshots, pregame/final closing snapshots, settlement/grading events, Pinnacle evidence, provenance, idempotent event keys, and PostgreSQL/SQLite support. Targeted tests: **234 passed**. Full suite: **1432 passed, 1 pre-existing market-count failure**.
 - [x] Phase 19A review hardening — lifecycle closing evidence explicitly records same-line/line-changed/no-close state and CLV availability; probability CLV is canonical and American-odds subtraction is diagnostic only.
 - [x] Phase 19A production verification — read-only PostgreSQL/SQLite verifier reports lifecycle schema, event counts, recent events, duplicate keys, availability states, line moves, orphan IDs, and CLV integrity; tests cover clean, missing-schema, and corrupt-data exits.
+- [x] Phase 19A production schema startup initialization — full `init_db()` now runs before worker activity, dashboard queries, and pipeline writes; PostgreSQL/SQLite startup is idempotent and fail-fast on schema errors. Startup tests: **192 passed**. Full suite: **1440 passed, 1 pre-existing market-count failure**.
 - [ ] Phase 19 implementation — implement the approved adaptive-learning evidence, rolling metrics, calibration, Pinnacle accuracy, statistical gates, and human approval workflow from `docs/PHASE19_ADAPTIVE_LEARNING_ARCHITECTURE.md`; no automatic threshold mutation or betting behavior.
 
 ## Next feature stage

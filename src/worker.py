@@ -228,6 +228,17 @@ def _run_morning_scan(config) -> dict:
     return {"status": "success" if exit_code == 0 else "failed", "exit_code": exit_code}
 
 
+def _initialize_worker_schema(config) -> None:
+    """Initialize the complete schema before any worker database activity."""
+    from database.db_manager import init_db
+
+    try:
+        init_db(config.database_path)
+    except Exception as exc:
+        logger.exception("Worker database schema initialization failed")
+        raise RuntimeError("Worker database schema initialization failed") from exc
+
+
 def _run_pregame_checks(conn: DB, config) -> dict:
     """Schedule pregame checks for upcoming games."""
     from src.automation import schedule_pregame_checks
@@ -505,6 +516,7 @@ def _check_and_schedule_morning_run(conn: DB) -> None:
 def run_worker_persistent(config) -> None:
     """Run the worker as a persistent background process."""
     logger.info("Starting persistent worker (pid=%d, tz=%s)", os.getpid(), TZ_NAME)
+    _initialize_worker_schema(config)
 
     conn = get_connection(config.database_path)
     if get_connection_dialect_name(conn) == "sqlite":
@@ -600,6 +612,7 @@ def run_worker_persistent(config) -> None:
 def run_worker_once(config) -> None:
     """Run the worker once (for cron-style execution)."""
     logger.info("Running worker once (one-shot mode)")
+    _initialize_worker_schema(config)
 
     conn = get_connection(config.database_path)
     if get_connection_dialect_name(conn) == "sqlite":
@@ -627,6 +640,7 @@ def run_worker_once(config) -> None:
 def run_specific_job(job_type: str, config) -> None:
     """Run a single specific job type."""
     logger.info("Running specific job: %s", job_type)
+    _initialize_worker_schema(config)
 
     conn = get_connection(config.database_path)
     if get_connection_dialect_name(conn) == "sqlite":

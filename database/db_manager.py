@@ -227,9 +227,9 @@ def _create_player_prop_audit_table(conn: DB) -> None:
     """)
 
 
-def init_db() -> None:
+def init_db(db_path: str | None = None) -> None:
     """Create all tables if they don't exist yet.  Runs schema migrations."""
-    conn = get_connection()
+    conn = get_connection(db_path) if db_path else get_connection()
     conn.executescript("""
         -- Games / events
         CREATE TABLE IF NOT EXISTS games (
