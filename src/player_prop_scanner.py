@@ -263,6 +263,13 @@ def _accepted_market_types(resolved: ResolvedMarkets) -> set[str]:
 # Core scan
 # ==================================================================
 
+def _group_side(side: str, market_type: str) -> str:
+    """Map registry-defined game sides into the generic two-sided slots."""
+    market = cfg.get_market_by_ou_type(market_type)
+    mapping = getattr(market, "internal_side_map", None) if market else None
+    return (mapping or {}).get(side, side)
+
+
 def run_scan(
     mode: str = "actionable",
     min_ev: float | None = None,
@@ -424,16 +431,20 @@ def run_scan(
                                   "player_id": row["player_id"],
                                   "player_name": row["player_name"],
                                   "event_id": row["event_id"],
-                                  "market_type": market_type,
-                                  "observation_times": []}
+                                   "market_type": market_type,
+                                   "observation_times": [],
+                                   "display_sides": {}}
             if row.get("observation_time"):
                 ou_groups[key]["observation_times"].append(row["observation_time"])
-            side = row["side"]
+            source_side = row["side"]
+            side = _group_side(source_side, market_type)
+            ou_groups[key]["display_sides"][side.lower()] = source_side
             ou_groups[key][side.lower()][row["sportsbook"]] = {
                 "price": row["price"],
                 "decimal_odds": row["decimal_odds"],
                 "line": row["line"],
                 "validation_status": row["validation_status"],
+                "display_side": source_side,
             }
 
     # Analyze each O/U group
@@ -522,7 +533,9 @@ def run_scan(
                 "player_name": gdata["player_name"],
                 "market_type": gdata["market_type"],
                 "line": gdata["line"],
-                "side": book_entry["side"],
+                "side": gdata.get("display_sides", {}).get(
+                    book_entry["side"].lower(), book_entry["side"]
+                ),
                 "sportsbook": book_entry["sportsbook"],
                 "american_odds": book_entry["american_odds"],
                 "decimal_odds": book_entry["decimal_odds"],
