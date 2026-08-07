@@ -718,6 +718,28 @@ def init_db(db_path: str | None = None) -> None:
         ("market_quality_score", "REAL DEFAULT 0.0"),
     ])
 
+    # Phase 18/19: Persist Pinnacle and official-gate evidence for audits.
+    _add_columns_if_missing(conn, "historical_recommendations", [
+        ("pinnacle_found", "INTEGER"),
+        ("pinnacle_reference_used", "INTEGER"),
+        ("pinnacle_approved", "INTEGER"),
+        ("pinnacle_book", "TEXT"),
+        ("pinnacle_line", "REAL"),
+        ("pinnacle_over_price", "INTEGER"),
+        ("pinnacle_under_price", "INTEGER"),
+        ("pinnacle_fair_prob", "REAL"),
+        ("pinnacle_ev", "REAL"),
+        ("pinnacle_prob_edge", "REAL"),
+        ("is_official", "INTEGER DEFAULT 0"),
+        ("confidence_score", "REAL"),
+        ("reliable_ev_checked", "INTEGER DEFAULT 0"),
+        ("reliable_ev", "INTEGER"),
+        ("reliable_ev_status", "TEXT"),
+        ("reliable_ev_reasons", "TEXT"),
+        ("reliable_ev_calculated_pct", "REAL"),
+        ("reliable_ev_version", "TEXT"),
+    ])
+
     # Phase 16: Official picks frozen snapshot table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS official_picks (
@@ -1405,6 +1427,40 @@ def record_grading_completed(
     )
 
 
+def _persist_recommendation_evidence(conn: DB, recommendation_id: str, rec: dict) -> None:
+    """Persist optional score/Pinnacle fields without breaking legacy schemas."""
+    fields = {
+        "market_quality_score": rec.get("market_quality_score"),
+        "pinnacle_found": rec.get("pinnacle_found"),
+        "pinnacle_reference_used": rec.get("pinnacle_reference_used"),
+        "pinnacle_approved": rec.get("pinnacle_approved"),
+        "pinnacle_book": rec.get("pinnacle_book"),
+        "pinnacle_line": rec.get("pinnacle_line"),
+        "pinnacle_over_price": rec.get("pinnacle_over_price"),
+        "pinnacle_under_price": rec.get("pinnacle_under_price"),
+        "pinnacle_fair_prob": rec.get("pinnacle_fair_prob"),
+        "pinnacle_ev": rec.get("pinnacle_ev"),
+        "pinnacle_prob_edge": rec.get("pinnacle_prob_edge"),
+        "is_official": 1 if rec.get("is_official") else 0,
+        "confidence_score": rec.get("confidence_score"),
+        "reliable_ev_checked": 1 if rec.get("reliable_ev_checked") else 0,
+        "reliable_ev": 1 if rec.get("reliable_ev") else 0,
+        "reliable_ev_status": rec.get("reliable_ev_status"),
+        "reliable_ev_reasons": "; ".join(rec.get("reliable_ev_reasons") or []),
+        "reliable_ev_calculated_pct": rec.get("reliable_ev_calculated_pct"),
+        "reliable_ev_version": rec.get("reliable_ev_version"),
+    }
+    existing = _existing_columns(conn, "historical_recommendations")
+    fields = {name: value for name, value in fields.items() if name in existing}
+    if not fields:
+        return
+    assignments = ", ".join(f"{name} = ?" for name in fields)
+    conn.execute(
+        f"UPDATE historical_recommendations SET {assignments} WHERE recommendation_id = ?",
+        [*fields.values(), recommendation_id],
+    )
+
+
 def save_recommendation(conn: DB, rec: dict) -> str | None:
     """Insert a recommendation snapshot. Idempotent via fingerprint UNIQUE.
 
@@ -1470,6 +1526,7 @@ def save_recommendation(conn: DB, rec: dict) -> str | None:
              rec.get("qualification_rules_version", ""),
              ),
         )
+        _persist_recommendation_evidence(conn, rec_id, rec)
         conn.commit()
         if cursor.rowcount == 0:
             existing = conn.execute(

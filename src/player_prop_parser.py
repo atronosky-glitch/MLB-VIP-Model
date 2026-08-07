@@ -53,6 +53,8 @@ _SIDE_MAP = {
     "under": SIDE_UNDER,
     "yes": SIDE_YES,
     "no": SIDE_NO,
+    "away": "AWAY",
+    "home": "HOME",
 }
 
 
@@ -123,6 +125,7 @@ def parse_player_props(event: dict) -> ParsedPlayerPropResult:
                 market_type=ou_match.market_type_ou,
                 odds_rows=odds_rows,
                 audit_rows=audit_rows,
+                mc=ou_match,
             )
             continue
 
@@ -162,9 +165,14 @@ def _process_entry(
     market_type: str,
     odds_rows: list[dict],
     audit_rows: list[dict],
+    game_mc=None,
 ) -> None:
     """Validate and append one price entry (main or alt line)."""
     captured_at = datetime.now(timezone.utc).isoformat()
+
+    # Game-level markets that have no numeric line (moneyline) skip the
+    # missing-line validation and use a sentinel group key.
+    allow_no_line = game_mc is not None and getattr(game_mc, "cli_name", "") == "moneyline"
 
     # Extract lastUpdatedAt from the API response per book entry
     last_updated_raw = book_data.get("lastUpdatedAt")
@@ -190,7 +198,7 @@ def _process_entry(
         issues.append(REASON_MISSING_SPORTSBOOK)
 
     line = _resolve_line(book_data)
-    if line is None:
+    if line is None and not allow_no_line:
         issues.append(REASON_MISSING_LINE)
 
     price_raw = book_data.get("odds")
@@ -205,9 +213,14 @@ def _process_entry(
         issues.append(REASON_UNAVAILABLE)
 
     # Build market group key
-    group_key = _build_group_key(event_id, player_id, line, is_alt_line, side, market_type) if line is not None else None
-    if not group_key:
-        issues.append(REASON_INVALID_GROUP_KEY)
+    if game_mc is not None:
+        group_key = _build_game_group_key(event_id, market_type, line, is_alt_line)
+        if not group_key:
+            issues.append(REASON_INVALID_GROUP_KEY)
+    else:
+        group_key = _build_group_key(event_id, player_id, line, is_alt_line, side, market_type) if line is not None else None
+        if not group_key:
+            issues.append(REASON_INVALID_GROUP_KEY)
 
     decimal_odds = None
     if price is not None:
@@ -275,17 +288,41 @@ def _process_ou_market(
     market_type: str,
     odds_rows: list[dict],
     audit_rows: list[dict],
+    mc=None,
 ) -> None:
-    """Process one O/U odd_id (both main and alt lines)."""
-    player_id = odd_data.get("playerID", "") or ""
-    player_names = (odd_data.get("playerNames", {}) or {})
-    player_name = (player_names.get("full", "") or player_names.get("short", "")
-                   or _extract_player_name_from_market(odd_data) or "")
+    """Process one O/U odd_id (both main and alt lines).
+
+    ``mc`` is the matching ``MarketConfig``.  Game-level markets (game
+    total, moneyline, run line) are handled here too: they have no
+    ``playerID``, so identity falls back to ``GAME`` plus the market
+    display name, and run-line spreads are abs-valued to pair away/home.
+    """
+    game_mc = mc if (mc is not None and getattr(mc, "game_level", False)) else None
+
+    if game_mc is not None:
+        player_id = "GAME"
+        player_name = game_mc.display_name
+    else:
+        player_id = odd_data.get("playerID", "") or ""
+        player_names = (odd_data.get("playerNames", {}) or {})
+        player_name = (player_names.get("full", "") or player_names.get("short", "")
+                       or _extract_player_name_from_market(odd_data) or "")
 
     side_raw = _extract_side(odd_id)
     side = _SIDE_MAP.get(side_raw, None)
 
     by_book = odd_data.get("byBookmaker", {}) or {}
+
+    # Game-level markets carry the home/away team name for their side.
+    entry_teams = teams
+    if game_mc is not None:
+        entry_teams = dict(teams)
+        entry_teams["team_id"] = "GAME"
+        entry_teams["team_name"] = (
+            teams.get("away_name", "") if side_raw == "away"
+            else teams.get("home_name", "") if side_raw == "home"
+            else ""
+        )
 
     # Main lines
     for book_name, book_data in by_book.items():
@@ -301,11 +338,12 @@ def _process_ou_market(
             player_name=player_name,
             side=side,
             side_raw=side_raw,
-            teams=teams,
+            teams=entry_teams,
             is_alt_line=0,
             market_type=market_type,
             odds_rows=odds_rows,
             audit_rows=audit_rows,
+            game_mc=game_mc,
         )
 
     # Alternate lines
@@ -328,11 +366,12 @@ def _process_ou_market(
                 player_name=player_name,
                 side=side,
                 side_raw=side_raw,
-                teams=teams,
+                teams=entry_teams,
                 is_alt_line=1,
                 market_type=market_type,
                 odds_rows=odds_rows,
                 audit_rows=audit_rows,
+                game_mc=game_mc,
             )
 
 
@@ -565,8 +604,15 @@ def _extract_side(odd_id: str) -> str | None:
 
 
 def _resolve_line(book_data: dict) -> float | None:
-    """Extract the over/under line."""
+    """Extract the over/under line (or the run-line spread, abs-valued)."""
     val = book_data.get("overUnder")
+    if val is None:
+        val = book_data.get("spread")
+        if val is not None:
+            try:
+                return abs(float(val))
+            except (ValueError, TypeError):
+                return None
     if val is None:
         return None
     try:
@@ -586,11 +632,21 @@ def _parse_price(price_raw) -> int | None:
 def _resolve_teams(event: dict) -> dict:
     """Resolve team info from the event."""
     teams = event.get("teams", {}) or {}
+
+    def _name(side: str) -> str:
+        t = teams.get(side, {}) or {}
+        return t.get("names", {}).get("long") or t.get("name") or ""
+
     # We don't know which team the pitcher is on from the API response
     # structure alone for player props. Return empty placeholders.
     # The playerID is the stable identifier; team info can be enriched
-    # later from a roster lookup.
-    return {"team_id": "", "team_name": ""}
+    # later from a roster lookup. Game-level markets carry away/home names.
+    return {
+        "team_id": "",
+        "team_name": "",
+        "away_name": _name("away"),
+        "home_name": _name("home"),
+    }
 
 
 def _build_group_key(
@@ -610,6 +666,29 @@ def _build_group_key(
         return ""
     alt_tag = "_alt" if is_alt_line else ""
     return f"{event_id}|{player_id}|{market_type}|game|{line}{alt_tag}"
+
+
+def _build_game_group_key(
+    event_id: str,
+    market_type: str,
+    line: float | None,
+    is_alt_line: int,
+) -> str:
+    """Build a stable group key for a game-level market.
+
+    Moneyline has no numeric line, so the key uses a ``ML`` sentinel;
+    run-line spreads are abs-valued before this so away/home pair up.
+    """
+    if not event_id:
+        return ""
+    alt_tag = "_alt" if is_alt_line else ""
+    if market_type == "game_moneyline":
+        line_part = "ML"
+    elif line is None:
+        line_part = "NOLINE"
+    else:
+        line_part = f"{line:g}"
+    return f"{event_id}|GAME|{market_type}|game|{line_part}{alt_tag}"
 
 
 def _build_yn_group_key(event_id: str, player_id: str, market_type: str = "pitching_strikeouts_yn") -> str:

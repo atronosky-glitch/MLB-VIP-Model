@@ -49,6 +49,7 @@ class OfficialPickConfig:
     )
     official_daily_max_picks: int = 3
     official_max_per_game: int = 1
+    official_max_per_player: int = 1
     official_rules_version: str = RULES_VERSION
 
     # Discovery tier (private research only)
@@ -241,7 +242,15 @@ def classify_recommendation(
             else:
                 reasons.append("Qualified via exact-market LOO fallback; Pinnacle unavailable")
 
-    # ── Gate 10: Valid identity fields ──────────────────────────
+    # ── Gate 10: Reliable EV provenance (O/U only) ───────────────
+    # Older direct callers may omit the field; the production pipeline marks
+    # every new recommendation explicitly before classification.
+    if market_form == "ou" and rec.get("reliable_ev_checked"):
+        if not rec.get("reliable_ev"):
+            details = ", ".join(rec.get("reliable_ev_reasons") or ["validation_failed"])
+            disq.append(f"EV reliability gate failed ({details})")
+
+    # ── Gate 11: Valid identity fields ──────────────────────────
 
     if not rec.get("event_id"):
         disq.append("Missing event_id")
@@ -252,7 +261,7 @@ def classify_recommendation(
     if not rec.get("sportsbook"):
         disq.append("Missing sportsbook")
 
-    # ── Gate 11: Reference odds for YN ────────────────────────
+    # ── Gate 12: Reference odds for YN ────────────────────────
 
     if market_form == "yn" and not rec.get("yn_reference_odds"):
         disq.append("Missing YN reference odds")
@@ -375,6 +384,7 @@ def rank_and_select_official_picks(
     selected: list[dict] = []
     seen_picks: set[str] = set()
     game_counts: dict[str, int] = {}
+    player_counts: dict[str, int] = {}
 
     # Pre-populate from already-selected picks today
     if already_selected_today:
@@ -383,12 +393,18 @@ def rank_and_select_official_picks(
             gk = _game_key(pick)
             seen_picks.add(pk)
             game_counts[gk] = game_counts.get(gk, 0) + 1
+            player_id = str(pick.get("player_id", ""))
+            if player_id:
+                player_counts[player_id] = player_counts.get(player_id, 0) + 1
             selected.append(pick)
 
     # Sort eligible candidates
     def sort_key(rec):
         ms = rec.get("model_score") or 0.0
-        edge = rec.get("applicable_edge_threshold") or rec.get("ev_pct") or rec.get("yn_implied_prob_adv") or 0.0
+        # Rank by the observed opportunity, not the minimum threshold that
+        # happened to qualify it. Thresholds are policy, not edge magnitude.
+        edge = rec.get("ev_pct") if (rec.get("market_form") or "").lower() == "ou" else rec.get("yn_implied_prob_adv")
+        edge = edge or 0.0
         books = rec.get("n_consensus_books") or 0
         freshness_penalty = 0 if (rec.get("freshness_status") or "").upper() == "FRESH" else 1
         return (-ms, -edge, -books, freshness_penalty)
@@ -407,6 +423,7 @@ def rank_and_select_official_picks(
 
         pk = _pick_key(rec)
         gk = _game_key(rec)
+        player_id = str(rec.get("player_id", ""))
 
         # Skip duplicates
         if pk in seen_picks:
@@ -416,8 +433,13 @@ def rank_and_select_official_picks(
         if game_counts.get(gk, 0) >= config.official_max_per_game:
             continue
 
+        if player_id and player_counts.get(player_id, 0) >= config.official_max_per_player:
+            continue
+
         seen_picks.add(pk)
         game_counts[gk] = game_counts.get(gk, 0) + 1
+        if player_id:
+            player_counts[player_id] = player_counts.get(player_id, 0) + 1
 
         rank = len(selected) + 1
         rec["official_rank"] = rank

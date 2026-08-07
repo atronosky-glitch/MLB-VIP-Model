@@ -92,6 +92,61 @@ def has_observation(
     return row is not None
 
 
+def record_pipeline_observations(
+    conn,
+    opportunities: list[dict],
+    observation_type: str,
+    source_run_id: str | None = None,
+) -> int:
+    """Record a scan's prices for already-frozen official picks.
+
+    Matching uses stable event/player/market/side/line/sportsbook fields. A
+    later price or odds change therefore attaches to the original official
+    pick instead of creating a second identity. One observation per phase is
+    retained by design; final CLV remains handled by ``closing_prices``.
+    """
+    if observation_type not in OBSERVATION_TYPES:
+        raise ValueError(f"Unknown observation type: {observation_type}")
+    recorded = 0
+    for opp in opportunities:
+        rows = conn.execute(
+            """SELECT hr.*, op.recommendation_id AS official_id
+               FROM historical_recommendations hr
+               JOIN official_picks op ON op.recommendation_id = hr.recommendation_id
+              WHERE hr.event_id = ? AND hr.player_id = ? AND hr.market_type = ?
+                AND hr.market_form = ? AND hr.side = ? AND hr.sportsbook = ?
+              ORDER BY hr.scan_timestamp DESC""",
+            (
+                opp.get("event_id"), opp.get("player_id"), opp.get("market_type"),
+                "yn" if opp.get("line") is None else "ou", opp.get("side"),
+                opp.get("sportsbook"),
+            ),
+        ).fetchall()
+        match = next(
+            (dict(row) for row in rows if row["line"] == opp.get("line")),
+            None,
+        )
+        if not match or has_observation(conn, match["official_id"], observation_type):
+            continue
+        record_observation(
+            conn,
+            match["official_id"],
+            observation_type,
+            opp.get("sportsbook", ""),
+            opp.get("american_odds"),
+            opp.get("decimal_odds"),
+            opp.get("offered_implied_prob") or 0.0,
+            line=opp.get("line"),
+            consensus_prob=opp.get("fair_prob") or opp.get("market_reference_probability"),
+            unique_book_count=opp.get("n_consensus_books"),
+            freshness_status=opp.get("freshness_status"),
+            source_run_id=source_run_id,
+            market_status=opp.get("market_quality") or opp.get("comparison_status"),
+        )
+        recorded += 1
+    return recorded
+
+
 def compute_movement(
     conn: sqlite3.Connection,
     official_pick_id: str,

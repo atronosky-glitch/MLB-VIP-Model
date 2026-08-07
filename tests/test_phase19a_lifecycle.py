@@ -106,6 +106,39 @@ def test_creation_and_line_events_are_append_only(db_conn):
     ).fetchone()["line"] == 6.5
 
 
+def test_freeze_persists_quality_and_pinnacle_evidence(tmp_path):
+    import database.db_manager as dbm
+
+    db_path = tmp_path / "evidence.db"
+    dbm.init_db(str(db_path))
+    conn = dbm.get_connection(str(db_path))
+    rec = _recommendation()
+    rec.update({
+        "market_form": "ou",
+        "period": "game",
+        "fair_american_odds": -127,
+        "market_quality": "VALID_MARKET",
+        "rec_status": "POSITIVE_EDGE",
+        "rec_eligible": True,
+        "freshness_status": "FRESH",
+        "model_version": "v1",
+        "scan_timestamp": "2026-08-04T12:00:00+00:00",
+    })
+    assert dbm.save_recommendation(conn, rec) == "rec-19a"
+    row = conn.execute(
+        "SELECT market_quality_score, pinnacle_found, pinnacle_reference_used, "
+        "pinnacle_book, pinnacle_fair_prob, pinnacle_ev FROM historical_recommendations "
+        "WHERE recommendation_id = ?", ("rec-19a",)
+    ).fetchone()
+    assert row["market_quality_score"] == 8.1
+    assert row["pinnacle_found"] is None
+    assert row["pinnacle_reference_used"] == 1
+    assert row["pinnacle_book"] == "pinnacle"
+    assert row["pinnacle_fair_prob"] == 0.54545
+    assert row["pinnacle_ev"] == 3.09
+    conn.close()
+
+
 def test_clv_formula_and_closing_lifecycle_snapshot():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

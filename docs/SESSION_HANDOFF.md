@@ -2,6 +2,116 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-06 — Pinnacle credential exposure and endpoint correction
+
+### What was found
+
+The operator supplied an account email identifying the credential as a `pinnapi.com` key and directing REST requests to `pinnapi.com`. This is stronger evidence for the current account than the separately supplied `pinnodds.com` documentation.
+
+### What was changed
+
+- Reverted `PINNACLE_FEED_BASE_URL` to `https://pinnapi.com`.
+- Added a run-level `PINNACLE_FEED_PROPS parsed=N` diagnostic after feed parsing, including an explicit zero-result warning.
+- The credential pasted into chat is considered compromised and must be rotated. It was not used by this session.
+
+### Required operator action
+
+Rotate/recover a new Pinnapi key through the provider dashboard, replace `PINNAPI_API_KEY` on both Render services, redeploy, and then rerun one scan. Never paste the replacement key into chat.
+
+## Session: 2026-08-06 — Pinnacle endpoint correction
+
+### What was found
+
+The supplied Pinnodds documentation specifies `https://pinnodds.com` as the API base URL. The client was configured for `https://pinnapi.com`, so a key from the documented Pinnodds deployment could not reliably reach the intended API.
+
+### What was changed
+
+- Changed `PINNACLE_FEED_BASE_URL` to `https://pinnodds.com`.
+- Confirmed the existing request path `/kit/v1/prematch/fixtures`, `sport_id=6` for baseball, and `include_specials=1` match the supplied documentation.
+
+### Required deployment action
+
+Redeploy the worker with the key from the Pinnodds account, then run a scan. Look for `Pinnacle reference injected` or a specific HTTP/error response. Do not share the key.
+
+### Verification
+
+- Pinnacle/value-feed tests: **62 passed**.
+
+## Session: 2026-08-06 — Pinnacle worker configuration fix
+
+### What was found
+
+The live warnings were expected when Pinnacle is absent, but the deployment definition had `PINNAPI_API_KEY` on the dashboard and not reliably on the worker that executes `player_prop_scanner`. The SportsGameOdds feed itself does not include a `pinnacle` bookmaker, so the optional Pinnapi feed is required for reference injection.
+
+### What was changed
+
+- Added `PINNAPI_API_KEY` to the `mlb-vip-worker` environment in `render.yaml`.
+- No Pinnacle fields or API schema were guessed or changed.
+
+### Required deployment action
+
+Set `PINNAPI_API_KEY` on `mlb-vip-worker` in Render and redeploy the worker. After a scan, logs should show Pinnacle reference injection or a clear Pinnapi request/parse error. Until then, LOO fallback and Official blocking are expected.
+
+### Verification
+
+- Pinnacle/cloud tests: **76 passed**.
+
+## Session: 2026-08-06 — Profitability safeguards and green test baseline
+
+### What was done
+
+1. Added configurable reliable-EV bounds: maximum absolute EV of 20 percentage points and offered decimal odds range 1.05 to 10.0. Extreme outliers remain research-visible but cannot qualify as reliable Official EV.
+2. Added `official_max_per_player=1` to daily selection, alongside the existing one-pick-per-game and daily limits, reducing repeated exposure to the same player.
+3. Updated the stale market-count regression test from 21 to the active registry count of 24 after confirming all registry entries remain covered.
+4. Confirmed the existing chronological walk-forward validation and segmented performance reporting remain advisory-only and do not mutate thresholds automatically.
+
+### Verification
+
+- Focused safeguards tests: **197 passed**.
+- Full suite: **1466 passed, 0 failed**.
+
+### Remaining external-data work
+
+- Independent player projections, confirmed lineups, starting-pitcher/news checks, weather, park, and umpire inputs still require verified source contracts. No API fields were guessed or fabricated.
+
+## Session: 2026-08-06 — Freshness, ranking, and segmented EV reliability
+
+### What was done
+
+1. Preserved parser-provided sportsbook `lastUpdatedAt` timestamps through `player_prop_scanner.py` group opportunities and `daily_pipeline.py` recommendation snapshots. Missing or invalid timestamps are stale rather than silently treated as current.
+2. Added `_freshness_for_observation()` and used it for each frozen recommendation, so cached quotes cannot appear fresh merely because the scan ran recently.
+3. Fixed official-pick ranking to sort by actual O/U EV or Y/N price advantage; `applicable_edge_threshold` is no longer incorrectly used as the ranking edge.
+4. Added `summarize_realized_ev_segments()` to keep realized performance separate by market, sportsbook, and EV bucket, with independent minimum-sample gates. It is descriptive/advisory only.
+5. Added `record_pipeline_observations()` and wired morning/pregame pipeline runs to attach later prices to frozen official picks by stable identity. Observation writes are idempotent per phase; final CLV remains in `closing_prices`.
+
+### Verification
+
+- Targeted observation/pipeline tests: **149 passed**.
+- Full suite: **1463 passed, 1 failed**. The failure remains pre-existing and unrelated: the market registry test expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Remaining work
+
+- Full rolling Phase 19 metric persistence is not yet integrated. Existing closing capture remains the authoritative CLV path.
+- Independent player-projection inputs, lineup/news/weather feeds, and portfolio correlation require verified external data contracts before implementation.
+
+## Session: 2026-08-06 — Reliable EV validation layer
+
+### What was done
+
+1. Added `src/reliable_ev.py` to validate O/U EV inputs without inventing a new probability model: fair-probability bounds, offered-odds validity, EV arithmetic consistency, minimum independent-book count, freshness, market quality, one-sided status, and true-EV availability.
+2. Wired the production pipeline to compute and version reliability evidence before model scoring and official qualification. Failed checks remain visible for research but block Official O/U status; Y/N price advantage is not relabeled as EV.
+3. Persisted reliability status, reasons, calculated EV, version, and check state in `historical_recommendations` through the existing evidence persistence path. Added advisory realized-EV summaries with an explicit minimum-sample status.
+4. Corrected an indentation error in an existing uncommitted recommendation-evidence persistence change because it prevented `database.db_manager` from importing. No unrelated working-tree changes were reverted.
+
+### Verification
+
+- Targeted reliability/pipeline/qualification/grading tests: **193 passed**.
+- Full suite: **1456 passed, 1 failed**. The failure is pre-existing and unrelated: `tests/test_phase8_markets.py::TestRegistryPhase8::test_total_market_count` expects 21 while `MARKET_REGISTRY` contains 24.
+
+### Remaining work
+
+- Phase 19 still needs rolling market/book/edge/confidence metrics, proper probability calibration (Brier/log loss/reliability), CLV-linked validation, and human-reviewed proposals. No automatic threshold mutation was added.
+
 ## Session: 2026-08-05 — Exact-market LOO fallback for unavailable Pinnacle markets
 
 ### What was done

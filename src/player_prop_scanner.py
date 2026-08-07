@@ -407,7 +407,10 @@ def run_scan(
                 yn_groups[key] = {"yes": {}, "player_id": row["player_id"],
                                   "player_name": row["player_name"],
                                   "event_id": row["event_id"],
-                                  "market_type": market_type}
+                                  "market_type": market_type,
+                                  "observation_times": []}
+            if row.get("observation_time"):
+                yn_groups[key]["observation_times"].append(row["observation_time"])
             side = row["side"]
             if side == "YES":
                 yn_groups[key]["yes"][row["sportsbook"]] = {
@@ -421,7 +424,10 @@ def run_scan(
                                   "player_id": row["player_id"],
                                   "player_name": row["player_name"],
                                   "event_id": row["event_id"],
-                                  "market_type": market_type}
+                                  "market_type": market_type,
+                                  "observation_times": []}
+            if row.get("observation_time"):
+                ou_groups[key]["observation_times"].append(row["observation_time"])
             side = row["side"]
             ou_groups[key][side.lower()][row["sportsbook"]] = {
                 "price": row["price"],
@@ -457,6 +463,7 @@ def run_scan(
             logger.warning("Pinnacle feed unavailable: %s", exc)
             _pinnacle_props = None
         if _pinnacle_props:
+            logger.info("PINNACLE_FEED_PROPS parsed=%d", len(_pinnacle_props))
             _pinnacle_lookup = build_pinnacle_lookup(_pinnacle_props)
             pinnacle_reference_injected = inject_pinnacle_reference(
                 ou_groups, event_map, _pinnacle_lookup
@@ -466,6 +473,8 @@ def run_scan(
                     f"  Pinnacle reference injected into {pinnacle_reference_injected} "
                     f"O/U groups"
                 )
+        else:
+            logger.warning("PINNACLE_FEED_PROPS parsed=0; no Pinnacle references available")
 
     pinnacle_summary = _new_pinnacle_summary()
     opportunities = []
@@ -536,6 +545,7 @@ def run_scan(
                 "pinnacle_line": analysis.get("line") if analysis.get("pinnacle_reference_used") else None,
                 "pinnacle_over_price": analysis.get("pinnacle_over_price"),
                 "pinnacle_under_price": analysis.get("pinnacle_under_price"),
+                "observation_time": max(gdata.get("observation_times") or [""]),
             }
             opportunities.append(opp)
 
@@ -606,6 +616,7 @@ def run_scan(
                 "market_quality": analysis["market_quality"],
                 "rec_eligible": is_rec_eligible,
                 "validation_status": book_entry.get("validation_status", ""),
+                "observation_time": max(gdata.get("observation_times") or [""]),
             }
             yn_opportunities.append(opp)
 

@@ -246,6 +246,19 @@ class TestRanking:
         ev_001_count = sum(1 for s in selected if s["event_id"] == "ev_001")
         assert ev_001_count <= 1
 
+    def test_per_player_limit(self):
+        recs = [
+            _base_rec(
+                model_score=8.0 + i * 0.1,
+                event_id=f"ev_{i}",
+                player_id="same-player",
+                recommendation_id=f"r{i}",
+            )
+            for i in range(3)
+        ]
+        selected = rank_and_select_official_picks(recs)
+        assert sum(1 for s in selected if s["player_id"] == "same-player") <= 1
+
     def test_dedup_same_player_market_side_line(self):
         rec1 = _base_rec(
             model_score=8.5, player_id="p1", market_type="strikeouts",

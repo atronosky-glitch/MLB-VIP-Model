@@ -222,14 +222,24 @@ def test_match_unknown_market_returns_none():
 
 def test_unit_mapping_covers_new_markets():
     from src.pinnacle_feed import MARKET_OU_TO_UNIT
-    assert MARKET_OU_TO_UNIT["batting_RBI_ou"] == "RBIs"
-    assert MARKET_OU_TO_UNIT["batting_runs_ou"] == "Runs"
-    assert MARKET_OU_TO_UNIT["batting_basesOnBalls_ou"] == "Walks"
-    assert MARKET_OU_TO_UNIT["pitching_pitchesThrown_ou"] == "PitchesThrown"
-    assert MARKET_OU_TO_UNIT["batting_stolenBases_ou"] == "StolenBases"
+    assert MARKET_OU_TO_UNIT["pitching_strikeouts_ou"] == "Strikeouts"
+    assert MARKET_OU_TO_UNIT["pitching_hits_ou"] == "HitsAllowed"
+    assert MARKET_OU_TO_UNIT["pitching_earnedRuns_ou"] == "EarnedRuns"
+    assert MARKET_OU_TO_UNIT["pitching_outs_ou"] == "PitchingOuts"
+    assert MARKET_OU_TO_UNIT["batting_totalBases_ou"] == "TotalBases"
+    assert MARKET_OU_TO_UNIT["batting_homeRuns_ou"] == "HomeRuns"
 
 
-def test_parse_accepts_new_units():
+def test_unit_mapping_excludes_unverified_units():
+    from src.pinnacle_feed import MARKET_OU_TO_UNIT
+    assert "batting_RBI_ou" not in MARKET_OU_TO_UNIT
+    assert "batting_runs_ou" not in MARKET_OU_TO_UNIT
+    assert "batting_basesOnBalls_ou" not in MARKET_OU_TO_UNIT
+    assert "pitching_pitchesThrown_ou" not in MARKET_OU_TO_UNIT
+    assert "batting_stolenBases_ou" not in MARKET_OU_TO_UNIT
+
+
+def test_parse_filters_unverified_units():
     payload = _sample_payload()
     payload["events"].append(
         _special(100, "Aaron Judge", "RBIs", 1.85, 1.95, 0.5)
@@ -239,8 +249,9 @@ def test_parse_accepts_new_units():
     )
     props = parse_mlb_props(payload)
     units = {p.unit for p in props}
-    assert "RBIs" in units
-    assert "PitchesThrown" in units
+    assert len(props) == 3
+    assert "RBIs" not in units
+    assert "PitchesThrown" not in units
 
 
 # ==================================================================

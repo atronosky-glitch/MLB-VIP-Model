@@ -50,7 +50,7 @@ from src.player_prop_parser import parse_player_props, _extract_player_name_from
 
 class TestRegistryPhase8:
     def test_total_market_count(self):
-        assert len(MARKET_REGISTRY) == 21
+        assert len(MARKET_REGISTRY) == 24
 
     def test_all_new_markets_registered(self):
         expected = [

@@ -676,9 +676,15 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     "pinnacle_ev": opp.get("pinnacle_ev"),
                     "pinnacle_prob_edge": opp.get("pinnacle_prob_edge"),
                     "data_source": state.data_source,
-                    "observation_timestamp": scan_ts,
+                    # Preserve the quote timestamp from the API. Falling back
+                    # to scan time is only appropriate when the feed omitted
+                    # a verified sportsbook update timestamp.
+                    "observation_timestamp": opp.get("observation_time") or scan_ts,
                     "scan_timestamp": scan_ts,
-                    "freshness_status": "STALE" if state.stale_warning else "FRESH",
+                    "freshness_status": _freshness_for_observation(
+                        opp.get("observation_time") or scan_ts,
+                        now=now_utc,
+                    ),
                     "model_version": state.version,
                     "matchup": matchup,
                     "event_status": event_status,
@@ -693,6 +699,31 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                 # Compute fair American odds from fair probability
                 if rec["fair_prob"] is not None and rec["fair_american_odds"] is None:
                     rec["fair_american_odds"] = probability_to_american(rec["fair_prob"])
+
+                # Validate EV inputs separately from the EV calculation. A
+                # positive number from a stale, thin, or inconsistent market
+                # remains visible for research but cannot become official.
+                try:
+                    from src.reliable_ev import assess_reliable_ev
+                    from src import prop_config as prop_cfg
+                    reliability = assess_reliable_ev(
+                        rec,
+                        min_books=prop_cfg.RELIABLE_EV_MIN_BOOKS,
+                        tolerance_pp=prop_cfg.RELIABLE_EV_TOLERANCE_PP,
+                        max_ev_pct=prop_cfg.RELIABLE_EV_MAX_PCT,
+                        min_decimal_odds=prop_cfg.RELIABLE_EV_MIN_DECIMAL_ODDS,
+                        max_decimal_odds=prop_cfg.RELIABLE_EV_MAX_DECIMAL_ODDS,
+                    )
+                    rec.update(reliability)
+                    rec["reliable_ev_checked"] = True
+                except Exception:
+                    rec.update({
+                        "reliable_ev": False,
+                        "reliable_ev_status": "UNRELIABLE",
+                        "reliable_ev_reasons": ["validation_error"],
+                        "reliable_ev_version": None,
+                        "reliable_ev_checked": True,
+                    })
 
                 # Compute Model Score
                 try:
@@ -797,6 +828,19 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
 
             # Capture closing prices for saved recommendations
             if saved > 0:
+                try:
+                    from src.observations import record_pipeline_observations
+                    observation_type = (
+                        "PREGAME" if config.lifecycle_snapshot_kind == "pregame"
+                        else "MORNING"
+                    )
+                    n_observations = record_pipeline_observations(
+                        conn, all_opps, observation_type, source_run_id=state.scan_run_id,
+                    )
+                    if n_observations > 0:
+                        print(f"  Official odds observations recorded: {n_observations}")
+                except Exception as exc:
+                    logger.warning("Could not record official odds observations: %s", exc)
                 run_recs = conn.execute(
                     """SELECT * FROM historical_recommendations
                        WHERE scan_run_id = ?""",
@@ -1103,6 +1147,21 @@ def _parse_status(status_obj: dict | str) -> str:
     if isinstance(status_obj, dict):
         return status_obj.get("state", "scheduled")
     return "scheduled"
+
+
+def _freshness_for_observation(timestamp: str | None, now: datetime | None = None) -> str:
+    """Classify a verified quote timestamp rather than the scan timestamp."""
+    if not timestamp:
+        return "STALE"
+    try:
+        observed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        age = (current - observed).total_seconds()
+        return "FRESH" if 0 <= age <= cfg.FRESHNESS_THRESHOLD_SECONDS else "STALE"
+    except (TypeError, ValueError, OverflowError):
+        return "STALE"
 
 
 # ==================================================================

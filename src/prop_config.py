@@ -21,6 +21,12 @@ MARKET_QUALITY_EXCLUDED = "EXCLUDED"
 
 # Minimum number of OTHER books required for a market to be VALID
 MIN_COMPARISON_BOOKS = 4  # meaning at least 5 paired books total
+# EV is not treated as reliable unless its inputs pass this independent gate.
+RELIABLE_EV_MIN_BOOKS = 4
+RELIABLE_EV_TOLERANCE_PP = 0.15
+RELIABLE_EV_MAX_PCT = 20.0
+RELIABLE_EV_MIN_DECIMAL_ODDS = 1.05
+RELIABLE_EV_MAX_DECIMAL_ODDS = 10.0
 
 # Extreme outlier: EV magnitude beyond this threshold triggers NEEDS_REVIEW
 OUTLIER_EV_THRESHOLD = 0.10  # 10%
@@ -136,9 +142,21 @@ class MarketConfig:
     min_comparison_books_yn: int = 3   # YN: need this many OTHER books
     supports_ou: bool = True
     supports_yn: bool = True
+    game_level: bool = False                    # game-level market (not a player prop)
+    entity: tuple[str, ...] | None = None       # allowed statEntityID values; None = any
+    bet_type: str = "ou"                        # oddID betType segment ("ou", "ml", "sp")
+    internal_side_map: dict[str, str] | None = None  # row side -> group dict slot (e.g. AWAY->over)
+    group_sides: tuple[str, str] | None = None  # display side labels for the two group slots
 
 
-def _match_odd_id(odd_id: str, stat_prefix: str, period: str, bet_type: str, allowed_sides: tuple[str, ...]) -> bool:
+def _match_odd_id(
+    odd_id: str,
+    stat_prefix: str,
+    period: str,
+    bet_type: str,
+    allowed_sides: tuple[str, ...],
+    entity: tuple[str, ...] | None = None,
+) -> bool:
     """Check if an odd_id matches a market pattern."""
     parts = odd_id.rsplit("-", 4)
     if len(parts) < 5:
@@ -156,13 +174,18 @@ def _match_odd_id(odd_id: str, stat_prefix: str, period: str, bet_type: str, all
         return False
     if parts[-1] not in allowed_sides:
         return False
+    if entity is not None and parts[-4] not in entity:
+        return False
     return True
 
 
 def match_ou_market(odd_id: str) -> MarketConfig | None:
     """Return the MarketConfig if odd_id matches a registered O/U market."""
     for cfg in MARKET_REGISTRY:
-        if cfg.supports_ou and _match_odd_id(odd_id, cfg.odd_id_stat_prefix, cfg.period, "ou", cfg.allowed_sides_ou):
+        if cfg.supports_ou and _match_odd_id(
+            odd_id, cfg.odd_id_stat_prefix, cfg.period, cfg.bet_type,
+            cfg.allowed_sides_ou, cfg.entity,
+        ):
             return cfg
     return None
 
@@ -422,6 +445,65 @@ BATTER_FIRST_HR = MarketConfig(
     supports_ou=False,
 )
 
+# ── Game-level markets (not player props) ──────────────────────────
+# These are two-sided whole-game markets (game total, moneyline, run
+# line).  They share the SGO "points" stat prefix but are distinguished
+# by their betTypeID ("ou"/"ml"/"sp") and statEntityID:
+#   points-all-game-ou-*   → game total (entity "all")
+#   points-*-game-ml-*     → moneyline (entity away/home)
+#   points-*-game-sp-*     → run line / spread (entity away/home)
+# Moneyline and run line are two-sided away/home markets; the scanner
+# stores them in the generic over/under group slots (AWAY→over,
+# HOME→under) and translates side labels back for display.
+
+GAME_TOTAL = MarketConfig(
+    cli_name="game_total",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_total_ou",
+    market_type_yn=None,
+    display_name="Game Total",
+    short_label="Tot",
+    period="game",
+    scanner_title="MLB GAME TOTAL EDGE SCANNER",
+    entity=("all",),
+    supports_yn=False,
+    game_level=True,
+)
+
+GAME_MONEYLINE = MarketConfig(
+    cli_name="moneyline",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_moneyline",
+    market_type_yn=None,
+    display_name="Moneyline",
+    short_label="ML",
+    period="game",
+    scanner_title="MLB MONEYLINE EDGE SCANNER",
+    allowed_sides_ou=("away", "home"),
+    bet_type="ml",
+    supports_yn=False,
+    game_level=True,
+    internal_side_map={"AWAY": "over", "HOME": "under"},
+    group_sides=("AWAY", "HOME"),
+)
+
+GAME_RUN_LINE = MarketConfig(
+    cli_name="run_line",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_runline_ou",
+    market_type_yn=None,
+    display_name="Run Line",
+    short_label="RL",
+    period="game",
+    scanner_title="MLB RUN LINE EDGE SCANNER",
+    allowed_sides_ou=("away", "home"),
+    bet_type="sp",
+    supports_yn=False,
+    game_level=True,
+    internal_side_map={"AWAY": "over", "HOME": "under"},
+    group_sides=("AWAY", "HOME"),
+)
+
 MARKET_REGISTRY: list[MarketConfig] = [
     PITCHER_STRIKEOUTS,
     PITCHER_HITS_ALLOWED,
@@ -444,6 +526,9 @@ MARKET_REGISTRY: list[MarketConfig] = [
     BATTER_TRIPLES,
     BATTER_STRIKEOUTS,
     BATTER_FIRST_HR,
+    GAME_TOTAL,
+    GAME_MONEYLINE,
+    GAME_RUN_LINE,
 ]
 
 # Lookup helpers
