@@ -2,6 +2,26 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-06 — Line-less game-market display fix
+
+### What was found
+
+After the AWAY/HOME grouping fix, the scanner reached game-level moneyline groups and crashed while formatting a `None` line with a numeric width specifier.
+
+### What was changed
+
+- Game-level line display now renders a safe `?` when no numeric line exists.
+
+### Verification
+
+- Targeted scanner/pipeline tests: **158 passed**.
+- Full suite: **1468 passed, 0 failed**.
+- Pushed as commit `b683e07`.
+
+### Next live check
+
+Deploy `b683e07` to Render and rerun the pipeline. It should now proceed beyond group formation to the Pinnacle feed diagnostic.
+
 ## Session: 2026-08-06 — Game-side scanner crash fix
 
 ### What was found
