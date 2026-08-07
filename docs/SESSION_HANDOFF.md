@@ -2,6 +2,16 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-06 — Live Pinnacle verification passed
+
+### Result
+
+The deployed Render run completed successfully: `PINNACLE_FEED_PROPS parsed=2`, `PINNACLE_SUMMARY exact_match=2 reference_used=2 pinnacle_missing=227 insufficient_books=1420 official_approved=0`, `Errors=0`, and `EXIT_CODE=0`.
+
+### Interpretation
+
+The key, `pinnapi.com` endpoint, parser, name normalization, and exact matching path are working. The two matched lines did not produce a positive target edge, so no Pinnacle-approved Official O/U pick was correct. The remaining missing groups reflect coverage, line availability, or insufficient comparison books, not a failed Pinnacle connection.
+
 ## Session: 2026-08-06 — Pinnacle player-name matching fix
 
 ### What was found

@@ -102,6 +102,7 @@
 - [x] Game-side scanner crash — game-level AWAY/HOME markets now map safely into generic two-sided analysis slots; stage-6 `KeyError: 'away'` fixed. Full suite: **1468 passed, 0 failed**.
 - [x] Line-less game-market scan crash — scanner debug output now handles moneyline groups with no numeric line. Full suite: **1468 passed, 0 failed**.
 - [x] Pinnacle player-name matching — strip verified provider market suffixes such as `Total Strikeouts` before matching stable player names. Pinnacle tests: **63 passed**; full suite: **1469 passed, 0 failed**.
+- [x] Live Pinnacle verification — Render confirmed 2 parsed Pinnacle props, 2 exact matches, 2 references used, zero errors, and successful pipeline completion. No positive target edge was present in the matched lines, so zero Official Pinnacle approvals was correct.
 - [ ] Phase 19 implementation — implement the approved adaptive-learning evidence, rolling metrics, calibration, Pinnacle accuracy, statistical gates, and human approval workflow from `docs/PHASE19_ADAPTIVE_LEARNING_ARCHITECTURE.md`; no automatic threshold mutation or betting behavior.
 
 ## Next feature stage

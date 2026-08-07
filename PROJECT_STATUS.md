@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Live Pinnacle verification (2026-08-06)** — After deploying the endpoint, worker configuration, scanner crash fixes, and player-name normalization, Render completed a live pipeline with `PINNACLE_FEED_PROPS parsed=2`, `PINNACLE_SUMMARY exact_match=2 reference_used=2`, `Errors=0`, and `EXIT_CODE=0`. `official_approved=0` is correct for this run because the two matched Pinnacle lines produced no positive target edge; it is not a feed failure.
+
 - **Pinnacle player-name matching fix (2026-08-06)** — Pinnapi returned labels such as `Walker Buehler Total Strikeouts`, while SportsGameOdds uses `Walker Buehler`. The adapter now strips verified market suffixes for six supported Pinnacle units before exact matching. Pinnacle tests: **63 passed**; full suite: **1469 passed, 0 failed**. Commit: `252ad84`.
 
 - **Line-less game-market display fix (2026-08-06)** — Game moneyline groups now render `line=?` safely instead of formatting `None` as a numeric value. This was the next stage-6 crash after AWAY/HOME grouping was fixed. Full suite: **1468 passed, 0 failed**. Commit: `b683e07`.
