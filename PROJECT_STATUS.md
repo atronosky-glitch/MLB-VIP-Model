@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Pinnacle player-name matching fix (2026-08-06)** — Pinnapi returned labels such as `Walker Buehler Total Strikeouts`, while SportsGameOdds uses `Walker Buehler`. The adapter now strips verified market suffixes for six supported Pinnacle units before exact matching. Pinnacle tests: **63 passed**; full suite: **1469 passed, 0 failed**. Commit: `252ad84`.
+
 - **Line-less game-market display fix (2026-08-06)** — Game moneyline groups now render `line=?` safely instead of formatting `None` as a numeric value. This was the next stage-6 crash after AWAY/HOME grouping was fixed. Full suite: **1468 passed, 0 failed**. Commit: `b683e07`.
 
 - **Game-side scanner crash fix (2026-08-06)** — Fixed stage-6 `KeyError: 'away'` caused by game-level moneyline/run-line markets entering the generic O/U scanner with `AWAY`/`HOME` sides. Registry-defined internal side mapping now normalizes those into analysis slots while preserving display labels. Full suite: **1468 passed, 0 failed**. Commit: `8f247e8`.

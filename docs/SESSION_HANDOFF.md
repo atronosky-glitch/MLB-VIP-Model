@@ -2,6 +2,27 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-06 — Pinnacle player-name matching fix
+
+### What was found
+
+The live Pinnapi diagnostic returned two valid props, but exact matching remained zero because provider labels included market suffixes: `Walker Buehler Total Strikeouts` and `Kohl Drake Total Strikeouts`. SportsGameOdds uses the stable player names without those suffixes.
+
+### What was changed
+
+- Added verified suffix removal for `Strikeouts`, `HitsAllowed`, `EarnedRuns`, `PitchingOuts`, `TotalBases`, and `HomeRuns` labels.
+- Added regression coverage for `Walker Buehler Total Strikeouts` -> `Walker Buehler`.
+
+### Verification
+
+- Pinnacle tests: **63 passed**.
+- Full suite: **1469 passed, 0 failed**.
+- Pushed as commit `252ad84`.
+
+### Next live check
+
+Deploy `252ad84`, rerun the pipeline, and inspect `PINNACLE_SUMMARY`. Expected improvement is `exact_match > 0` when the Pinnacle and SportsGameOdds slate contains the same event/player/line.
+
 ## Session: 2026-08-06 — Line-less game-market display fix
 
 ### What was found
