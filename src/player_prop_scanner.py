@@ -454,7 +454,8 @@ def run_scan(
         print(f"  O/U groups formed: {len(ou_groups)}")
         for gk, gd in ou_groups.items():
             has_both = "BOTH" if gd["over"] and gd["under"] else "MISSING_SIDE"
-            print(f"    [{has_both}] {gd['market_type']:35} line={gd.get('line','?'):6}  "
+            line_display = "?" if gd.get("line") is None else str(gd.get("line"))
+            print(f"    [{has_both}] {gd['market_type']:35} line={line_display:>6}  "
                   f"over_books={len(gd['over'])} under_books={len(gd['under'])}  "
                   f"player={gd.get('player_name','?')[:20]}")
     _log_line_fragmentation(ou_groups)
