@@ -545,6 +545,7 @@ def _stage_scan(config: PipelineConfig, state: PipelineState) -> bool:
     except Exception as exc:
         state.errors.append(f"Scan failed: {exc}")
         state.n_errors += 1
+        logger.exception("Scan failed during stage 6")
         print(f"  ERROR: {exc}", file=sys.stderr)
         state.stage_timings["scan"] = round(time.monotonic() - t0, 3)
         return False
