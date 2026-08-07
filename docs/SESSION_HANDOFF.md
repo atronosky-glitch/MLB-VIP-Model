@@ -2,6 +2,28 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-06 — Game-side scanner crash fix
+
+### What was found
+
+The deployed scan traceback identified `src/player_prop_scanner.py` grouping a game-level `AWAY` side into `ou_groups[key]["away"]`, although the generic analyzer allocates only `over` and `under` slots. This came from the uncommitted game-level market registry additions.
+
+### What was changed
+
+- Added registry-aware `_group_side()` mapping: game `AWAY`/`HOME` map to internal `over`/`under` slots.
+- Preserved `AWAY`/`HOME` labels on generated opportunities.
+- Added regression tests and scan-stage traceback logging.
+
+### Verification
+
+- Targeted scanner/pipeline tests: **158 passed**.
+- Full suite: **1468 passed, 0 failed**.
+- Pushed as commit `8f247e8`.
+
+### Next live check
+
+Deploy `8f247e8` to Render, rerun the pipeline, and confirm stage 6 completes. Only after that should `PINNACLE_FEED_PROPS parsed=N` be evaluated.
+
 ## Session: 2026-08-06 — Pinnacle credential exposure and endpoint correction
 
 ### What was found
