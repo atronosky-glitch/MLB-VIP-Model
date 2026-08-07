@@ -122,9 +122,22 @@ def _token_overlap(a: str, b: str) -> float:
 # Parsing the pinnapi fixtures payload
 # ======================================================================
 
-def _parse_player_name(special: str) -> str:
-    """'Drew Rasmussen (Total Strikeouts)(must start)' -> 'Drew Rasmussen'."""
+_PLAYER_PROP_SUFFIXES = {
+    "Strikeouts": "Total Strikeouts",
+    "HitsAllowed": "Hits Allowed",
+    "EarnedRuns": "Earned Runs",
+    "PitchingOuts": "Pitching Outs",
+    "TotalBases": "Total Bases",
+    "HomeRuns": "Home Runs",
+}
+
+
+def _parse_player_name(special: str, unit: str | None = None) -> str:
+    """Extract the player name from Pinnacle's special-market label."""
     name = (special or "").split(" (")[0]
+    suffix = _PLAYER_PROP_SUFFIXES.get(unit or "")
+    if suffix and name.casefold().endswith(f" {suffix}".casefold()):
+        name = name[:-(len(suffix) + 1)]
     return name.strip()
 
 
@@ -199,7 +212,7 @@ def parse_mlb_props(payload: dict) -> list[PinnacleProp]:
                 PinnacleProp(
                     home_name=main["home_name"],
                     away_name=main["away_name"],
-                    player_name=_parse_player_name(ev.get("special") or ""),
+                    player_name=_parse_player_name(ev.get("special") or "", unit),
                     unit=unit,
                     line=market["line"],
                     over_decimal=over_dec,

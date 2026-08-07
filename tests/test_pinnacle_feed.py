@@ -135,6 +135,15 @@ def test_parse_player_name_strips_suffix():
     assert all("(" not in n for n in names)
 
 
+def test_parse_player_name_strips_market_name_suffix():
+    payload = _sample_payload()
+    payload["events"].append(
+        _special(100, "Walker Buehler Total Strikeouts", "Strikeouts", 1.90, 1.90, 3.5)
+    )
+    props = parse_mlb_props(payload)
+    assert any(p.player_name == "Walker Buehler" for p in props)
+
+
 def test_parse_skips_unsupported_units():
     payload = _sample_payload()
     payload["events"].append(
