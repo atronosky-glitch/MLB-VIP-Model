@@ -145,6 +145,7 @@ def classify_recommendation(
     ev_pct = rec.get("ev_pct")
     yn_adv = rec.get("yn_implied_prob_adv")
     mapping_conf = (rec.get("mapping_confidence") or "").strip().upper()
+    market_type = (rec.get("market_type") or "").strip()
 
     # Collect contributing books from the opp if available
     contributing_books_str = rec.get("contributing_books", "")
@@ -154,6 +155,9 @@ def classify_recommendation(
 
     if market_quality in _EXCLUDED_QUALITY_STATUSES:
         disq.append(f"Market quality '{market_quality}' is not eligible for official status")
+
+    if market_type and not cfg.is_auto_settleable_market(market_type):
+        disq.append("Market has no verified automatic settlement field")
 
     # ── Gate 2: Freshness ──────────────────────────────────────
 
@@ -307,6 +311,8 @@ def classify_recommendation(
             discovery_disq.append(f"Mapping confidence '{mapping_conf}' is too low")
         if rec_status not in config.discovery_allowed_statuses:
             discovery_disq.append(f"Status '{rec_status}' not in discovery-allowed statuses")
+        if market_type and not cfg.is_auto_settleable_market(market_type):
+            discovery_disq.append("Market has no verified automatic settlement field")
         if not rec.get("event_id"):
             discovery_disq.append("Missing event_id")
         if not rec.get("player_id"):

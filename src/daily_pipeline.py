@@ -829,8 +829,10 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     state.n_official_picks = 0
                     print(f"  Official picks selection failed: {e}")
 
-            # Capture closing prices for saved recommendations
-            if saved > 0:
+            # Capture pregame evidence for current and existing recommendations
+            # on the scanned events. Selection deduplication must not erase the
+            # final valid pre-start observation opportunity.
+            if saved > 0 or config.lifecycle_snapshot_kind == "pregame":
                 try:
                     from src.observations import record_pipeline_observations
                     observation_type = (
@@ -850,6 +852,17 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     (state.scan_run_id,),
                 ).fetchall()
                 run_recs = [dict(r) for r in run_recs]
+                if config.lifecycle_snapshot_kind == "pregame" and event_ids:
+                    placeholders = ",".join("?" * len(event_ids))
+                    existing_recs = conn.execute(
+                        f"SELECT * FROM historical_recommendations WHERE event_id IN ({placeholders})",
+                        event_ids,
+                    ).fetchall()
+                    seen_ids = {r.get("recommendation_id") for r in run_recs}
+                    run_recs.extend(
+                        dict(r) for r in existing_recs
+                        if r["recommendation_id"] not in seen_ids
+                    )
                 n_captured = capture_closing_prices(
                     conn,
                     run_recs,

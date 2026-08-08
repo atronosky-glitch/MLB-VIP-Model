@@ -107,6 +107,7 @@
 - [x] Automatic grading catch-up — worker startup/one-shot/grading jobs now grade O/U recommendations from verified stored final stats, update units and Official Pick projections, and emit lifecycle evidence idempotently. External final-result ingestion remains pending because no verified MLB result API contract is present.
 - [x] Verified MLB results ingestion — added `src/mlb_results.py` using the public MLB StatsAPI contract for final game status, player batting/pitching stats, and pitcher decisions; exact team/player matching and conservative unresolved behavior are enforced. Y/N can settle when a verified numeric fact exists.
 - [x] Customer-facing read-only view — added `src/customer_view.py` and separate `mlb-vip-customer` Render service. Admin/debug dashboard remains separate.
+- [x] Settlement coverage safety — unsupported markets cannot reach Discovery/Official tiers; pregame CLV capture now handles deduplicated recommendations and is bounded before scheduled start.
 
 ## Next feature stage
 

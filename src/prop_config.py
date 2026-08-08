@@ -28,6 +28,17 @@ RELIABLE_EV_MAX_PCT = 20.0
 RELIABLE_EV_MIN_DECIMAL_ODDS = 1.05
 RELIABLE_EV_MAX_DECIMAL_ODDS = 10.0
 
+# Only markets with a verified MLB StatsAPI settlement field may reach the
+# Discovery/Official tiers. Other registry markets remain research-only.
+AUTO_SETTLEABLE_MARKET_TYPES = frozenset({
+    "pitching_strikeouts_ou", "pitching_strikeouts_yn",
+    "pitching_hits_ou", "pitching_basesOnBalls_ou", "pitching_outs_ou",
+    "pitching_earnedRuns_ou", "pitching_earnedRuns_yn", "pitching_win_yn",
+    "batting_hits_ou", "batting_hits_yn", "batting_totalBases_ou",
+    "batting_homeRuns_ou", "batting_homeRuns_yn",
+    "batting_stolenBases_ou", "batting_stolenBases_yn",
+})
+
 # Extreme outlier: EV magnitude beyond this threshold triggers NEEDS_REVIEW
 OUTLIER_EV_THRESHOLD = 0.10  # 10%
 
@@ -550,6 +561,20 @@ def get_market_by_ou_type(market_type: str) -> MarketConfig | None:
 def get_market_by_yn_type(market_type: str) -> MarketConfig | None:
     """Look up a market by its YN market_type string."""
     return _YN_TYPE_MAP.get(market_type)
+
+
+def is_auto_settleable_market(value: str | None) -> bool:
+    """Accept canonical market types and registry CLI names."""
+    if value in AUTO_SETTLEABLE_MARKET_TYPES:
+        return True
+    market = get_market_by_cli_name(value or "")
+    if market is None:
+        return False
+    return any(
+        market_type in AUTO_SETTLEABLE_MARKET_TYPES
+        for market_type in (market.market_type_ou, market.market_type_yn)
+        if market_type
+    )
 
 
 def validate_config() -> list[str]:

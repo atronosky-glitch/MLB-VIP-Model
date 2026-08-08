@@ -2,6 +2,23 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-08 — Final settlement coverage and CLV safety pass
+
+### What was done
+
+1. Added `AUTO_SETTLEABLE_MARKET_TYPES` and a registry-aware qualification gate. Markets without verified MLB result fields remain Research-only rather than becoming ungradable customer picks.
+2. Made pregame closing capture include existing recommendations for the scanned events even when all current opportunities are deduplicated.
+3. Bounded closing-price lookup to quotes at or before the scheduled event start, preventing post-start prices from being labeled as closing evidence.
+
+### Verification
+
+- Targeted qualification/CLV/pipeline tests: **229 passed**.
+- Full suite: **1477 passed, 0 failed**.
+
+### Deployment state
+
+These final safety changes are being committed and pushed after the previously deployed `be17da3` revision. Render service deployment and production catch-up grading still require external Render access/verification.
+
 ## Session: 2026-08-06 — MLB results ingestion and customer view
 
 ### What was done

@@ -22,6 +22,15 @@ Entries are dated. New entries are appended.
 
 ---
 
+## Unsupported settlement markets remain research-only
+
+- **Date**: 2026-08-08
+- **Decision**: A registry market may not reach Discovery or Official tiers unless a verified automatic result field exists in the MLB result adapter. It may remain visible as Research for coverage analysis.
+- **Reason**: Publishing a market that cannot be settled makes its performance and learning evidence unverifiable and can leave customer records permanently pending.
+- **Consequence**: The current 24-entry registry remains available for parsing, but unsupported markets are blocked from production recommendation tiers until settlement coverage is added.
+
+---
+
 ## Phase 19 adaptive learning is advisory-only
 
 - **Date**: 2026-08-04

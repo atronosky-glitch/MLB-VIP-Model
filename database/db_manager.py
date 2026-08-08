@@ -1979,10 +1979,12 @@ def capture_closing_prices(
                FROM player_prop_odds
                WHERE event_id = ? AND player_id = ? AND market_type = ?
                   AND LOWER(side) = LOWER(?) AND available = 1
+                  AND (? IS NULL OR captured_at <= ?)
                ORDER BY captured_at DESC
                LIMIT 1""",
             (rec.get("event_id"), rec.get("player_id"),
-             rec.get("market_type"), rec.get("side", "").lower()),
+             rec.get("market_type"), rec.get("side", "").lower(),
+             rec.get("event_start_time"), rec.get("event_start_time")),
         )
         closing_row = cur.fetchone()
 
