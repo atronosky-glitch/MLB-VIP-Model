@@ -404,6 +404,11 @@ class TestYNGrading:
         for _ in range(5):
             assert grade_yn() == "UNRESOLVED"
 
+    def test_yn_verified_numeric_fact(self):
+        assert grade_yn(2, "YES") == "WIN"
+        assert grade_yn(0, "YES") == "LOSS"
+        assert grade_yn(0, "NO") == "WIN"
+
 
 # ==================================================================
 # 5. Units

@@ -2,6 +2,46 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-06 — MLB results ingestion and customer view
+
+### What was done
+
+1. Inspected a real final MLB StatsAPI game feed and verified exact JSON paths for final status, game/team/player IDs, batting stats, pitching stats, and pitcher decisions.
+2. Added `src/mlb_results.py` with schedule/feed retrieval, exact team-pair/time matching, exact player-name matching within the matched game, event-result persistence, and player-stat persistence. Missing/ambiguous facts stay unresolved.
+3. Extended Y/N grading to use verified numeric facts (`>=1` for YES, `0` for NO) while preserving unresolved behavior when facts are absent.
+4. Wired result ingestion into worker catch-up grading. O/U and supported Y/N recommendations now flow through settlement, units, Official Pick projection, and lifecycle evidence idempotently.
+5. Added read-only customer-facing `src/customer_view.py` with Official Picks, Research separation, honest performance charting, and awaiting-sample messaging. Added separate `mlb-vip-customer` Render web service; admin dashboard remains `mlb-vip-dashboard`.
+
+### Verification
+
+- Results/customer targeted tests: **83 passed**.
+- Full suite: **1477 passed, 0 failed**.
+
+### Remaining risks
+
+- MLB StatsAPI name matching is intentionally conservative; provider/team aliases or missing player stats remain unresolved rather than guessed.
+- Final pregame closing capture is improved by persisted prop observations, but a dedicated start-time-aware final-close job still deserves separate production verification.
+- Phase 19 rolling metric persistence and human-reviewed proposals remain advisory work, not automatic strategy mutation.
+
+## Session: 2026-08-06 — Automatic grading catch-up and production audit
+
+### What was done
+
+1. Added `src/automatic_grading.py`. It grades unresolved O/U recommendations only when a matching `player_stat_results` row has a final/available verified status. Y/N remains unresolved without an explicit binary result contract.
+2. Worker persistent startup, one-shot mode, and grading jobs now run catch-up grading. Grading jobs are deduplicated across pending/running/completed states.
+3. Settlement retries are idempotent: units reuse the existing settlement identity, and the `official_picks` projection is synchronized with lowercase dashboard outcomes and risk/profit units.
+4. Corrected the default pipeline lifecycle snapshot from `final` to `morning`, persisted player-prop odds/audit observations for later CLV capture, and fixed side-insensitive closing-price lookup.
+5. Audited Official qualification. The Pinnacle fallback remains bounded: exact absence can use LOO fallback, while one-sided/mismatched/threshold-failed Pinnacle remains blocked. No threshold was loosened because live evidence showed only two matched Pinnacle props and insufficient samples for a market-aware relaxation.
+
+### Verification
+
+- Targeted grading/worker tests: **104 passed**.
+- Full suite: **1471 passed, 0 failed**.
+
+### Deliberate boundary
+
+The worker still needs a verified external MLB final-stat ingestion contract to automatically fetch missing player results. The implementation refuses to infer results or guess API fields; unresolved records remain safe and excluded from learning.
+
 ## Session: 2026-08-06 — Live Pinnacle verification passed
 
 ### Result

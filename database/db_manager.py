@@ -1761,7 +1761,11 @@ def save_bet_units(
 ) -> None:
     """Save units for a settled bet. Uses compute_units for formulas."""
     risk, profit, ret = compute_units(settlement_status, american_odds)
-    settlement_id = str(uuid.uuid4())
+    existing = conn.execute(
+        "SELECT settlement_id FROM bet_units WHERE recommendation_id = ? LIMIT 1",
+        (recommendation_id,),
+    ).fetchone()
+    settlement_id = existing[0] if existing else str(uuid.uuid4())
     conn.execute(
         """INSERT INTO bet_units
            (settlement_id, recommendation_id, risk_units, profit_units,
@@ -1773,8 +1777,18 @@ def save_bet_units(
                 profit_units = excluded.profit_units,
                 return_units = excluded.return_units,
                 odds_at_settle = excluded.odds_at_settle""",
-        (settlement_id, recommendation_id, risk, profit, ret, american_odds),
+         (settlement_id, recommendation_id, risk, profit, ret, american_odds),
     )
+    try:
+        conn.execute(
+            """UPDATE official_picks SET outcome = ?, graded_at = datetime('now'),
+               profit_units = ?, risk_units = ?, grader_version = ?
+               WHERE recommendation_id = ?""",
+            (settlement_status.lower(), profit, risk, "v1", recommendation_id),
+        )
+    except Exception:
+        # Older isolated schemas may not include the dashboard projection.
+        logger.debug("Official-pick projection unavailable for %s", recommendation_id[:8])
     conn.commit()
 
 
@@ -1964,7 +1978,7 @@ def capture_closing_prices(
             """SELECT sportsbook, price, decimal_odds, line, captured_at
                FROM player_prop_odds
                WHERE event_id = ? AND player_id = ? AND market_type = ?
-                 AND side = ? AND available = 1
+                  AND LOWER(side) = LOWER(?) AND available = 1
                ORDER BY captured_at DESC
                LIMIT 1""",
             (rec.get("event_id"), rec.get("player_id"),

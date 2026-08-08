@@ -47,6 +47,35 @@ services:
       mountPath: /data
       sizeGB: 1
 
+  # Read-only customer presentation. Admin/debug controls remain in the
+  # dashboard above; this service exposes only the customer view.
+  - type: web
+    name: mlb-vip-customer
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: >
+      streamlit run src/customer_view.py
+      --server.port $PORT
+      --server.address 0.0.0.0
+      --server.headless true
+      --browser.gatherUsageStats false
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.5"
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mlb-postgres
+          property: connectionString
+      - key: MLB_TIMEZONE
+        value: America/New_York
+      - key: MLB_ENVIRONMENT
+        value: production
+      - key: MLB_SHADOW_MODE
+        value: "true"
+
   # ── Background Worker (long-running service) ─────────────────────
   - type: worker
     name: mlb-vip-worker

@@ -4,6 +4,24 @@ Entries are dated. New entries are appended.
 
 ---
 
+## Automatic grading requires verified result facts
+
+- **Date**: 2026-08-06
+- **Decision**: Automatic grading may consume only verified `player_stat_results`/event result facts already stored with source and status metadata. Worker catch-up grading is idempotent and settles O/U recommendations, units, Official Pick projections, and lifecycle evidence. It does not infer final stats from event status, odds, player names, or unverified response fields.
+- **Reason**: The current repository does not have a verified MLB final-stat API contract. Guessing response fields would create fabricated results and corrupt ROI/CLV learning.
+- **Consequence**: The production worker is ready to grade once a trusted result ingestion adapter is supplied. Until then, unresolved recommendations remain explicitly unresolved and excluded from learning metrics.
+
+---
+
+## MLB StatsAPI is the verified final-result source
+
+- **Date**: 2026-08-06
+- **Decision**: Use the public MLB StatsAPI schedule and live game-feed endpoints for final game/player result ingestion. Match SGO games by exact normalized away/home team pair and start-time window; match players by exact normalized full name within the matched game's box score. Store provider MLB IDs and source provenance through the canonical result tables.
+- **Reason**: The live contract was inspected from a final game feed. It exposes final status, stable game/team/player IDs, per-game batting/pitching stats, and pitcher decisions. No API key is required. Ambiguous or missing facts remain unresolved.
+- **Consequence**: O/U and numeric-fact Y/N markets can be automatically settled. A missing or ambiguous player fact never becomes zero, and unsupported market fields remain unresolved.
+
+---
+
 ## Phase 19 adaptive learning is advisory-only
 
 - **Date**: 2026-08-04

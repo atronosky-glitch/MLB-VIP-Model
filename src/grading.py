@@ -8,14 +8,10 @@ YN grading: The settlement meaning of each YN market was investigated:
 - walks YN: YES = pitcher allows >= 1 walk. Same binary structure.
 - earned_runs YN: YES = pitcher allows >= 1 earned run. Same binary structure.
 
-However, the stored market data does NOT include the threshold condition
-explicitly (it is implicit in the market definition). Without access to
-the game's box score or official settlement feed, we cannot reliably
-determine whether the YES condition was met for YN markets.
-
-Decision: YN grading is UNSUPPORTED in automated mode. YN recommendations
-are trackable but settlement remains UNRESOLVED unless an explicit external
-result is supplied via manual override.
+The condition is implicit in the market definition, so YN grading requires a
+verified final numeric fact from an external result source. With that fact,
+YES means value >= 1 and NO means value == 0. Missing or ambiguous facts remain
+UNRESOLVED.
 """
 
 from __future__ import annotations
@@ -164,16 +160,20 @@ def grade_ou(final_stat: float, line: float, side: str) -> str:
 # YN Grading
 # ==================================================================
 
-def grade_yn() -> str:
-    """YN grading is unsupported in automated mode.
+def grade_yn(final_stat: float | None = None, side: str | None = None) -> str:
+    """Grade a binary market when a verified numeric fact is available.
 
     The settlement condition for YN markets (e.g., "YES = >= 1 K") is
     implicit in the market definition. Without an explicit external
     settlement feed, we cannot reliably determine the outcome.
 
-    Always returns SETTLEMENT_UNRESOLVED.
+    With no verified fact, returns SETTLEMENT_UNRESOLVED.
     """
-    return SETTLEMENT_UNRESOLVED
+    if final_stat is None or (side or "").upper() not in ("YES", "NO"):
+        return SETTLEMENT_UNRESOLVED
+    yes = final_stat >= 1
+    won = yes if side.upper() == "YES" else not yes
+    return SETTLEMENT_WIN if won else SETTLEMENT_LOSS
 
 
 # ==================================================================

@@ -265,10 +265,32 @@ def _run_pregame_scan(config) -> dict:
 
 
 def _run_grading(conn: DB, config) -> dict:
-    """Run grading for completed games."""
+    """Catch up grading from verified stored final-stat results."""
     from src.automation import schedule_grading
-    count = schedule_grading(conn)
-    return {"status": "success", "grading_jobs": count}
+    from src.automatic_grading import grade_available_recommendations
+
+    graded = grade_available_recommendations(conn)
+    scheduled = schedule_grading(conn)
+    return {
+        "status": "success",
+        "grading": graded,
+        "grading_jobs": scheduled,
+    }
+
+
+def _run_catchup_grading(conn: DB) -> dict:
+    """Fetch authoritative MLB results, then grade unresolved recommendations."""
+    from database.db_manager import get_unsettled_recommendations
+    from src.automatic_grading import grade_available_recommendations
+    from src.mlb_results import ingest_results_for_recommendations
+
+    unresolved = get_unsettled_recommendations(conn)
+    result_facts = ingest_results_for_recommendations(conn, unresolved)
+    result = grade_available_recommendations(conn)
+    combined = {"results": result_facts, "grading": result}
+    if result.get("graded") or result_facts.get("facts_saved"):
+        logger.info("Automatic grading catch-up: %s", combined)
+    return combined
 
 
 def _run_backup(config) -> dict:
@@ -477,13 +499,11 @@ def _check_and_schedule_pregame(conn: DB) -> None:
 
 def _check_and_schedule_grading(conn: DB) -> None:
     """Check if grading needs scheduling (after games complete)."""
-    now = _now_local()
-    # Only check for grading between 4 PM and 2 AM ET
-    if now.hour >= 16 or now.hour <= 1:
-        from src.automation import schedule_grading
-        count = schedule_grading(conn)
-        if count:
-            logger.info("Scheduled %d grading job(s)", count)
+    # Final games can complete after 2 AM ET, so catch-up must run all day.
+    from src.automation import schedule_grading
+    count = schedule_grading(conn)
+    if count:
+        logger.info("Scheduled %d grading job(s)", count)
 
 
 def _is_backup_time(now: datetime) -> bool:
@@ -524,6 +544,7 @@ def run_worker_persistent(config) -> None:
         conn.execute("PRAGMA busy_timeout=5000")
 
     _running = True
+    _run_catchup_grading(conn)
 
     def _handle_signal(signum, frame):
         nonlocal _running
@@ -622,6 +643,7 @@ def run_worker_once(config) -> None:
     try:
         _write_heartbeat(conn)
         _recover_stale_jobs(conn)
+        _run_catchup_grading(conn)
         executed = _process_pending_jobs(conn, config)
         _check_and_schedule_morning_run(conn)
         _check_and_schedule_pregame(conn)
@@ -648,6 +670,8 @@ def run_specific_job(job_type: str, config) -> None:
         conn.execute("PRAGMA busy_timeout=5000")
 
     try:
+        if job_type == "grading":
+            _run_catchup_grading(conn)
         result = _execute_job(job_type, conn, config)
         logger.info("Job %s result: %s", job_type, result)
     finally:

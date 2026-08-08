@@ -104,6 +104,9 @@
 - [x] Pinnacle player-name matching — strip verified provider market suffixes such as `Total Strikeouts` before matching stable player names. Pinnacle tests: **63 passed**; full suite: **1469 passed, 0 failed**.
 - [x] Live Pinnacle verification — Render confirmed 2 parsed Pinnacle props, 2 exact matches, 2 references used, zero errors, and successful pipeline completion. No positive target edge was present in the matched lines, so zero Official Pinnacle approvals was correct.
 - [ ] Phase 19 implementation — implement the approved adaptive-learning evidence, rolling metrics, calibration, Pinnacle accuracy, statistical gates, and human approval workflow from `docs/PHASE19_ADAPTIVE_LEARNING_ARCHITECTURE.md`; no automatic threshold mutation or betting behavior.
+- [x] Automatic grading catch-up — worker startup/one-shot/grading jobs now grade O/U recommendations from verified stored final stats, update units and Official Pick projections, and emit lifecycle evidence idempotently. External final-result ingestion remains pending because no verified MLB result API contract is present.
+- [x] Verified MLB results ingestion — added `src/mlb_results.py` using the public MLB StatsAPI contract for final game status, player batting/pitching stats, and pitcher decisions; exact team/player matching and conservative unresolved behavior are enforced. Y/N can settle when a verified numeric fact exists.
+- [x] Customer-facing read-only view — added `src/customer_view.py` and separate `mlb-vip-customer` Render service. Admin/debug dashboard remains separate.
 
 ## Next feature stage
 

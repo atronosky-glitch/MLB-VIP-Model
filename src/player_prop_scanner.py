@@ -34,7 +34,7 @@ from .player_prop_parser import parse_player_props
 from .player_prop_analysis import analyze_prop_group, analyze_yn_group, is_pinnacle_book
 from .pinnacle_feed import PinnacleFeedClient, build_pinnacle_lookup, inject_pinnacle_reference
 from .validation_constants import APPROVED_STATUSES
-from database.db_manager import get_connection, create_run, finish_run
+from database.db_manager import get_connection, create_run, finish_run, save_player_prop_batch
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +348,18 @@ def run_scan(
         parsed = parse_player_props(event)
         all_odds.extend(parsed.odds_rows)
         all_audit.extend(parsed.audit_rows)
+
+    # Preserve raw approved prop quotes and audit rows so later pregame/final
+    # scans can calculate CLV from the exact historical market evidence.
+    if all_odds:
+        try:
+            prop_conn = get_connection()
+            try:
+                save_player_prop_batch(prop_conn, all_odds, all_audit)
+            finally:
+                prop_conn.close()
+        except Exception:
+            logger.exception("Could not persist player-prop observations")
 
     if not all_odds:
         return _empty_result(events, scan_start, fetch_time, data_source, from_cache)

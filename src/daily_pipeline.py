@@ -140,7 +140,9 @@ class PipelineConfig:
     as_json: bool = False
     as_csv: bool = False
     debug: bool = False
-    lifecycle_snapshot_kind: str = "final"
+    # Morning scans are observations, not closing snapshots. Final CLV is
+    # captured only by an explicitly scheduled final-close run.
+    lifecycle_snapshot_kind: str = "morning"
 
 
 @dataclass
