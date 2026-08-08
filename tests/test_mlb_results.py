@@ -67,3 +67,12 @@ def test_ingestion_persists_final_fact(db_conn):
     row = db_conn.execute("SELECT final_stat_value, result_source FROM player_stat_results").fetchone()
     assert row[0] == 7
     assert row[1] == "MLB StatsAPI"
+
+
+def test_ingestion_reports_unsupported_market_reason(db_conn):
+    result = ingest_results_for_recommendations(
+        db_conn,
+        [{"market_type": "batting_RBI_ou"}],
+        client=FakeClient(),
+    )
+    assert result["unresolved_reasons"]["unsupported_or_research_market"] == 1

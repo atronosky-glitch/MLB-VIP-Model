@@ -155,17 +155,49 @@ def ingest_results_for_recommendations(conn, recommendations: list[dict], client
         return away, home
     by_date: dict[str, list[dict]] = {}
     for rec in recommendations:
+        base_market = (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn")
+        if base_market != "pitching_win" and base_market not in _MARKET_FIELDS:
+            # Keep unsupported registry markets visible but do not call the
+            # external provider for facts the adapter cannot verify.
+            continue
         parsed = _parse_time(rec.get("event_start_time"))
         if parsed:
             by_date.setdefault(parsed.date().isoformat(), []).append(rec)
 
-    stats = {"recommendations": len(recommendations), "games_final": 0, "facts_saved": 0, "unresolved": 0, "errors": 0}
+    stats = {
+        "recommendations": len(recommendations), "games_final": 0,
+        "facts_saved": 0, "unresolved": 0, "errors": 0,
+        "unresolved_reasons": {
+            "unsupported_or_research_market": 0,
+            "missing_start_time": 0,
+            "missing_matchup": 0,
+            "schedule_fetch_error": 0,
+            "game_matching_failure": 0,
+            "game_not_final": 0,
+            "game_feed_error": 0,
+            "player_fact_missing_or_ambiguous": 0,
+        },
+    }
+    reasons = stats["unresolved_reasons"]
+    reasons["unsupported_or_research_market"] = sum(
+        1 for rec in recommendations
+        if (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn") != "pitching_win"
+        and (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn") not in _MARKET_FIELDS
+    )
+    reasons["missing_start_time"] += sum(
+        1 for rec in recommendations
+        if (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn") == "pitching_win"
+        or (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn") in _MARKET_FIELDS
+        if not rec.get("event_start_time")
+    )
+    stats["unresolved"] = reasons["unsupported_or_research_market"] + reasons["missing_start_time"]
     for date_value, date_recs in by_date.items():
         try:
             schedule = client.fetch_schedule(date_value)
         except Exception:
             logger.exception("MLB StatsAPI schedule fetch failed date=%s", date_value)
             stats["errors"] += 1
+            reasons["schedule_fetch_error"] += len(date_recs)
             continue
         feeds: dict[str, dict] = {}
         for rec in date_recs:
@@ -173,9 +205,18 @@ def ingest_results_for_recommendations(conn, recommendations: list[dict], client
             if event_id in feeds:
                 continue
             away, home = matchup_teams(rec)
+            if not rec.get("event_start_time"):
+                stats["unresolved"] += 1
+                reasons["missing_start_time"] += 1
+                continue
+            if not away or not home:
+                stats["unresolved"] += 1
+                reasons["missing_matchup"] += 1
+                continue
             game = _match_schedule_game(schedule, away, home, rec.get("event_start_time"))
             if not game:
                 stats["unresolved"] += 1
+                reasons["game_matching_failure"] += 1
                 continue
             game_pk = game.get("gamePk")
             try:
@@ -183,10 +224,12 @@ def ingest_results_for_recommendations(conn, recommendations: list[dict], client
             except Exception:
                 logger.exception("MLB StatsAPI game feed failed game_pk=%s", game_pk)
                 stats["errors"] += 1
+                reasons["game_feed_error"] += 1
                 continue
             status = ((feed.get("gameData") or {}).get("status") or {}).get("abstractGameState")
             if status != "Final":
                 stats["unresolved"] += 1
+                reasons["game_not_final"] += 1
                 continue
             feeds[event_id] = feed
             stats["games_final"] += 1
@@ -200,6 +243,7 @@ def ingest_results_for_recommendations(conn, recommendations: list[dict], client
             fact = extract_stat_fact(feed, rec) if feed else None
             if not fact:
                 stats["unresolved"] += 1
+                reasons["player_fact_missing_or_ambiguous"] += 1
                 continue
             save_player_stat_result(
                 conn, rec["event_id"], rec["player_id"], rec["market_type"],
