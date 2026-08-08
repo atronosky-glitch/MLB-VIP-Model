@@ -159,7 +159,7 @@ def schedule_grading(
             SELECT 1 FROM scheduled_jobs sj
             WHERE sj.event_id = g.event_id
             AND sj.job_type = 'grading'
-            AND sj.status IN ('completed', 'running')
+            AND sj.status IN ('pending', 'running', 'completed')
         )
     """).fetchall()
 
