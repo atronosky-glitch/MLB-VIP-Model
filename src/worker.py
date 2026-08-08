@@ -282,13 +282,12 @@ def _run_pregame_scan(conn: DB, config, event_id: str | None = None) -> dict:
 def _run_grading(conn: DB, config) -> dict:
     """Catch up grading from verified stored final-stat results."""
     from src.automation import schedule_grading
-    from src.automatic_grading import grade_available_recommendations
 
-    graded = grade_available_recommendations(conn)
+    catchup = _run_catchup_grading(conn)
     scheduled = schedule_grading(conn)
     return {
         "status": "success",
-        "grading": graded,
+        **catchup,
         "grading_jobs": scheduled,
     }
 
@@ -685,8 +684,6 @@ def run_specific_job(job_type: str, config) -> None:
         conn.execute("PRAGMA busy_timeout=5000")
 
     try:
-        if job_type == "grading":
-            _run_catchup_grading(conn)
         result = _execute_job(job_type, conn, config)
         logger.info("Job %s result: %s", job_type, result)
     finally:

@@ -2,6 +2,22 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-08 — Grading-job catch-up dispatch fix
+
+### What was found
+
+The live `python -m src.worker --job grading` result showed `examined=1508`, `graded=0`, and no result-ingestion counters. `_run_grading()` was only consuming already-stored facts; MLB StatsAPI ingestion existed only in startup catch-up.
+
+### What was changed
+
+- Explicit grading jobs now run the same MLB StatsAPI ingestion plus grading catch-up path as worker startup.
+- Removed redundant double catch-up from specific-job dispatch.
+
+### Verification
+
+- Targeted worker/grading tests: **83 passed**.
+- Full suite: **1479 passed, 0 failed**.
+
 ## Session: 2026-08-08 — Scoped pregame runtime and overlap protection
 
 ### What was found
