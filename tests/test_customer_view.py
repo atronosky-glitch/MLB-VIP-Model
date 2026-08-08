@@ -19,6 +19,9 @@ def test_expected_actual_series_uses_recorded_values():
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert 'frame["expected_units"] = frame["risk_units"] * frame["ev_pct"] / 100.0' in source
     assert 'frame["actual_cumulative"] = frame["profit_units"].cumsum()' in source
+    assert "hr.event_start_time >= ?" in source
+    assert "hr.event_start_time <= ?" in source
+    assert "settlement_status IN ('UNRESOLVED','ungraded')" in source
 
 
 def test_render_defines_customer_service():

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hmac
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
@@ -79,6 +79,8 @@ def load_customer_data(authorized: bool) -> dict:
     """Load only fields allowed for the request's entitlement level."""
     init_db()
     conn = get_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    horizon_iso = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
     try:
         settled = conn.execute("""
             SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
@@ -104,10 +106,12 @@ def load_customer_data(authorized: bool) -> dict:
             FROM official_picks op
             JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
             LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
-            WHERE ms.recommendation_id IS NULL
-               OR ms.settlement_status IN ('UNRESOLVED','ungraded')
+            WHERE hr.event_start_time IS NOT NULL
+              AND hr.event_start_time >= ? AND hr.event_start_time <= ?
+              AND (ms.recommendation_id IS NULL
+                   OR ms.settlement_status IN ('UNRESOLVED','ungraded'))
             ORDER BY hr.event_start_time, op.official_rank
-        """).fetchall()
+        """, (now_iso, horizon_iso)).fetchall()
 
         upcoming = []
         if authorized:
@@ -119,10 +123,12 @@ def load_customer_data(authorized: bool) -> dict:
                 FROM official_picks op
                 JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
                 LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
-                WHERE ms.recommendation_id IS NULL
-                   OR ms.settlement_status IN ('UNRESOLVED','ungraded')
+                WHERE hr.event_start_time IS NOT NULL
+                  AND hr.event_start_time >= ? AND hr.event_start_time <= ?
+                  AND (ms.recommendation_id IS NULL
+                       OR ms.settlement_status IN ('UNRESOLVED','ungraded'))
                 ORDER BY hr.event_start_time, op.official_rank
-            """).fetchall()
+            """, (now_iso, horizon_iso)).fetchall()
         research = []
         if authorized:
             research = conn.execute("""
@@ -187,6 +193,7 @@ def _render_locked_pick(lock: dict) -> None:
       <div class="pick-title">{lock.get('matchup') or 'MLB Game'}</div>
       <div class="pick-meta">{lock.get('event_start_time','')[:16]} · Official Model Play</div>
       <div class="lock-copy">VIP PICK AVAILABLE 🔒</div>
+      <div class="pick-meta">Unlock the exact player and wager before first pitch.</div>
     </div>
     """, unsafe_allow_html=True)
 
