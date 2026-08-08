@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Customer product access and public track-record hardening (2026-08-08)** — Reworked `src/customer_view.py` into separate public/subscriber experiences. Public queries receive only matchup/time/Official-exists lock fields for unsettled picks; settled Official Picks are publicly revealed from canonical immutable records. Authorized staging access uses server-side `MLB_CUSTOMER_ACCESS_TOKEN`; no payment system is faked. Added real expected-vs-actual cumulative units, period metrics, zero-pick/error states, mobile-first premium styling, and a separate Render service. Customer tests: **41 targeted passed**; full suite: **1478 passed, 0 failed**.
+
 - **Settlement coverage gate and pregame CLV hardening (2026-08-08)** — Added a verified settlement-coverage gate so unsupported registry markets remain Research-only; pregame capture now includes existing recommendations for scanned events even when the scan deduplicates all picks; closing lookup is bounded by scheduled start time and never uses post-start quotes. Full suite: **1477 passed, 0 failed**.
 
 - **MLB StatsAPI results, automatic settlement, and customer view (2026-08-06)** — Added verified no-key MLB StatsAPI schedule/game-feed ingestion using final status, exact normalized team-pair/time matching, stable MLB player IDs inside the matched feed, and conservative unresolved handling. O/U and numeric-fact Y/N grading now settle automatically through worker catch-up, units, Official Pick projection, and lifecycle evidence. Added a separate read-only `src/customer_view.py` and Render `mlb-vip-customer` service showing real Official Picks, Research separation, and honest performance/awaiting-sample states. Full suite: **1477 passed, 0 failed**.

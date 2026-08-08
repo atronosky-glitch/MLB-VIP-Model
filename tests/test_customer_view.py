@@ -10,9 +10,15 @@ def test_customer_view_is_separate_from_admin_dashboard():
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert "official_picks" in source
     assert "Research Opportunities" in source
-    assert "No Official Picks today" in source
+    assert "No Official Plays Yet" in source
     assert "subprocess" not in source
     assert "SPORTSODDS_API_KEY" not in source
+
+
+def test_expected_actual_series_uses_recorded_values():
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'frame["expected_units"] = frame["risk_units"] * frame["ev_pct"] / 100.0' in source
+    assert 'frame["actual_cumulative"] = frame["profit_units"].cumsum()' in source
 
 
 def test_render_defines_customer_service():

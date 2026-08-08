@@ -69,6 +69,8 @@ services:
         fromDatabase:
           name: mlb-postgres
           property: connectionString
+      - key: MLB_CUSTOMER_ACCESS_TOKEN
+        sync: false
       - key: MLB_TIMEZONE
         value: America/New_York
       - key: MLB_ENVIRONMENT

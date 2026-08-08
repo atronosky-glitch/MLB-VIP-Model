@@ -2,6 +2,25 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-08 — Customer product access boundary
+
+### What was done
+
+1. Reworked `src/customer_view.py` into a premium mobile-first public/subscriber experience without changing the admin dashboard.
+2. Public requests query only non-sensitive upcoming lock fields: matchup, time, status, post timestamp, and rank. Player, side, line, odds, sportsbook, EV, and exact market fields are never queried for public unsettled picks.
+3. Settled Official Picks are publicly revealed from canonical settlement records for both wins and losses, with original odds/line, result, units, and CLV where available.
+4. Added a server-side staging entitlement adapter using `MLB_CUSTOMER_ACCESS_TOKEN`. This is an access boundary for staging, not a fake payment system; a billing provider can replace that adapter later.
+5. Added real cumulative expected-units vs actual-units performance calculations, zero-pick messaging, data-error messaging, and a 24-market settlement coverage gate remains active.
+
+### Verification
+
+- Customer targeted tests: **41 passed**.
+- Full suite: **1478 passed, 0 failed**.
+
+### Deployment
+
+The customer service definition is in `render.yaml` as `mlb-vip-customer`. Render deployment and URL verification require the external Render dashboard.
+
 ## Session: 2026-08-08 — Final settlement coverage and CLV safety pass
 
 ### What was done

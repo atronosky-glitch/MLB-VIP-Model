@@ -1,13 +1,14 @@
-"""Read-only customer-facing MLB VIP view.
+"""Read-only customer-facing MLB VIP product view.
 
-This app intentionally exposes no operational controls, credentials, raw
-diagnostics, or internal thresholds. It reads the shared production database
-and presents only frozen Official Picks, clearly separated Research, and
-honest performance evidence.
+Public requests never query protected upcoming recommendation fields. The
+temporary entitlement adapter uses a server-side staging token so a future
+billing provider can replace one function without changing the UI contract.
 """
 
 from __future__ import annotations
 
+import hmac
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -21,133 +22,244 @@ st.set_page_config(page_title="MLB VIP | Sharp Market Intelligence", page_icon="
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
-:root { --ink:#0b1220; --muted:#667085; --line:#e6eaf0; --mint:#c9f7df; --blue:#155eef; }
-.stApp { background: #f7f9fc; color: var(--ink); }
-[data-testid="stHeader"] { background: rgba(247,249,252,.88); }
-h1,h2,h3 { font-family:'Space Grotesk', sans-serif !important; letter-spacing:-.04em; }
-p,div,span,button { font-family:'DM Sans', sans-serif; }
-.hero { padding: 2.5rem 0 1.4rem; }
-.eyebrow { color:var(--blue); font-weight:700; letter-spacing:.14em; font-size:.72rem; text-transform:uppercase; }
-.hero h1 { font-size:clamp(2.4rem,6vw,5.4rem); line-height:.95; margin:.45rem 0 1rem; }
-.hero p { color:var(--muted); font-size:1.05rem; max-width:660px; }
-.pill { display:inline-block; padding:.42rem .7rem; border-radius:999px; background:var(--mint); color:#087443; font-size:.75rem; font-weight:700; }
-.pick { background:white; border:1px solid var(--line); border-radius:20px; padding:1.1rem 1.2rem; margin:.55rem 0; box-shadow:0 10px 30px rgba(16,24,40,.04); }
-.pick-title { font-family:'Space Grotesk'; font-size:1.1rem; font-weight:700; }
-.pick-meta { color:var(--muted); font-size:.88rem; margin-top:.35rem; }
-.edge { color:#087443; font-weight:700; }
-.research { background:#fffdf5; border-color:#f3e6b3; }
-.section-note { color:var(--muted); font-size:.9rem; }
+:root { --ink:#e8eef7; --muted:#9aa9bc; --line:#263448; --panel:#111b2b; --mint:#9ef0c7; --blue:#83aaff; --gold:#f2c66d; }
+.stApp { background: radial-gradient(circle at 85% 0%, #172b4a 0, #08111f 38%, #060c16 100%); color:var(--ink); }
+[data-testid="stHeader"] { background:rgba(6,12,22,.75); }
+h1,h2,h3 { font-family:'Space Grotesk',sans-serif !important; letter-spacing:-.045em; color:var(--ink) !important; }
+p,div,span,button { font-family:'DM Sans',sans-serif; }
+.hero { padding:2.3rem 0 1.5rem; }
+.eyebrow { color:var(--mint); font-weight:700; letter-spacing:.16em; font-size:.7rem; text-transform:uppercase; }
+.hero h1 { font-size:clamp(2.8rem,7vw,6.4rem); line-height:.9; margin:.55rem 0 1.1rem; }
+.hero p { color:var(--muted); font-size:1.05rem; max-width:680px; line-height:1.65; }
+.pill { display:inline-block; padding:.42rem .72rem; border:1px solid #31506b; border-radius:999px; color:var(--mint); font-size:.72rem; font-weight:700; letter-spacing:.08em; }
+.pick { background:linear-gradient(135deg,#13233a,#0e1828); border:1px solid var(--line); border-radius:20px; padding:1.15rem 1.25rem; margin:.65rem 0; box-shadow:0 16px 38px rgba(0,0,0,.18); }
+.pick.settled { border-color:#2d6e57; }
+.pick.locked { background:linear-gradient(135deg,#192238,#101827); border-color:#3b4e6e; }
+.pick.research { background:#171b26; border-color:#5d4e2c; }
+.pick-title { font-family:'Space Grotesk'; font-size:1.18rem; font-weight:700; color:var(--ink); }
+.pick-meta { color:var(--muted); font-size:.88rem; margin-top:.4rem; }
+.edge { color:var(--mint); font-weight:700; }
+.gold { color:var(--gold); font-weight:700; }
+.section-note { color:var(--muted); font-size:.9rem; line-height:1.5; }
+.lock-copy { color:#c6d1e1; font-family:'Space Grotesk'; font-weight:600; letter-spacing:.02em; }
+.feature { background:rgba(17,27,43,.72); border:1px solid var(--line); border-radius:16px; padding:1rem; min-height:120px; }
+.feature-title { color:var(--mint); font-weight:700; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase; }
 </style>
 """, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def load_customer_data() -> tuple[list[dict], list[dict], list[dict]]:
-    init_db()
-    conn = get_connection()
-    try:
-        official = conn.execute("""
-            SELECT hr.*, op.tier, op.official_rank, op.outcome,
-                   op.profit_units AS official_profit_units,
-                   ms.settlement_status, bu.profit_units, bu.risk_units
-            FROM official_picks op
-            JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
-            LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
-            LEFT JOIN bet_units bu ON bu.recommendation_id = hr.recommendation_id
-            WHERE date(hr.scan_timestamp) = date('now')
-            ORDER BY op.official_rank, hr.model_score DESC
-        """).fetchall()
-        research = conn.execute("""
-            SELECT hr.*
-            FROM historical_recommendations hr
-            WHERE date(hr.scan_timestamp) = date('now')
-              AND COALESCE(hr.recommendation_tier, 'RESEARCH_ONLY') <> 'OFFICIAL_TRACKED'
-            ORDER BY hr.model_score DESC, hr.ev_pct DESC
-            LIMIT 25
-        """).fetchall()
-        performance = conn.execute("""
-            SELECT date(hr.scan_timestamp) AS day,
-                   COUNT(*) AS settled,
-                   SUM(CASE WHEN ms.settlement_status = 'WIN' THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN ms.settlement_status = 'LOSS' THEN 1 ELSE 0 END) AS losses,
-                   SUM(COALESCE(bu.profit_units, 0)) AS profit_units,
-                   SUM(COALESCE(bu.risk_units, 0)) AS risk_units,
-                   AVG(hr.ev_pct) AS avg_ev
-            FROM historical_recommendations hr
-            JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
-            LEFT JOIN bet_units bu ON bu.recommendation_id = hr.recommendation_id
-            WHERE ms.settlement_status IN ('WIN','LOSS','PUSH','VOID','CANCELLED')
-            GROUP BY date(hr.scan_timestamp)
-            ORDER BY day
-        """).fetchall()
-        return [dict(r) for r in official], [dict(r) for r in research], [dict(r) for r in performance]
-    finally:
-        conn.close()
+def _authorized_request() -> bool:
+    """Staging entitlement adapter; replace with billing webhook/provider later."""
+    expected = os.getenv("MLB_CUSTOMER_ACCESS_TOKEN", "")
+    supplied = st.query_params.get("access", "")
+    return bool(expected and supplied and hmac.compare_digest(supplied, expected))
 
 
 def _market_label(value: str) -> str:
     return (value or "").replace("_ou", "").replace("_yn", "").replace("_", " ").title()
 
 
-def _render_pick(pick: dict, research: bool = False) -> None:
+def _settled_status(row: dict) -> str:
+    return (row.get("settlement_status") or row.get("outcome") or "").upper()
+
+
+def public_lock_view(row: dict) -> dict:
+    """Project only non-sensitive pre-settlement fields for public display."""
+    return {
+        "matchup": row.get("matchup"),
+        "event_start_time": row.get("event_start_time"),
+        "event_status": row.get("event_status"),
+        "scan_timestamp": row.get("scan_timestamp"),
+        "official_rank": row.get("official_rank"),
+    }
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_customer_data(authorized: bool) -> dict:
+    """Load only fields allowed for the request's entitlement level."""
+    init_db()
+    conn = get_connection()
+    try:
+        settled = conn.execute("""
+            SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
+                   hr.sportsbook, hr.offered_american_odds, hr.ev_pct,
+                   hr.model_score, hr.scan_timestamp, hr.event_start_time,
+                   ms.settlement_status, ms.final_stat_value,
+                   bu.profit_units, bu.risk_units, cp.clv_probability
+            FROM official_picks op
+            JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
+            JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
+            LEFT JOIN bet_units bu ON bu.recommendation_id = hr.recommendation_id
+            LEFT JOIN closing_prices cp ON cp.recommendation_id = hr.recommendation_id
+            WHERE ms.settlement_status IN ('WIN','LOSS','PUSH','VOID','CANCELLED')
+            ORDER BY hr.scan_timestamp DESC
+        """).fetchall()
+
+        # This query intentionally contains no player, side, line, sportsbook,
+        # odds, EV, or market fields. Public visitors only learn that a play
+        # exists for a matchup and time.
+        locked = conn.execute("""
+            SELECT hr.matchup, hr.event_start_time, hr.event_status,
+                   hr.scan_timestamp, op.official_rank
+            FROM official_picks op
+            JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
+            LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
+            WHERE ms.recommendation_id IS NULL
+               OR ms.settlement_status IN ('UNRESOLVED','ungraded')
+            ORDER BY hr.event_start_time, op.official_rank
+        """).fetchall()
+
+        upcoming = []
+        if authorized:
+            upcoming = conn.execute("""
+                SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
+                       hr.sportsbook, hr.offered_american_odds, hr.ev_pct,
+                       hr.model_score, hr.scan_timestamp, hr.event_start_time,
+                       op.outcome, op.official_rank
+                FROM official_picks op
+                JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
+                LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
+                WHERE ms.recommendation_id IS NULL
+                   OR ms.settlement_status IN ('UNRESOLVED','ungraded')
+                ORDER BY hr.event_start_time, op.official_rank
+            """).fetchall()
+        research = []
+        if authorized:
+            research = conn.execute("""
+                SELECT player_name, matchup, market_type, side, line, sportsbook,
+                       offered_american_odds, ev_pct, yn_implied_prob_adv,
+                       model_score, event_start_time
+                FROM historical_recommendations
+                WHERE date(scan_timestamp) = date('now')
+                  AND COALESCE(recommendation_tier, 'RESEARCH_ONLY') <> 'OFFICIAL_TRACKED'
+                ORDER BY model_score DESC, ev_pct DESC
+                LIMIT 25
+            """).fetchall()
+        return {
+            "settled": [dict(r) for r in settled],
+            "locked": [dict(r) for r in locked],
+            "upcoming": [dict(r) for r in upcoming],
+            "research": [dict(r) for r in research],
+        }
+    finally:
+        conn.close()
+
+
+def performance_series(rows: list[dict], period: str = "ALL") -> pd.DataFrame:
+    """Calculate cumulative expected units versus actual units."""
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    frame["posted"] = pd.to_datetime(frame["scan_timestamp"], utc=True, errors="coerce")
+    frame = frame.dropna(subset=["posted"]).sort_values("posted")
+    if period in ("7D", "30D"):
+        days = 7 if period == "7D" else 30
+        frame = frame[frame["posted"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)]
+    frame["risk_units"] = pd.to_numeric(frame["risk_units"], errors="coerce").fillna(0.0)
+    frame["profit_units"] = pd.to_numeric(frame["profit_units"], errors="coerce").fillna(0.0)
+    frame["ev_pct"] = pd.to_numeric(frame["ev_pct"], errors="coerce").fillna(0.0)
+    frame["expected_units"] = frame["risk_units"] * frame["ev_pct"] / 100.0
+    frame["expected_cumulative"] = frame["expected_units"].cumsum()
+    frame["actual_cumulative"] = frame["profit_units"].cumsum()
+    return frame.set_index("posted")[["expected_cumulative", "actual_cumulative"]]
+
+
+def _render_full_pick(pick: dict, settled: bool = False) -> None:
     side = pick.get("side", "")
     line = "" if pick.get("line") is None else f" {pick['line']}"
     edge = pick.get("ev_pct")
-    edge_text = f"{edge:+.2f}% EV" if edge is not None and not research else "Price advantage tracked"
-    status = (pick.get("settlement_status") or pick.get("outcome") or "OPEN").upper()
-    cls = "pick research" if research else "pick"
+    edge_text = f"{edge:+.2f}% EV" if edge is not None else "Edge tracked"
+    status = _settled_status(pick) or "OPEN"
+    final = f" · Final: {pick['final_stat_value']}" if pick.get("final_stat_value") is not None else ""
+    units = f" · {pick['profit_units']:+.2f}u" if pick.get("profit_units") is not None else ""
     st.markdown(f"""
-    <div class="{cls}">
-      <div class="pick-title">{pick.get('player_name') or pick.get('matchup') or 'MLB Market'}</div>
-      <div class="pick-meta">{_market_label(pick.get('market_type',''))} · {side.title()}{line} · {pick.get('sportsbook','')}</div>
-      <div class="pick-meta">{pick.get('event_start_time','')[:16]} · {pick.get('offered_american_odds','')} · <span class="edge">{edge_text}</span> · {status}</div>
+    <div class="pick {'settled' if settled else ''}">
+      <div class="pick-title">{pick.get('player_name') or 'MLB Official Play'}</div>
+      <div class="pick-meta">{pick.get('matchup','')} · {_market_label(pick.get('market_type',''))} · {side.title()}{line}</div>
+      <div class="pick-meta">{pick.get('sportsbook','')} {pick.get('offered_american_odds','')} · <span class="edge">{edge_text}</span> · {status}{final}{units}</div>
     </div>
     """, unsafe_allow_html=True)
 
 
-official, research, performance = load_customer_data()
-today = datetime.now(timezone.utc).strftime("%B %d, %Y")
+def _render_locked_pick(lock: dict) -> None:
+    st.markdown(f"""
+    <div class="pick locked">
+      <div class="pick-title">{lock.get('matchup') or 'MLB Game'}</div>
+      <div class="pick-meta">{lock.get('event_start_time','')[:16]} · Official Model Play</div>
+      <div class="lock-copy">VIP PICK AVAILABLE 🔒</div>
+    </div>
+    """, unsafe_allow_html=True)
 
+
+authorized = _authorized_request()
+try:
+    data = load_customer_data(authorized)
+except Exception:
+    st.error("The model data is temporarily unavailable. Please check back shortly.")
+    st.stop()
+
+today = datetime.now(timezone.utc).strftime("%B %d, %Y")
 st.markdown(f"""
 <div class="hero">
   <div class="eyebrow">MLB VIP · Sharp Market Intelligence</div>
-  <h1>Find the price.<br>Respect the edge.</h1>
-  <p>Multi-sportsbook market comparison, conservative fair-value estimates, and transparent performance tracking. The model filters the slate instead of forcing a bet.</p>
-  <span class="pill">SHADOW MODE · {today}</span>
+  <h1>Stop guessing.<br>Find the number.</h1>
+  <p>Thousands of sportsbook prices are screened for fair value, market quality, and closing-line evidence. The model does not need a play every day.</p>
+  <span class="pill">{today} · {'SUBSCRIBER VIEW' if authorized else 'PUBLIC VIEW'}</span>
 </div>
 """, unsafe_allow_html=True)
 
-st.subheader("Today's Official Picks")
-st.markdown('<div class="section-note">Frozen opportunities that passed every production safety gate. No pick is shown when the evidence is not strong enough.</div>', unsafe_allow_html=True)
-if official:
-    for pick in official:
-        _render_pick(pick)
+if not authorized:
+    st.info("Official plays are posted when the slate qualifies. Subscriber access unlocks the exact wager before the game; settled picks become public automatically for full accountability.")
+    st.subheader("Today's Official Picks")
+    if data["locked"]:
+        for lock in data["locked"]:
+            _render_locked_pick(lock)
+        st.button("Unlock Today's Picks", type="primary", use_container_width=True, disabled=True)
+    else:
+        st.success("No Official Plays Yet")
+        st.caption("The model has not identified an opportunity meeting today's qualification standards.")
 else:
-    st.info("No Official Picks today. That means the slate did not produce a fully qualified opportunity.")
+    st.subheader("Today's Official Picks")
+    if data["upcoming"]:
+        for pick in data["upcoming"]:
+            _render_full_pick(pick)
+    else:
+        st.success("No Official Plays Yet")
+        st.caption("The model has not identified an opportunity meeting today's qualification standards.")
+    if data["research"]:
+        with st.expander("Research Opportunities"):
+            for pick in data["research"]:
+                _render_full_pick(pick)
 
 st.divider()
-st.subheader("Research Opportunities")
-st.markdown('<div class="section-note">Useful market signals that remain below the Official standard. Research is not a betting recommendation.</div>', unsafe_allow_html=True)
-if research:
-    for pick in research[:10]:
-        _render_pick(pick, research=True)
+st.subheader("Verified Track Record")
+st.caption("Settled Official Picks only. Winners and losses are included equally; no results are manually selected.")
+if data["settled"]:
+    for pick in data["settled"][:5]:
+        _render_full_pick(pick, settled=True)
+    period = st.radio("Performance period", ["7D", "30D", "ALL"], horizontal=True, index=2)
+    series = performance_series(data["settled"], period)
+    if not series.empty:
+        st.line_chart(series, y_label="Units", height=280)
+        raw = pd.DataFrame(data["settled"])
+        profit = pd.to_numeric(raw["profit_units"], errors="coerce").fillna(0).sum()
+        risk = pd.to_numeric(raw["risk_units"], errors="coerce").fillna(0).sum()
+        wins = sum(_settled_status(r) == "WIN" for r in data["settled"])
+        losses = sum(_settled_status(r) == "LOSS" for r in data["settled"])
+        cols = st.columns(4)
+        cols[0].metric("Record", f"{wins}-{losses}")
+        cols[1].metric("Settled Picks", len(raw))
+        cols[2].metric("Units", f"{profit:+.2f}")
+        cols[3].metric("ROI", f"{profit / risk:.1%}" if risk else "-")
 else:
-    st.info("No research opportunities are currently available.")
+    st.info("BUILDING VERIFIED TRACK RECORD · Performance appears after official picks settle.")
 
 st.divider()
-st.subheader("Performance Evidence")
-if performance:
-    frame = pd.DataFrame(performance)
-    frame["roi"] = frame.apply(lambda r: r["profit_units"] / r["risk_units"] if r["risk_units"] else 0.0, axis=1)
-    frame["expected_ev"] = frame["avg_ev"].fillna(0) / 100.0
-    frame["realized_roi"] = frame["roi"]
-    st.line_chart(frame.set_index("day")[["expected_ev", "realized_roi"]], y_label="Expected EV / Realized ROI")
-    metrics = st.columns(4)
-    metrics[0].metric("Settled Picks", int(frame["settled"].sum()))
-    metrics[1].metric("Wins", int(frame["wins"].sum()))
-    metrics[2].metric("Losses", int(frame["losses"].sum()))
-    metrics[3].metric("Units", f"{frame['profit_units'].sum():+.2f}")
-else:
-    st.info("Performance chart is awaiting settled sample data. No historical results are fabricated.")
+features = st.columns(4)
+for col, title, body in zip(features, ["Multi-book scan", "Fair value", "Sharp reference", "Accountability"], [
+    "Prices compared across sportsbooks.", "Conservative probability and EV checks.", "Pinnacle used only on exact valid matches.", "Pregame prices, CLV, and results are preserved.",
+]):
+    with col:
+        st.markdown(f'<div class="feature"><div class="feature-title">{title}</div><div class="section-note">{body}</div></div>', unsafe_allow_html=True)
 
-st.caption("The model does not guarantee profit, place bets, or treat research opportunities as Official Picks.")
+st.caption("MLB VIP does not guarantee profit, place bets, or present Research opportunities as Official Picks.")
