@@ -140,6 +140,7 @@ class PipelineConfig:
     as_json: bool = False
     as_csv: bool = False
     debug: bool = False
+    event_id: str | None = None
     # Morning scans are observations, not closing snapshots. Final CLV is
     # captured only by an explicitly scheduled final-close run.
     lifecycle_snapshot_kind: str = "morning"
@@ -320,7 +321,8 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
         max_cache_age = cfg.LIVE_CACHE_TTL_SECONDS if config.live else 3600.0
         client = SportsGameOddsClient(max_cache_age=max_cache_age)
         data, from_cache = client.get_events(
-            league="MLB", odds_available=True, include_alt_lines=True,
+            league="MLB", event_id=config.event_id,
+            odds_available=True, include_alt_lines=True,
         )
         state.data_source = "CACHE" if from_cache else "LIVE API"
 
@@ -340,6 +342,8 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
         state.scan_result["_raw_events"] = events
 
         print(f"  Events: {state.n_events}  |  Sportsbooks: {state.n_books}")
+        if config.event_id:
+            print(f"  Scoped event: {config.event_id}")
         print(f"  Source: {state.data_source}")
 
         if not events:
@@ -524,6 +528,7 @@ def _stage_scan(config: PipelineConfig, state: PipelineState) -> bool:
             market=config.market,
             market_form=config.market_form,
             limit=25,
+            event_id=config.event_id,
         )
 
         state.scan_result = scan_result

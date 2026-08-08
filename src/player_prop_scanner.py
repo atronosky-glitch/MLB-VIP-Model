@@ -279,6 +279,7 @@ def run_scan(
     sportsbook: str | None = None,
     player: str | None = None,
     game: str | None = None,
+    event_id: str | None = None,
 ) -> dict:
     """Run the full generic scanner pipeline.
 
@@ -334,7 +335,8 @@ def run_scan(
 
     logger.info("Fetching MLB events...")
     data, from_cache = client.get_events(
-        league="MLB", odds_available=True, include_alt_lines=True,
+        league="MLB", event_id=event_id,
+        odds_available=True, include_alt_lines=True,
     )
     data_source = "CACHE" if from_cache else "LIVE API"
     fetch_time = datetime.now(timezone.utc)

@@ -2,6 +2,28 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-08 — Scoped pregame runtime and overlap protection
+
+### What was found
+
+Each scheduled pregame job invoked the full daily pipeline and full-slate scanner. The worker serialized jobs within one process, but there was no global pregame lock for multiple workers and no elapsed completion log, allowing pending work to pile up and obscuring runtime.
+
+### What was changed
+
+- Added `event_id` scoping to pipeline fetch, scanner fetch, and pregame worker execution.
+- Added a `pregame-pipeline` global lock across worker instances.
+- Added `PREGAME JOB START`, `PREGAME JOB COMPLETE`, elapsed, target, and exit-code logs.
+- Existing job state transitions remain `pending -> running -> completed/failed`.
+
+### Verification
+
+- Targeted worker/pipeline tests: **237 passed**.
+- Full suite: **1478 passed, 0 failed**.
+
+### Expected production effect
+
+Each pregame job now targets one event instead of all MLB events. The job should be materially shorter and cannot overlap another pregame pipeline in the same database. Pre-start closing capture remains bounded by scheduled start time.
+
 ## Session: 2026-08-08 — Customer product access boundary
 
 ### What was done

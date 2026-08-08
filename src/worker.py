@@ -246,22 +246,37 @@ def _run_pregame_checks(conn: DB, config) -> dict:
     return {"status": "success", "jobs_scheduled": count}
 
 
-def _run_pregame_scan(config) -> dict:
+def _run_pregame_scan(conn: DB, config, event_id: str | None = None) -> dict:
     """Run a scheduled pregame pipeline so it records a scan_run."""
     from src.daily_pipeline import run_pipeline, PipelineConfig
 
-    exit_code = run_pipeline(PipelineConfig(
-        live=True,
-        use_cache=False,
-        auto=True,
-        output_dir=config.output_dir,
-        actionable_only=True,
-        lifecycle_snapshot_kind="pregame",
-    ))
-    return {
-        "status": "success" if exit_code in (0, 1) else "failed",
-        "exit_code": exit_code,
-    }
+    lock_key = _acquire_lock(conn, "pregame-pipeline")
+    if not lock_key:
+        logger.warning("PREGAME JOB SKIPPED reason=another_pregame_running event_id=%s", event_id)
+        return {"status": "success", "skipped": True, "reason": "another_pregame_running"}
+    started = time.monotonic()
+    logger.info("PREGAME JOB START event_id=%s games_targeted=%s", event_id, 1 if event_id else "all")
+    try:
+        exit_code = run_pipeline(PipelineConfig(
+            live=True,
+            use_cache=False,
+            auto=True,
+            output_dir=config.output_dir,
+            actionable_only=True,
+            lifecycle_snapshot_kind="pregame",
+            event_id=event_id,
+        ))
+        result = {
+            "status": "success" if exit_code in (0, 1) else "failed",
+            "exit_code": exit_code,
+        }
+        logger.info(
+            "PREGAME JOB COMPLETE elapsed=%.1fs event_id=%s games_targeted=%s exit_code=%s",
+            time.monotonic() - started, event_id, 1 if event_id else "all", exit_code,
+        )
+        return result
+    finally:
+        _release_lock(conn, lock_key)
 
 
 def _run_grading(conn: DB, config) -> dict:
@@ -396,11 +411,11 @@ def _check_api_quota_and_alert(conn: DB, config) -> None:
 # ── Job dispatcher ────────────────────────────────────────────────
 
 
-def _execute_job(job_type: str, conn: DB, config) -> dict:
+def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -> dict:
     """Dispatch and execute a single job."""
     dispatch = {
         "morning-run": lambda: _run_morning_scan(config),
-        "pregame-check": lambda: _run_pregame_scan(config),
+        "pregame-check": lambda: _run_pregame_scan(conn, config, event_id),
         "grading": lambda: _run_grading(conn, config),
         "backup": lambda: _run_backup(config),
         "adaptive-learning": lambda: _run_adaptive_learning(conn, config),
@@ -452,7 +467,7 @@ def _process_pending_jobs(conn: DB, config) -> int:
             update_job_status(conn, job_id, "running")
             logger.info("Executing job %s (type=%s)", job_id[:8], job_type)
 
-            result = _execute_job(job_type, conn, config)
+            result = _execute_job(job_type, conn, config, job.get("event_id"))
 
             ts = datetime.now(timezone.utc).isoformat()
             if result.get("status") == "success":

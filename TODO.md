@@ -108,6 +108,7 @@
 - [x] Verified MLB results ingestion — added `src/mlb_results.py` using the public MLB StatsAPI contract for final game status, player batting/pitching stats, and pitcher decisions; exact team/player matching and conservative unresolved behavior are enforced. Y/N can settle when a verified numeric fact exists.
 - [x] Customer-facing read-only view — added `src/customer_view.py` and separate `mlb-vip-customer` Render service. Admin/debug dashboard remains separate.
 - [x] Customer public/subscriber boundary — public upcoming queries expose only lock-safe matchup/time fields; settled Official Picks reveal immutable full records; staging entitlement uses server-side `MLB_CUSTOMER_ACCESS_TOKEN`; no fake payment/auth system added.
+- [x] Scoped pregame runtime — scheduled event IDs now limit pregame fetch/scan work; global pregame locking and start/complete elapsed logs prevent overlapping full-slate jobs.
 - [x] Settlement coverage safety — unsupported markets cannot reach Discovery/Official tiers; pregame CLV capture now handles deduplicated recommendations and is bounded before scheduled start.
 
 ## Next feature stage
