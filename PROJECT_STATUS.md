@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Non-destructive performance baseline (2026-08-09)** — Added a singleton `performance_baseline` epoch created once during schema initialization. Customer-facing settled record, units, ROI, and expected-vs-actual performance begin at that epoch; historical picks remain intact for learning and audit. Full suite: **1482 passed, 0 failed**.
+
 - **Admin pick-scope correction (2026-08-09)** — The internal “Today’s Picks” board now requests only today’s `OFFICIAL_TRACKED` rows, and the Official Picks tab filters out Discovery rows. Historical Discovery recommendations no longer appear as customer-facing top picks. Full suite: **1481 passed, 0 failed**.
 
 - **Customer pick cards and performance chart clarity (2026-08-08)** — Settled customer cards now use obvious green WIN, red LOSS, and neutral PUSH/VOID states with separate Stake and Result unit labels. The performance chart now clearly labels cumulative Expected Units versus Actual Units using recorded EV, risk, and canonical profit data. Full suite: **1479 passed, 0 failed**.

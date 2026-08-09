@@ -755,6 +755,21 @@ def init_db(db_path: str | None = None) -> None:
             grader_version TEXT
         )
     """)
+
+    # Non-destructive customer performance epoch. Historical records remain
+    # available to learning/audit; customer-facing recordkeeping starts once.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS performance_baseline (
+            baseline_id INTEGER PRIMARY KEY,
+            baseline_at TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT 'production_baseline'
+        )
+    """)
+    conn.execute(
+        """INSERT INTO performance_baseline (baseline_id, baseline_at, reason)
+           VALUES (1, datetime('now'), 'production_baseline')
+           ON CONFLICT (baseline_id) DO NOTHING"""
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_op_tier ON official_picks(tier)"
     )
@@ -1585,6 +1600,14 @@ def get_official_picks_today(conn: DB) -> list[dict]:
         ORDER BY op.official_rank
     """).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_performance_baseline(conn: DB) -> str | None:
+    """Return the non-destructive customer performance epoch."""
+    row = conn.execute(
+        "SELECT baseline_at FROM performance_baseline WHERE baseline_id = 1"
+    ).fetchone()
+    return row[0] if row else None
 
 
 def get_research_picks_today(conn: DB) -> list[dict]:

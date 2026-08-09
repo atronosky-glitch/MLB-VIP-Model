@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import streamlit as st
 
-from database.db_manager import get_connection, init_db
+from database.db_manager import get_connection, init_db, get_performance_baseline
 
 
 st.set_page_config(page_title="MLB VIP | Sharp Market Intelligence", page_icon="⚾", layout="wide")
@@ -87,6 +87,7 @@ def load_customer_data(authorized: bool) -> dict:
     conn = get_connection()
     now_iso = datetime.now(timezone.utc).isoformat()
     horizon_iso = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    baseline = get_performance_baseline(conn)
     try:
         settled = conn.execute("""
             SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
@@ -100,8 +101,9 @@ def load_customer_data(authorized: bool) -> dict:
             LEFT JOIN bet_units bu ON bu.recommendation_id = hr.recommendation_id
             LEFT JOIN closing_prices cp ON cp.recommendation_id = hr.recommendation_id
             WHERE ms.settlement_status IN ('WIN','LOSS','PUSH','VOID','CANCELLED')
+              AND (? IS NULL OR hr.scan_timestamp >= ?)
             ORDER BY hr.scan_timestamp DESC
-        """).fetchall()
+        """, (baseline, baseline)).fetchall()
 
         # This query intentionally contains no player, side, line, sportsbook,
         # odds, EV, or market fields. Public visitors only learn that a play

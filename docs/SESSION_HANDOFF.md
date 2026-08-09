@@ -2,6 +2,18 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Non-destructive performance baseline
+
+### What was done
+
+- Added a singleton `performance_baseline` table initialized once during schema startup.
+- Customer-facing settled history and performance calculations filter from that epoch forward.
+- Historical recommendations and outcomes remain intact for learning, calibration, and audit.
+
+### Verification
+
+- Full suite: **1482 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Admin pick-scope correction
 
 ### What was found
