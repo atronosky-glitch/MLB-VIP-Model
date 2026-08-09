@@ -2,6 +2,22 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Verified atomic settlement coverage expansion
+
+### What was found
+
+The live API catalog contained more markets than the initial settlement adapter supported. MLB StatsAPI final feeds were inspected and confirmed to include atomic batting RBI/runs/doubles/triples/walks/strikeouts, batter singles derivable from verified hit components, and pitcher pitches thrown.
+
+### What was changed
+
+- Added those verified atomic fields to `mlb_results.py` and the settlement-supported market set.
+- Composite markets, first-home-run, and run-line semantics remain Research-only because their exact settlement contracts are not fully represented by the verified feed.
+- No thresholds, EV methodology, or selection policy changed.
+
+### Verification
+
+- Full suite: **1485 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Automatic variable-stake correction
 
 ### What was found

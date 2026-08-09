@@ -40,6 +40,23 @@ def test_extracts_verified_pitching_stat_and_win():
     assert win["value"] == 1
 
 
+def test_extracts_verified_atomic_batter_and_pitcher_fields():
+    feed = _feed()
+    feed["liveData"]["boxscore"]["teams"]["home"]["players"]["ID456"] = {
+        "person": {"id": 456, "fullName": "Test Batter"},
+        "stats": {"batting": {
+            "hits": 2, "doubles": 1, "triples": 0,
+            "homeRuns": 0, "rbi": 3,
+        }},
+    }
+    assert extract_stat_fact(feed, {
+        "player_name": "Test Batter", "market_type": "batting_RBI_ou",
+    })["value"] == 3
+    assert extract_stat_fact(feed, {
+        "player_name": "Test Batter", "market_type": "batting_singles_ou",
+    })["value"] == 1
+
+
 def test_missing_player_stats_are_unresolved():
     rec = {"player_name": "Missing", "market_type": "pitching_strikeouts_ou"}
     assert extract_stat_fact(_feed(), rec) is None
@@ -72,7 +89,7 @@ def test_ingestion_persists_final_fact(db_conn):
 def test_ingestion_reports_unsupported_market_reason(db_conn):
     result = ingest_results_for_recommendations(
         db_conn,
-        [{"market_type": "batting_RBI_ou"}],
+        [{"market_type": "batting_hits+runs+rbi_ou"}],
         client=FakeClient(),
     )
     assert result["unresolved_reasons"]["unsupported_or_research_market"] == 1

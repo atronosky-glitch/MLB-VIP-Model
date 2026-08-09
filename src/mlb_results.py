@@ -30,6 +30,14 @@ _MARKET_FIELDS = {
     "batting_totalBases": ("batting", "totalBases"),
     "batting_homeRuns": ("batting", "homeRuns"),
     "batting_stolenBases": ("batting", "stolenBases"),
+    "batting_RBI": ("batting", "rbi"),
+    "batting_runs": ("batting", "runs"),
+    "batting_doubles": ("batting", "doubles"),
+    "batting_triples": ("batting", "triples"),
+    "batting_basesOnBalls": ("batting", "baseOnBalls"),
+    "batting_strikeouts": ("batting", "strikeOuts"),
+    "batting_singles": ("batting", "hits"),
+    "pitching_pitchesThrown": ("pitching", "pitchesThrown"),
 }
 
 
@@ -129,7 +137,17 @@ def extract_stat_fact(feed: dict, recommendation: dict) -> dict | None:
         if not field_spec:
             return None
         stats = (player.get("stats") or {}).get(field_spec[0]) or {}
-        value = stats.get(field_spec[1])
+        if base_market == "batting_singles":
+            required = (
+                stats.get("hits"), stats.get("doubles"),
+                stats.get("triples"), stats.get("homeRuns"),
+            )
+            value = (
+                required[0] - required[1] - required[2] - required[3]
+                if all(item is not None for item in required) else None
+            )
+        else:
+            value = stats.get(field_spec[1])
         if value is None:
             return None
     try:

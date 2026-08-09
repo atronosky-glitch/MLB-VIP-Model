@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Verified settlement coverage expansion (2026-08-09)** — MLB StatsAPI settlement now covers verified atomic RBI, runs, singles, doubles, triples, batter walks, batter strikeouts, and pitcher pitches thrown fields in addition to the prior markets. Composites, first-home-run, and run-line semantics remain Research-only. Full suite: **1485 passed, 0 failed**.
+
 - **Automatic variable-stake correction (2026-08-09)** — The existing 25% fractional-Kelly/score sizing formula is now used by automatic grading when writing `bet_units`; prior automatic settlement silently recorded one flat unit. Qualification and market selection were unchanged. Full suite: **1484 passed, 0 failed**.
 
 - **Admin Y/N pick display correction (2026-08-09)** — The private admin dashboard now renders Y/N conditions such as `Yes · 1+ hit` instead of `Yes None`, and displays Y/N price advantage in percentage points rather than misleading `0.00% EV`. Full suite: **1484 passed, 0 failed**.

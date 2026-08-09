@@ -33,9 +33,14 @@ RELIABLE_EV_MAX_DECIMAL_ODDS = 10.0
 AUTO_SETTLEABLE_MARKET_TYPES = frozenset({
     "pitching_strikeouts_ou", "pitching_strikeouts_yn",
     "pitching_hits_ou", "pitching_basesOnBalls_ou", "pitching_outs_ou",
+    "pitching_pitchesThrown_ou",
     "pitching_earnedRuns_ou", "pitching_earnedRuns_yn", "pitching_win_yn",
     "batting_hits_ou", "batting_hits_yn", "batting_totalBases_ou",
     "batting_homeRuns_ou", "batting_homeRuns_yn",
+    "batting_RBI_ou", "batting_RBI_yn", "batting_runs_ou", "batting_runs_yn",
+    "batting_singles_ou", "batting_singles_yn", "batting_doubles_ou", "batting_doubles_yn",
+    "batting_triples_ou", "batting_triples_yn", "batting_basesOnBalls_ou", "batting_basesOnBalls_yn",
+    "batting_strikeouts_ou", "batting_strikeouts_yn",
     "batting_stolenBases_ou", "batting_stolenBases_yn",
 })
 
