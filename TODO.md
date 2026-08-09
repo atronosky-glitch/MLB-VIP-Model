@@ -113,6 +113,7 @@
 - [x] Non-destructive record reset — customer-facing performance now starts at a persistent production baseline while all historical recommendations remain available to adaptive learning/audit.
 - [x] Today’s Picks scope — current-day record metrics no longer mix cumulative historical Official results into today’s pick view.
 - [x] Customer loader hardening — PostgreSQL baseline filtering uses a direct typed parameter and customer data-load exceptions are logged server-side.
+- [x] Customer PostgreSQL row access — performance baseline reads use named DB-wrapper row access.
 - [x] Scoped pregame runtime — scheduled event IDs now limit pregame fetch/scan work; global pregame locking and start/complete elapsed logs prevent overlapping full-slate jobs.
 - [x] Grading job dispatch — explicit `--job grading` now runs result ingestion and catch-up grading, matching worker startup behavior.
 - [x] Settlement coverage safety — unsupported markets cannot reach Discovery/Official tiers; pregame CLV capture now handles deduplicated recommendations and is bounded before scheduled start.

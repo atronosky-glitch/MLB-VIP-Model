@@ -1607,7 +1607,7 @@ def get_performance_baseline(conn: DB) -> str | None:
     row = conn.execute(
         "SELECT baseline_at FROM performance_baseline WHERE baseline_id = 1"
     ).fetchone()
-    return row[0] if row else None
+    return row["baseline_at"] if row else None
 
 
 def get_research_picks_today(conn: DB) -> list[dict]:

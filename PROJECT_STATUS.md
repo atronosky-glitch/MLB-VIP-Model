@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Customer PostgreSQL row-access fix (2026-08-09)** — Fixed production customer startup failure caused by reading the dict-like PostgreSQL baseline row with positional key `0`; baseline access now uses the named `baseline_at` column. Full suite: **1484 passed, 0 failed**.
+
 - **Customer PostgreSQL loader fix (2026-08-09)** — Replaced nullable baseline SQL parameter logic with a typed direct baseline comparison and added server-side exception logging for customer data-load failures. Full suite: **1484 passed, 0 failed**.
 
 - **Today’s Picks record-scope correction (2026-08-09)** — Current-day pick cards and record metrics now share the same `today_only` scope. The cumulative Official Record remains available in the Performance view, while Today’s Picks no longer displays an all-time record such as 3-2 for a one-pick slate. Full suite: **1484 passed, 0 failed**.

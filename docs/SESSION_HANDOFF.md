@@ -2,6 +2,21 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Customer PostgreSQL row-access fix
+
+### What was found
+
+Render logs showed the customer app failed at startup with `KeyError: 0` because the PostgreSQL DB wrapper returned a named-row mapping and `get_performance_baseline()` used positional access.
+
+### What was changed
+
+- Changed baseline access to `row["baseline_at"]`.
+
+### Verification
+
+- Targeted customer/PostgreSQL tests: **60 passed**.
+- Full suite: **1484 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Customer PostgreSQL loader fix
 
 ### What was found
