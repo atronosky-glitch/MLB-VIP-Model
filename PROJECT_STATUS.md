@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Y/N customer-card labeling (2026-08-09)** — Customer cards now explain binary markets explicitly, e.g. `Yes · 1+ hit`, and show Y/N price advantage instead of incorrectly displaying `0.00% EV`. Full suite: **1484 passed, 0 failed**.
+
 - **Customer PostgreSQL row-access fix (2026-08-09)** — Fixed production customer startup failure caused by reading the dict-like PostgreSQL baseline row with positional key `0`; baseline access now uses the named `baseline_at` column. Full suite: **1484 passed, 0 failed**.
 
 - **Customer PostgreSQL loader fix (2026-08-09)** — Replaced nullable baseline SQL parameter logic with a typed direct baseline comparison and added server-side exception logging for customer data-load failures. Full suite: **1484 passed, 0 failed**.

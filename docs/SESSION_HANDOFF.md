@@ -2,6 +2,18 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Y/N customer-card labeling
+
+### What was changed
+
+- Y/N customer cards now explain the binary condition, such as `Yes · 1+ hit`.
+- Y/N cards show price advantage when available and never label Y/N as true EV.
+- Numeric O/U cards retain EV display.
+
+### Verification
+
+- Full suite: **1484 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Customer PostgreSQL row-access fix
 
 ### What was found

@@ -72,6 +72,26 @@ def _settled_status(row: dict) -> str:
     return (row.get("settlement_status") or row.get("outcome") or "").upper()
 
 
+def _side_line_label(pick: dict) -> str:
+    side = (pick.get("side") or "").title()
+    market = pick.get("market_type") or ""
+    if pick.get("line") is not None:
+        return f"{side} {pick['line']}"
+    if market == "batting_hits_yn":
+        return f"{side} · 1+ hit"
+    if market == "batting_homeRuns_yn":
+        return f"{side} · 1+ home run"
+    if market == "batting_stolenBases_yn":
+        return f"{side} · 1+ stolen base"
+    if market == "pitching_strikeouts_yn":
+        return f"{side} · 1+ strikeout"
+    if market == "pitching_earnedRuns_yn":
+        return f"{side} · 1+ earned run"
+    if market == "pitching_win_yn":
+        return f"{side} · pitcher win"
+    return side
+
+
 def public_lock_view(row: dict) -> dict:
     """Project only non-sensitive pre-settlement fields for public display."""
     return {
@@ -182,10 +202,14 @@ def performance_series(rows: list[dict], period: str = "ALL") -> pd.DataFrame:
 
 
 def _render_full_pick(pick: dict, settled: bool = False) -> None:
-    side = pick.get("side", "")
-    line = "" if pick.get("line") is None else f" {pick['line']}"
-    edge = pick.get("ev_pct")
-    edge_text = f"{edge:+.2f}% EV" if edge is not None else "Edge tracked"
+    side_line = _side_line_label(pick)
+    market = pick.get("market_type") or ""
+    if market.endswith("_yn"):
+        advantage = pick.get("yn_implied_prob_adv")
+        edge_text = f"{advantage:+.2f} pp price advantage" if advantage is not None else "Price advantage tracked"
+    else:
+        edge = pick.get("ev_pct")
+        edge_text = f"{edge:+.2f}% EV" if edge is not None else "Edge tracked"
     status = _settled_status(pick) or "OPEN"
     result_class = status.lower() if status.lower() in {"win", "loss", "push", "void"} else ""
     final = f" · Final: {pick['final_stat_value']}" if pick.get("final_stat_value") is not None else ""
@@ -196,7 +220,7 @@ def _render_full_pick(pick: dict, settled: bool = False) -> None:
     st.markdown(f"""
     <div class="pick {'settled' if settled else ''} {result_class}">
       <div class="pick-title">{pick.get('player_name') or 'MLB Official Play'}</div>
-      <div class="pick-meta">{pick.get('matchup','')} · {_market_label(pick.get('market_type',''))} · {side.title()}{line}</div>
+      <div class="pick-meta">{pick.get('matchup','')} · {_market_label(pick.get('market_type',''))} · {side_line}</div>
       <div class="pick-meta">{pick.get('sportsbook','')} {pick.get('offered_american_odds','')} · <span class="edge">{edge_text}</span></div>
       <div class="unit-line">{stake} · Result: <span class="{result_style}">{result_label}{final}{units}</span></div>
     </div>
