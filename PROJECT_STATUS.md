@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Customer PostgreSQL loader fix (2026-08-09)** — Replaced nullable baseline SQL parameter logic with a typed direct baseline comparison and added server-side exception logging for customer data-load failures. Full suite: **1484 passed, 0 failed**.
+
 - **Today’s Picks record-scope correction (2026-08-09)** — Current-day pick cards and record metrics now share the same `today_only` scope. The cumulative Official Record remains available in the Performance view, while Today’s Picks no longer displays an all-time record such as 3-2 for a one-pick slate. Full suite: **1484 passed, 0 failed**.
 
 - **Non-destructive performance baseline (2026-08-09)** — Added a singleton `performance_baseline` epoch created once during schema initialization. Customer-facing settled record, units, ROI, and expected-vs-actual performance begin at that epoch; historical picks remain intact for learning and audit. Full suite: **1482 passed, 0 failed**.

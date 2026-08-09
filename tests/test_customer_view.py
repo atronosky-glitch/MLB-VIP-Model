@@ -26,6 +26,8 @@ def test_expected_actual_series_uses_recorded_values():
     assert "Actual Units" in source
     assert "Stake:" in source
     assert "Result:" in source
+    assert 'AND hr.scan_timestamp >= ?' in source
+    assert 'logger.exception("Customer data load failed")' in source
 
 
 def test_render_defines_customer_service():

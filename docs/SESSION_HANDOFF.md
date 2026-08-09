@@ -2,6 +2,21 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Customer PostgreSQL loader fix
+
+### What was found
+
+The customer service was healthy at the HTTP layer but displayed its friendly data-unavailable message. The new performance-baseline query used a nullable parameter expression that can fail PostgreSQL type inference.
+
+### What was changed
+
+- Customer settled-history filtering now compares directly against the guaranteed baseline timestamp.
+- Customer data-load exceptions now write a server-side traceback while keeping the public message safe.
+
+### Verification
+
+- Full suite: **1484 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Today’s Picks record scope
 
 ### What was found
