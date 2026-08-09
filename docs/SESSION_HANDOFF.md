@@ -2,6 +2,17 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Admin Y/N pick display
+
+### What was changed
+
+- Admin Top Picks and rows now render binary conditions such as `Yes · 1+ hit` instead of `Yes None`.
+- Y/N cards now display price advantage in percentage points, not true EV.
+
+### Verification
+
+- Full suite: **1484 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Y/N customer-card labeling
 
 ### What was changed

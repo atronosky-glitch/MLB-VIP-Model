@@ -114,6 +114,7 @@
 - [x] Today’s Picks scope — current-day record metrics no longer mix cumulative historical Official results into today’s pick view.
 - [x] Customer loader hardening — PostgreSQL baseline filtering uses a direct typed parameter and customer data-load exceptions are logged server-side.
 - [x] Y/N customer labels — binary hit/HR/stolen-base/strikeout/win markets no longer show a misleading `None` line or EV label.
+- [x] Y/N admin labels — internal Top Picks and pick rows use explicit binary conditions and price-advantage units.
 - [x] Customer PostgreSQL row access — performance baseline reads use named DB-wrapper row access.
 - [x] Scoped pregame runtime — scheduled event IDs now limit pregame fetch/scan work; global pregame locking and start/complete elapsed logs prevent overlapping full-slate jobs.
 - [x] Grading job dispatch — explicit `--job grading` now runs result ingestion and catch-up grading, matching worker startup behavior.

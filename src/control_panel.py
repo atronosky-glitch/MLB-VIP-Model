@@ -227,6 +227,23 @@ def _format_market_type(mt: str) -> str:
     return mt.replace("_", " ").title() if mt else ""
 
 
+def _format_pick_side_line(rec: dict) -> str:
+    """Render O/U lines and Y/N conditions without a misleading None."""
+    side = (rec.get("side") or "").title()
+    line = rec.get("line")
+    if line is not None:
+        return f"{side} {line}"
+    labels = {
+        "batting_hits_yn": "1+ hit",
+        "batting_homeRuns_yn": "1+ home run",
+        "batting_stolenBases_yn": "1+ stolen base",
+        "pitching_strikeouts_yn": "1+ strikeout",
+        "pitching_earnedRuns_yn": "1+ earned run",
+        "pitching_win_yn": "pitcher win",
+    }
+    return f"{side} · {labels.get(rec.get('market_type'), 'binary result')}"
+
+
 # ── Shared "betting-slip stub" card renderer ────────────────────────
 # Left-edge color encodes tier/outcome; the headline number's color
 # encodes direction (lime = positive/win, red = negative/loss).
@@ -807,7 +824,8 @@ with tabs[0]:
         st.markdown("#### :material/grade: Top Picks")
         top_cols = st.columns(4)
         for i, r in enumerate(top):
-            edge = r.get("ev_pct") or 0.0
+            is_yn = (r.get("market_form") or "").lower() == "yn" or str(r.get("market_type", "")).endswith("_yn")
+            edge = (r.get("yn_implied_prob_adv") if is_yn else r.get("ev_pct")) or 0.0
             edge_hex = "#17C964" if edge > 0 else ("#F31260" if edge < 0 else "#7A8CAB")
             tier = r.get("tier") or r.get("recommendation_tier")
             stub_hex, stub_label = _TIER_STUB.get(tier, ("#F5A623", "VIP OFFICIAL"))
@@ -817,14 +835,11 @@ with tabs[0]:
                     stub_hex=stub_hex,
                     stub_label=stub_label,
                     title=r.get("player_name", ""),
-                    subtitle=(
-                        f"{_format_market_type(r.get('market_type', ''))} · "
-                        f"{r.get('side', '').title()} {r.get('line', '')}".strip()
-                    ),
+                    subtitle=f"{_format_market_type(r.get('market_type', ''))} · {_format_pick_side_line(r)}",
                     detail=f"{r.get('sportsbook', '')} @ {r.get('offered_american_odds', '')}",
-                    headline=f"{edge:+.2f}%",
+                    headline=f"{edge:+.2f}{' pp' if is_yn else '%'}",
                     headline_hex=edge_hex,
-                    tail=f"edge · score {round(r.get('model_score') or 0, 1)}",
+                    tail=f"{'price advantage' if is_yn else 'edge'} · score {round(r.get('model_score') or 0, 1)}",
                 )
 
     st.divider()
@@ -836,9 +851,7 @@ with tabs[0]:
         for p in picks_board:
             player = p.get("player_name", "")
             market = _format_market_type(p.get("market_type", ""))
-            side = (p.get("side") or "").title()
-            line = p.get("line")
-            pick_line = f"{side} {line}" if line is not None else side
+            pick_line = _format_pick_side_line(p)
             pick_label = " · ".join(x for x in [player, market, pick_line] if x)
             units = p.get("risk_units")
             if units is None:
