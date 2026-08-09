@@ -2,6 +2,23 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Admin pick-scope correction
+
+### What was found
+
+The admin Today’s Picks board was loading all historical `official_picks` rows without a tier/date filter, so Discovery cards appeared as top picks and the count included old records.
+
+### What was changed
+
+- Today’s Picks now filters `OFFICIAL_TRACKED` and `date(selected_at) = date('now')`.
+- Official Picks now excludes Discovery rows at query time.
+- Research remains separate.
+
+### Verification
+
+- Targeted dashboard tests: **142 passed**.
+- Full suite: **1481 passed, 0 failed**.
+
 ## Session: 2026-08-08 — Customer result and unit clarity
 
 ### What was done

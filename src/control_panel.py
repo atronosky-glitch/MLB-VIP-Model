@@ -757,7 +757,9 @@ with tabs[0]:
 
     conn_tab1 = _open_dashboard_connection(db_path)
     try:
-        picks_board = get_official_picks(conn_tab1)
+        picks_board = get_official_picks(
+            conn_tab1, tier="OFFICIAL_TRACKED", today_only=True,
+        )
         board_metrics = compute_performance(conn_tab1)
     finally:
         conn_tab1.close()
@@ -890,6 +892,7 @@ with tabs[1]:
                        hr.model_score, hr.score_explanation
                 FROM official_picks op
                 JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
+                WHERE op.tier = 'OFFICIAL_TRACKED'
                 ORDER BY op.official_rank
             """).fetchall()
             official_picks = [dict(r) for r in op_rows]

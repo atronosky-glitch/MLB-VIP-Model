@@ -126,6 +126,7 @@ def get_official_picks(
     tier: str | None = None,
     status: str | None = None,
     limit: int | None = None,
+    today_only: bool = False,
 ) -> list[dict]:
     """Query official picks from the official_picks table."""
     where = []
@@ -136,6 +137,8 @@ def get_official_picks(
     if status:
         where.append("op.outcome = ?")
         params.append(status)
+    if today_only:
+        where.append("date(op.selected_at) = date('now')")
 
     where_clause = " WHERE " + " AND ".join(where) if where else ""
     limit_clause = f" LIMIT {limit}" if limit else ""

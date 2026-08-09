@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Admin pick-scope correction (2026-08-09)** — The internal “Today’s Picks” board now requests only today’s `OFFICIAL_TRACKED` rows, and the Official Picks tab filters out Discovery rows. Historical Discovery recommendations no longer appear as customer-facing top picks. Full suite: **1481 passed, 0 failed**.
+
 - **Customer pick cards and performance chart clarity (2026-08-08)** — Settled customer cards now use obvious green WIN, red LOSS, and neutral PUSH/VOID states with separate Stake and Result unit labels. The performance chart now clearly labels cumulative Expected Units versus Actual Units using recorded EV, risk, and canonical profit data. Full suite: **1479 passed, 0 failed**.
 
 - **Grading-job catch-up dispatch fix (2026-08-08)** — Fixed `python -m src.worker --job grading` so it invokes MLB StatsAPI result ingestion plus catch-up grading, rather than only grading previously stored facts. Removed redundant double catch-up on specific grading jobs. Targeted worker tests: **83 passed**; full suite: **1479 passed, 0 failed**.
