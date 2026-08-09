@@ -18,6 +18,7 @@ from database.db_manager import (
     settle_recommendation,
 )
 from src.grading import GRADER_VERSION, SETTLEMENT_UNRESOLVED, grade_ou
+from src.tracker import compute_variable_stake
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,13 @@ def grade_available_recommendations(conn: DB, event_id: str | None = None) -> di
             ):
                 result["errors"] += 1
                 continue
-            save_bet_units(conn, rec["recommendation_id"], status, rec["offered_american_odds"])
+            stake = compute_variable_stake(
+                rec.get("ev_pct"), rec.get("offered_decimal_odds"), rec.get("model_score")
+            )
+            save_bet_units(
+                conn, rec["recommendation_id"], status,
+                rec["offered_american_odds"], risk_units=stake,
+            )
             record_grading_completed(
                 conn,
                 rec,

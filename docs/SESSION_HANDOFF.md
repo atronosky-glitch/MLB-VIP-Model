@@ -2,6 +2,23 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Automatic variable-stake correction
+
+### What was found
+
+The model had a variable Kelly/score stake calculator, but automatic grading called `save_bet_units()` without a stake and therefore recorded one flat unit for every result.
+
+### What was changed
+
+- Automatic grading now computes the existing variable stake from recorded EV, odds, and model score.
+- Canonical `bet_units` risk/profit/return values use that stake.
+- Existing selection thresholds and market methodology were not changed.
+
+### Verification
+
+- Targeted grading tests: **153 passed**.
+- Full suite: **1484 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Admin Y/N pick display
 
 ### What was changed

@@ -74,6 +74,7 @@ def test_automatic_grading_settles_and_updates_projection(db_conn):
     assert settlement[0] == "WIN"
     assert official[0] == "win"
     assert official[1] > 0
+    assert official[1] != 1.0
 
 
 def test_automatic_grading_is_idempotent(db_conn):

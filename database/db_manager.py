@@ -1781,9 +1781,15 @@ def save_bet_units(
     recommendation_id: str,
     settlement_status: str,
     american_odds: int,
+    *,
+    risk_units: float = 1.0,
 ) -> None:
-    """Save units for a settled bet. Uses compute_units for formulas."""
-    risk, profit, ret = compute_units(settlement_status, american_odds)
+    """Save units for a settled bet with an explicit stake size."""
+    base_risk, base_profit, base_return = compute_units(settlement_status, american_odds)
+    stake = max(0.0, float(risk_units))
+    risk = base_risk * stake
+    profit = base_profit * stake
+    ret = base_return * stake
     existing = conn.execute(
         "SELECT settlement_id FROM bet_units WHERE recommendation_id = ? LIMIT 1",
         (recommendation_id,),
