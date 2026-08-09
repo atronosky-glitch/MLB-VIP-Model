@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Customer pick cards and performance chart clarity (2026-08-08)** — Settled customer cards now use obvious green WIN, red LOSS, and neutral PUSH/VOID states with separate Stake and Result unit labels. The performance chart now clearly labels cumulative Expected Units versus Actual Units using recorded EV, risk, and canonical profit data. Full suite: **1479 passed, 0 failed**.
+
 - **Grading-job catch-up dispatch fix (2026-08-08)** — Fixed `python -m src.worker --job grading` so it invokes MLB StatsAPI result ingestion plus catch-up grading, rather than only grading previously stored facts. Removed redundant double catch-up on specific grading jobs. Targeted worker tests: **83 passed**; full suite: **1479 passed, 0 failed**.
 
 - **Scoped pregame jobs and overlap protection (2026-08-08)** — Pregame jobs now pass their scheduled `event_id` through the pipeline/API/scanner instead of rescanning the full MLB slate. A global worker lock prevents overlapping pregame pipelines, and logs now emit `PREGAME JOB START`, `PREGAME JOB COMPLETE`, elapsed time, target count, and exit code. Full suite: **1478 passed, 0 failed**.

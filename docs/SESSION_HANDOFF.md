@@ -2,6 +2,18 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-08 — Customer result and unit clarity
+
+### What was done
+
+- Settled customer cards now use green WIN, red LOSS, and neutral PUSH/VOID visual states.
+- Cards show explicit `Stake` and `Result` unit values instead of burying units in metadata.
+- The performance chart now labels cumulative `Expected Units` versus `Actual Units`; expected values use recorded EV and risk, actual values use canonical profit units.
+
+### Verification
+
+- Full suite: **1479 passed, 0 failed**.
+
 ## Session: 2026-08-08 — Grading-job catch-up dispatch fix
 
 ### What was found

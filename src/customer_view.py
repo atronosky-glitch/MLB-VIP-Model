@@ -34,11 +34,17 @@ p,div,span,button { font-family:'DM Sans',sans-serif; }
 .pill { display:inline-block; padding:.42rem .72rem; border:1px solid #31506b; border-radius:999px; color:var(--mint); font-size:.72rem; font-weight:700; letter-spacing:.08em; }
 .pick { background:linear-gradient(135deg,#13233a,#0e1828); border:1px solid var(--line); border-radius:20px; padding:1.15rem 1.25rem; margin:.65rem 0; box-shadow:0 16px 38px rgba(0,0,0,.18); }
 .pick.settled { border-color:#2d6e57; }
+.pick.win { background:linear-gradient(135deg,#102d26,#0d1d1b); border-color:#2f9e72; }
+.pick.loss { background:linear-gradient(135deg,#321b25,#20131a); border-color:#d45b6b; }
+.pick.push, .pick.void { background:linear-gradient(135deg,#252a35,#171b24); border-color:#667085; }
 .pick.locked { background:linear-gradient(135deg,#192238,#101827); border-color:#3b4e6e; }
 .pick.research { background:#171b26; border-color:#5d4e2c; }
 .pick-title { font-family:'Space Grotesk'; font-size:1.18rem; font-weight:700; color:var(--ink); }
 .pick-meta { color:var(--muted); font-size:.88rem; margin-top:.4rem; }
 .edge { color:var(--mint); font-weight:700; }
+.result-win { color:#72efb2; font-weight:800; letter-spacing:.04em; }
+.result-loss { color:#ff8c9a; font-weight:800; letter-spacing:.04em; }
+.unit-line { color:#e8eef7; font-family:'Space Grotesk'; font-size:1rem; font-weight:700; margin-top:.55rem; }
 .gold { color:var(--gold); font-weight:700; }
 .section-note { color:var(--muted); font-size:.9rem; line-height:1.5; }
 .lock-copy { color:#c6d1e1; font-family:'Space Grotesk'; font-weight:600; letter-spacing:.02em; }
@@ -176,13 +182,18 @@ def _render_full_pick(pick: dict, settled: bool = False) -> None:
     edge = pick.get("ev_pct")
     edge_text = f"{edge:+.2f}% EV" if edge is not None else "Edge tracked"
     status = _settled_status(pick) or "OPEN"
+    result_class = status.lower() if status.lower() in {"win", "loss", "push", "void"} else ""
     final = f" · Final: {pick['final_stat_value']}" if pick.get("final_stat_value") is not None else ""
     units = f" · {pick['profit_units']:+.2f}u" if pick.get("profit_units") is not None else ""
+    stake = f"Stake: {pick['risk_units']:.2f}u" if pick.get("risk_units") is not None else "Stake: —"
+    result_label = status if status in {"WIN", "LOSS", "PUSH", "VOID", "CANCELLED"} else "OPEN"
+    result_style = "result-win" if status == "WIN" else "result-loss" if status == "LOSS" else ""
     st.markdown(f"""
-    <div class="pick {'settled' if settled else ''}">
+    <div class="pick {'settled' if settled else ''} {result_class}">
       <div class="pick-title">{pick.get('player_name') or 'MLB Official Play'}</div>
       <div class="pick-meta">{pick.get('matchup','')} · {_market_label(pick.get('market_type',''))} · {side.title()}{line}</div>
-      <div class="pick-meta">{pick.get('sportsbook','')} {pick.get('offered_american_odds','')} · <span class="edge">{edge_text}</span> · {status}{final}{units}</div>
+      <div class="pick-meta">{pick.get('sportsbook','')} {pick.get('offered_american_odds','')} · <span class="edge">{edge_text}</span></div>
+      <div class="unit-line">{stake} · Result: <span class="{result_style}">{result_label}{final}{units}</span></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -247,7 +258,12 @@ if data["settled"]:
     period = st.radio("Performance period", ["7D", "30D", "ALL"], horizontal=True, index=2)
     series = performance_series(data["settled"], period)
     if not series.empty:
-        st.line_chart(series, y_label="Units", height=280)
+        chart = series.rename(columns={
+            "expected_cumulative": "Expected Units",
+            "actual_cumulative": "Actual Units",
+        })
+        st.caption("Expected Units use each pick's recorded EV and stake. Actual Units use canonical settled profit.")
+        st.line_chart(chart, y_label="Cumulative units", height=300, use_container_width=True)
         raw = pd.DataFrame(data["settled"])
         profit = pd.to_numeric(raw["profit_units"], errors="coerce").fillna(0).sum()
         risk = pd.to_numeric(raw["risk_units"], errors="coerce").fillna(0).sum()

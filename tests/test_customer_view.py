@@ -22,6 +22,10 @@ def test_expected_actual_series_uses_recorded_values():
     assert "hr.event_start_time >= ?" in source
     assert "hr.event_start_time <= ?" in source
     assert "settlement_status IN ('UNRESOLVED','ungraded')" in source
+    assert "Expected Units" in source
+    assert "Actual Units" in source
+    assert "Stake:" in source
+    assert "Result:" in source
 
 
 def test_render_defines_customer_service():
