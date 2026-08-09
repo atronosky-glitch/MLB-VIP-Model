@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Today’s Picks record-scope correction (2026-08-09)** — Current-day pick cards and record metrics now share the same `today_only` scope. The cumulative Official Record remains available in the Performance view, while Today’s Picks no longer displays an all-time record such as 3-2 for a one-pick slate. Full suite: **1484 passed, 0 failed**.
+
 - **Non-destructive performance baseline (2026-08-09)** — Added a singleton `performance_baseline` epoch created once during schema initialization. Customer-facing settled record, units, ROI, and expected-vs-actual performance begin at that epoch; historical picks remain intact for learning and audit. Full suite: **1482 passed, 0 failed**.
 
 - **Admin pick-scope correction (2026-08-09)** — The internal “Today’s Picks” board now requests only today’s `OFFICIAL_TRACKED` rows, and the Official Picks tab filters out Discovery rows. Historical Discovery recommendations no longer appear as customer-facing top picks. Full suite: **1481 passed, 0 failed**.

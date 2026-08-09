@@ -2,6 +2,22 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Today’s Picks record scope
+
+### What was found
+
+The Today’s Picks list was scoped to today, but its Wins/Losses/Units metrics called the cumulative performance query. This made a one-pick day display an all-time record such as 3-2.
+
+### What was changed
+
+- Added `today_only` support to tracker performance calculations.
+- Scoped the Today’s Picks dashboard metrics to `date(op.selected_at) = date('now')`.
+- Left the cumulative record available in the Performance view.
+
+### Verification
+
+- Full suite: **1484 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Non-destructive performance baseline
 
 ### What was done

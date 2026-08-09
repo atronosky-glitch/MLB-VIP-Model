@@ -211,6 +211,7 @@ def compute_performance(
     tier: str | None = TIER_OFFICIAL,
     start_date: str | None = None,
     end_date: str | None = None,
+    today_only: bool = False,
 ) -> PerformanceMetrics:
     """Compute aggregate performance metrics."""
     where = []
@@ -224,6 +225,8 @@ def compute_performance(
     if end_date:
         where.append("op.selected_at <= ?")
         params.append(end_date)
+    if today_only:
+        where.append("date(op.selected_at) = date('now')")
 
     where_clause = " WHERE " + " AND ".join(where) if where else ""
 

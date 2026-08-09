@@ -760,7 +760,7 @@ with tabs[0]:
         picks_board = get_official_picks(
             conn_tab1, tier="OFFICIAL_TRACKED", today_only=True,
         )
-        board_metrics = compute_performance(conn_tab1)
+        board_metrics = compute_performance(conn_tab1, today_only=True)
     finally:
         conn_tab1.close()
 
