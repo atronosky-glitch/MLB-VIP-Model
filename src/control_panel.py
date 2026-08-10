@@ -2113,6 +2113,19 @@ with tabs[7]:
 
         st.divider()
 
+        # ── Independent Challenger ──
+        st.subheader("Independent Strikeout Challenger (Shadow Only)")
+        from src.challenger_evaluation import evaluate_shadow_from_connection
+        _challenger = evaluate_shadow_from_connection(_conn_al)
+        _ch_cols = st.columns(4, border=True)
+        _ch_cols[0].metric("Shadow Sample", _challenger.get("sample_size", 0))
+        _ch_cols[1].metric("Brier", _challenger.get("brier_score", "-"))
+        _ch_cols[2].metric("Realized ROI", _challenger.get("realized_roi", "-"))
+        _ch_cols[3].metric("CLV", _challenger.get("average_clv_probability", "-"))
+        st.caption("The challenger never changes production picks. It needs a sufficient settled sample before comparison is meaningful.")
+
+        st.divider()
+
         # ── Section 2: Score Calibration ──
         st.subheader("2. Score Calibration")
         try:

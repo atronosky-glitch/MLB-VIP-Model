@@ -2,6 +2,17 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-10 — Challenger shadow evaluation dashboard
+
+### What was changed
+
+- Added private Adaptive Learning dashboard metrics for the independent strikeout challenger: sample size, Brier score, realized ROI, and CLV.
+- Metrics are descriptive/sample-gated and cannot alter production picks or thresholds.
+
+### Verification
+
+- Full suite: **1492 passed, 0 failed**.
+
 ## Session: 2026-08-10 — Retrosheet challenger workload correction
 
 ### What was found

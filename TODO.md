@@ -123,6 +123,7 @@
 - [x] Strikeout challenger shadow layer — independent season-stat projection and sample-gated chronological evaluation are recorded alongside worker scan recommendations without affecting production qualification.
 - [x] Retrosheet historical feature loader — downloaded CSV ZIP can now produce chronological independent pitcher-game features; sportsbook odds remain separate evidence and are never inferred from Retrosheet.
 - [x] Retrosheet challenger workload correction — starter workload uses prior starts only; relief appearances contribute rate evidence without inflating projected starter batters faced.
+- [x] Challenger evaluation dashboard — private Adaptive Learning tab now reports shadow Brier/log-loss/EV/ROI/CLV metrics when settled challenger records exist.
 - [x] Customer PostgreSQL row access — performance baseline reads use named DB-wrapper row access.
 - [x] Scoped pregame runtime — scheduled event IDs now limit pregame fetch/scan work; global pregame locking and start/complete elapsed logs prevent overlapping full-slate jobs.
 - [x] Grading job dispatch — explicit `--job grading` now runs result ingestion and catch-up grading, matching worker startup behavior.

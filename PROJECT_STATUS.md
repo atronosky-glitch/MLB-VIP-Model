@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Challenger shadow evaluation dashboard (2026-08-10)** — Added Brier/log-loss/expected-EV/realized-ROI/CLV comparison metrics to the private Adaptive Learning tab. Metrics remain sample-gated and advisory-only; production picks are unaffected. Full suite: **1492 passed, 0 failed**.
+
 - **Retrosheet challenger pitcher-start correction (2026-08-10)** — Fixed historical challenger features to estimate expected batters faced from prior starts only; relief appearances still contribute to strikeout-rate evidence but cannot inflate starter workload. The loader now evaluates starter games rather than relief outcomes. Full suite: **1490 passed, 0 failed**.
 
 - **Retrosheet historical challenger loader (2026-08-10)** — Added `src/retrosheet_challenger.py` to read the downloaded `csvdownloads.zip` without importing it into production tables. It builds chronological pitcher-game features from `pitching.csv` and prior opponent batting strikeout rates, preventing look-ahead leakage, and reports independent baseline MAE/bias. Full suite: **1490 passed, 0 failed**.
