@@ -738,6 +738,12 @@ def init_db(db_path: str | None = None) -> None:
         ("reliable_ev_reasons", "TEXT"),
         ("reliable_ev_calculated_pct", "REAL"),
         ("reliable_ev_version", "TEXT"),
+        ("challenger_expected_strikeouts", "REAL"),
+        ("challenger_over_probability", "REAL"),
+        ("challenger_under_probability", "REAL"),
+        ("challenger_push_probability", "REAL"),
+        ("challenger_fair_probability", "REAL"),
+        ("challenger_version", "TEXT"),
     ])
 
     # Phase 16: Official picks frozen snapshot table
@@ -1464,6 +1470,12 @@ def _persist_recommendation_evidence(conn: DB, recommendation_id: str, rec: dict
         "reliable_ev_reasons": "; ".join(rec.get("reliable_ev_reasons") or []),
         "reliable_ev_calculated_pct": rec.get("reliable_ev_calculated_pct"),
         "reliable_ev_version": rec.get("reliable_ev_version"),
+        "challenger_expected_strikeouts": rec.get("challenger_expected_strikeouts"),
+        "challenger_over_probability": rec.get("challenger_over_probability"),
+        "challenger_under_probability": rec.get("challenger_under_probability"),
+        "challenger_push_probability": rec.get("challenger_push_probability"),
+        "challenger_fair_probability": rec.get("challenger_fair_probability"),
+        "challenger_version": rec.get("challenger_version"),
     }
     existing = _existing_columns(conn, "historical_recommendations")
     fields = {name: value for name, value in fields.items() if name in existing}

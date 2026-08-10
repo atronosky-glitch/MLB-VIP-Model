@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Independent strikeout challenger shadow layer (2026-08-10)** — Added `src/strikeout_challenger.py`, a no-sportsbook-input Poisson baseline using verified MLB StatsAPI pitcher strikeouts, batters faced, and starts. Worker morning/pregame pipelines attach challenger projection fields to strikeout O/U snapshots without changing picks, thresholds, or scoring. Chronological/Brier evaluation utilities and tests added. Full suite: **1489 passed, 0 failed**. This is shadow evidence, not production pick logic.
+
 - **O/U versus Y/N coverage diagnostics (2026-08-10)** — Research empty-market diagnostics now break raw approved coverage into O/U rows, Y/N rows, exact groups, and paired Over/Under groups. This makes it possible to determine whether an apparent Player Hits concentration comes from API coverage, line pairing, or later edge filters without changing selection logic. Full suite: **1486 passed, 0 failed**.
 
 - **Research coverage diagnostics (2026-08-09)** — When a registry market has no saved Research rows, the admin filter now reports today’s approved raw observation rows, players, and books, distinguishing “no edge survived” from “API/parser coverage missing.” Full suite: **1486 passed, 0 failed**.

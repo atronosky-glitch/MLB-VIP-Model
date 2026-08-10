@@ -223,7 +223,9 @@ def _maintenance_cleanup(conn: DB) -> int:
 def _run_morning_scan(config) -> dict:
     """Execute the full morning pipeline."""
     from src.daily_pipeline import run_pipeline, PipelineConfig
-    pipeline_config = PipelineConfig(output_dir=config.output_dir, live=True)
+    pipeline_config = PipelineConfig(
+        output_dir=config.output_dir, live=True, challenger_shadow=True,
+    )
     exit_code = run_pipeline(pipeline_config)
     return {"status": "success" if exit_code == 0 else "failed", "exit_code": exit_code}
 
@@ -265,6 +267,7 @@ def _run_pregame_scan(conn: DB, config, event_id: str | None = None) -> dict:
             actionable_only=True,
             lifecycle_snapshot_kind="pregame",
             event_id=event_id,
+            challenger_shadow=True,
         ))
         result = {
             "status": "success" if exit_code in (0, 1) else "failed",

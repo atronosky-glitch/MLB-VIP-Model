@@ -141,6 +141,7 @@ class PipelineConfig:
     as_csv: bool = False
     debug: bool = False
     event_id: str | None = None
+    challenger_shadow: bool = False
     # Morning scans are observations, not closing snapshots. Final CLV is
     # captured only by an explicitly scheduled final-close run.
     lifecycle_snapshot_kind: str = "morning"
@@ -734,6 +735,21 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     })
 
                 # Compute Model Score
+                if config.challenger_shadow and rec.get("market_type") == "pitching_strikeouts_ou":
+                    try:
+                        from src.strikeout_challenger import project_current_player
+                        challenger = project_current_player(
+                            rec.get("player_name", ""), float(rec.get("line")), rec.get("side", "")
+                        )
+                        if challenger:
+                            rec.update(challenger)
+                            rec["challenger_fair_probability"] = challenger.get(
+                                "challenger_over_probability" if rec.get("side", "").upper() == "OVER"
+                                else "challenger_under_probability"
+                            )
+                    except Exception:
+                        logger.debug("Challenger projection unavailable", exc_info=True)
+
                 try:
                     from src.model_scoring import compute_model_score
                     score_result = compute_model_score(rec)

@@ -2,6 +2,22 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-10 — Independent strikeout challenger shadow layer
+
+### What was done
+
+1. Added `src/strikeout_challenger.py` with a conservative independent Poisson baseline using verified MLB StatsAPI season pitching fields. It does not read sportsbook odds.
+2. Worker morning/pregame pipelines request challenger projections for strikeout O/U players and persist shadow fields when MLB StatsAPI identity/stats are unambiguous.
+3. Added chronological sample-gated evaluation with Brier score output. Challenger data does not alter current picks, thresholds, Pinnacle policy, or staking.
+
+### Verification
+
+- Full suite: **1489 passed, 0 failed**.
+
+### Remaining challenger work
+
+- Historical CSV odds/pick import and richer opponent/innings/lineup features remain future shadow-data work. The current challenger is intentionally a baseline, not a production replacement.
+
 ## Session: 2026-08-10 — O/U versus Y/N coverage diagnostics
 
 ### What was changed
