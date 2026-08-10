@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Registry-complete Research market filter (2026-08-09)** — Research market selection now uses all entries in `MARKET_REGISTRY`, not only market types that happened to produce saved rows. Empty markets remain visible so production coverage can be audited without loosening any model gates. Full suite: **1486 passed, 0 failed**.
+
 - **Verified settlement coverage expansion (2026-08-09)** — MLB StatsAPI settlement now covers verified atomic RBI, runs, singles, doubles, triples, batter walks, batter strikeouts, and pitcher pitches thrown fields in addition to the prior markets. Composites, first-home-run, and run-line semantics remain Research-only. Full suite: **1485 passed, 0 failed**.
 
 - **Automatic variable-stake correction (2026-08-09)** — The existing 25% fractional-Kelly/score sizing formula is now used by automatic grading when writing `bet_units`; prior automatic settlement silently recorded one flat unit. Qualification and market selection were unchanged. Full suite: **1484 passed, 0 failed**.

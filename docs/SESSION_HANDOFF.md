@@ -2,6 +2,19 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Registry-complete Research market inventory
+
+### What was changed
+
+- Research market filtering now derives options from the authoritative `MARKET_REGISTRY`.
+- Each option includes its canonical O/U/Y/N market types.
+- Selecting an empty market shows no rows instead of hiding the market entirely.
+- Pinnacle policy, thresholds, and Official qualification were unchanged.
+
+### Verification
+
+- Full suite: **1486 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Verified atomic settlement coverage expansion
 
 ### What was found

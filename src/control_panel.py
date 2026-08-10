@@ -1066,8 +1066,19 @@ with tabs[2]:
             import pandas as pd
             filter_cols = st.columns(4)
             with filter_cols[0]:
-                markets = sorted(set(r.get("market_type", "") for r in all_non_official if r.get("market_type")))
-                sel_market = st.selectbox("Market", ["All"] + markets, key="research_filter_market")
+                from src.prop_config import MARKET_REGISTRY
+                market_options = {"All": None}
+                for market_config in MARKET_REGISTRY:
+                    types = tuple(
+                        value for value in (market_config.market_type_ou, market_config.market_type_yn)
+                        if value
+                    )
+                    label = f"{market_config.cli_name} ({', '.join(types)})"
+                    market_options[label] = set(types)
+                sel_market = st.selectbox(
+                    "Market", list(market_options), key="research_filter_market",
+                )
+                st.caption("Registry markets remain selectable even when no rows survived the current scan.")
             with filter_cols[1]:
                 books = sorted(set(r.get("sportsbook", "") for r in all_non_official if r.get("sportsbook")))
                 sel_book = st.selectbox("Sportsbook", ["All"] + books, key="research_filter_book")
@@ -1077,8 +1088,9 @@ with tabs[2]:
                 tier_filter = st.selectbox("Tier", ["All", "DISCOVERY_TRACKED", "RESEARCH_ONLY"], key="research_filter_tier")
 
             filtered = all_non_official
-            if sel_market != "All":
-                filtered = [r for r in filtered if r.get("market_type") == sel_market]
+            selected_types = market_options[sel_market]
+            if selected_types is not None:
+                filtered = [r for r in filtered if r.get("market_type") in selected_types]
             if sel_book != "All":
                 filtered = [r for r in filtered if r.get("sportsbook") == sel_book]
             if score_filter == "6.0+":
