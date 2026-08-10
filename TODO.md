@@ -121,6 +121,7 @@
 - [x] Automatic stake sizing — variable stake calculation now flows into canonical automatic settlement units; historical records are unchanged.
 - [x] Atomic settlement coverage expansion — verified MLB StatsAPI fields now support additional RBI/runs/hit-component/pitches markets without enabling composites or ambiguous market semantics.
 - [x] Strikeout challenger shadow layer — independent season-stat projection and sample-gated chronological evaluation are recorded alongside worker scan recommendations without affecting production qualification.
+- [x] Retrosheet historical feature loader — downloaded CSV ZIP can now produce chronological independent pitcher-game features; sportsbook odds remain separate evidence and are never inferred from Retrosheet.
 - [x] Customer PostgreSQL row access — performance baseline reads use named DB-wrapper row access.
 - [x] Scoped pregame runtime — scheduled event IDs now limit pregame fetch/scan work; global pregame locking and start/complete elapsed logs prevent overlapping full-slate jobs.
 - [x] Grading job dispatch — explicit `--job grading` now runs result ingestion and catch-up grading, matching worker startup behavior.

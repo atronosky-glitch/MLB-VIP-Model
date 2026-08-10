@@ -2,6 +2,20 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-10 — Retrosheet historical challenger loader
+
+### What was done
+
+- Inspected `csvdownloads.zip` and verified `pitching.csv`, `batting.csv`, `gameinfo.csv`, `teamstats.csv`, and `plays.csv`.
+- Added `src/retrosheet_challenger.py` to create chronological pitcher-game features from pitching and prior opponent batting data without look-ahead leakage.
+- Added descriptive MAE/bias evaluation. This remains shadow research and does not alter production picks.
+- Historical sportsbook odds are not present in the Retrosheet files and remain separate from the independent feature model.
+
+### Verification
+
+- Challenger/Retrosheet tests: **4 passed**.
+- Full suite: **1490 passed, 0 failed**.
+
 ## Session: 2026-08-10 — Independent strikeout challenger shadow layer
 
 ### What was done
