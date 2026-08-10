@@ -1134,23 +1134,33 @@ with tabs[2]:
                         coverage_conn = _open_dashboard_connection(db_path)
                         try:
                             placeholders = ",".join("?" * len(selected_types))
-                            coverage = coverage_conn.execute(
-                                f"""SELECT COUNT(*) AS rows, COUNT(DISTINCT player_id) AS players,
-                                           COUNT(DISTINCT sportsbook) AS books
+                            coverage_rows = coverage_conn.execute(
+                                f"""SELECT market_type, market_group_key, side,
+                                           player_id, sportsbook
                                     FROM player_prop_odds
                                     WHERE date(captured_at) = date('now')
                                       AND market_type IN ({placeholders})
                                       AND validation_status IN ('VALID','CONFIRMED','VERIFIED')""",
                                 list(selected_types),
-                            ).fetchone()
+                            ).fetchall()
                         finally:
                             coverage_conn.close()
-                        if coverage and coverage["rows"]:
+                        coverage_rows = [dict(row) for row in coverage_rows]
+                        if coverage_rows:
+                            groups = {}
+                            for row in coverage_rows:
+                                key = row.get("market_group_key")
+                                groups.setdefault(key, set()).add((row.get("side") or "").upper())
+                            ou_rows = [r for r in coverage_rows if str(r.get("market_type", "")).endswith("_ou")]
+                            yn_rows = [r for r in coverage_rows if str(r.get("market_type", "")).endswith("_yn")]
+                            paired = sum(1 for sides in groups.values() if {"OVER", "UNDER"}.issubset(sides))
                             st.info(
                                 f"No saved research picks for this market. Raw approved coverage: "
-                                f"{coverage['rows']} rows, {coverage['players']} players, "
-                                f"{coverage['books']} books. The opportunities did not survive "
-                                "the recommendation filters."
+                                f"{len(coverage_rows)} rows, {len({r.get('player_id') for r in coverage_rows})} players, "
+                                f"{len({r.get('sportsbook') for r in coverage_rows})} books. "
+                                f"O/U rows={len(ou_rows)}, Y/N rows={len(yn_rows)}, "
+                                f"exact groups={len(groups)}, paired O/U groups={paired}. "
+                                "The opportunities did not survive the recommendation filters."
                             )
                         else:
                             st.warning(

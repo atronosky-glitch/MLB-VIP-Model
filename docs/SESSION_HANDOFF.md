@@ -2,6 +2,17 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-10 — O/U versus Y/N coverage diagnostics
+
+### What was changed
+
+- Empty Research market filters now report raw rows, players, books, exact groups, O/U rows, Y/N rows, and paired Over/Under groups.
+- This distinguishes genuine O/U coverage from single-sided Y/N coverage without changing model methodology.
+
+### Verification
+
+- Full suite: **1486 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Research coverage diagnostics
 
 ### What was changed
