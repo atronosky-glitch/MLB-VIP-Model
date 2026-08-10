@@ -2,6 +2,22 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-10 — Retrosheet challenger workload correction
+
+### What was found
+
+The initial Retrosheet loader used all prior batters faced divided by prior starts, allowing relief appearances to inflate expected starter workload.
+
+### What was changed
+
+- Expected batters faced now uses prior starter appearances only.
+- All prior appearances remain available for pitcher strikeout-rate estimation.
+- Relief appearances are excluded from challenger outcome records.
+
+### Verification
+
+- Full suite: **1490 passed, 0 failed**.
+
 ## Session: 2026-08-10 — Retrosheet historical challenger loader
 
 ### What was done

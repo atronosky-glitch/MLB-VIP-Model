@@ -32,4 +32,5 @@ def test_loader_builds_pregame_features_without_lookahead(tmp_path):
     assert len(records) == 2
     assert records[1]["games_started_before"] == 1
     assert records[1]["actual_strikeouts"] == 8
+    assert records[1]["expected_batters_faced"] == 24
     assert evaluate_pitcher_records(records)["sample_size"] == 2

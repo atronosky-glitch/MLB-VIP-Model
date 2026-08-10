@@ -33,6 +33,7 @@ def load_pitcher_game_records(zip_path: str | Path, *, start_year: int | None = 
     pitcher_k = defaultdict(int)
     pitcher_bf = defaultdict(int)
     pitcher_starts = defaultdict(int)
+    pitcher_start_bf = defaultdict(int)
     records: list[dict] = []
     batting_by_game: dict[str, list[dict]] = defaultdict(list)
     for row in batting:
@@ -62,11 +63,12 @@ def load_pitcher_game_records(zip_path: str | Path, *, start_year: int | None = 
             / (team_pa[opponent] + DEFAULT_PRIOR_BATTERS)
         )
         expected_bf = (
-            pitcher_bf[pitcher_id] / pitcher_starts[pitcher_id]
+            pitcher_start_bf[pitcher_id] / pitcher_starts[pitcher_id]
             if pitcher_starts[pitcher_id] else 27.0
         )
         rate = (prior_pitcher_rate + opponent_rate) / 2.0
-        records.append({
+        if starts:
+            records.append({
             "gid": row.get("gid"), "date": row.get("date"), "pitcher_id": pitcher_id,
             "team": row.get("team"), "opponent": opponent,
             "pitcher_rate": prior_pitcher_rate, "opponent_k_rate": opponent_rate,
@@ -74,11 +76,13 @@ def load_pitcher_game_records(zip_path: str | Path, *, start_year: int | None = 
             "expected_strikeouts": rate * expected_bf,
             "actual_strikeouts": strikeouts,
             "games_started_before": pitcher_starts[pitcher_id],
-        })
+            })
 
         pitcher_k[pitcher_id] += strikeouts
         pitcher_bf[pitcher_id] += batters_faced
         pitcher_starts[pitcher_id] += starts
+        if starts:
+            pitcher_start_bf[pitcher_id] += batters_faced
         for batter in batting_by_game.get(row.get("gid", ""), []):
             if batter.get("stattype") != "value":
                 continue
