@@ -1129,7 +1129,38 @@ with tabs[2]:
                 st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
                 st.caption(f"Showing {len(filtered)} of {len(research_only)} research picks")
             else:
-                st.info("No research picks match filters.")
+                if selected_types is not None:
+                    try:
+                        coverage_conn = _open_dashboard_connection(db_path)
+                        try:
+                            placeholders = ",".join("?" * len(selected_types))
+                            coverage = coverage_conn.execute(
+                                f"""SELECT COUNT(*) AS rows, COUNT(DISTINCT player_id) AS players,
+                                           COUNT(DISTINCT sportsbook) AS books
+                                    FROM player_prop_odds
+                                    WHERE date(captured_at) = date('now')
+                                      AND market_type IN ({placeholders})
+                                      AND validation_status IN ('VALID','CONFIRMED','VERIFIED')""",
+                                list(selected_types),
+                            ).fetchone()
+                        finally:
+                            coverage_conn.close()
+                        if coverage and coverage["rows"]:
+                            st.info(
+                                f"No saved research picks for this market. Raw approved coverage: "
+                                f"{coverage['rows']} rows, {coverage['players']} players, "
+                                f"{coverage['books']} books. The opportunities did not survive "
+                                "the recommendation filters."
+                            )
+                        else:
+                            st.warning(
+                                "No approved raw rows were recorded for this market today. "
+                                "This indicates API/parser coverage, not simply no positive edge."
+                            )
+                    except Exception:
+                        st.info("No research picks match filters.")
+                else:
+                    st.info("No research picks match filters.")
         except Exception as e:
             st.error(f"Error: {e}")
 

@@ -2,6 +2,8 @@
 
 ## Completed
 
+- **Research coverage diagnostics (2026-08-09)** — When a registry market has no saved Research rows, the admin filter now reports today’s approved raw observation rows, players, and books, distinguishing “no edge survived” from “API/parser coverage missing.” Full suite: **1486 passed, 0 failed**.
+
 - **Registry-complete Research market filter (2026-08-09)** — Research market selection now uses all entries in `MARKET_REGISTRY`, not only market types that happened to produce saved rows. Empty markets remain visible so production coverage can be audited without loosening any model gates. Full suite: **1486 passed, 0 failed**.
 
 - **Verified settlement coverage expansion (2026-08-09)** — MLB StatsAPI settlement now covers verified atomic RBI, runs, singles, doubles, triples, batter walks, batter strikeouts, and pitcher pitches thrown fields in addition to the prior markets. Composites, first-home-run, and run-line semantics remain Research-only. Full suite: **1485 passed, 0 failed**.

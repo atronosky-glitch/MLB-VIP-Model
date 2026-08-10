@@ -2,6 +2,18 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-09 — Research coverage diagnostics
+
+### What was changed
+
+- Empty registry-market Research filters now query today’s approved `player_prop_odds` observations.
+- The dashboard distinguishes raw market coverage with no surviving recommendations from missing API/parser coverage.
+- No model thresholds or Pinnacle policy changed.
+
+### Verification
+
+- Full suite: **1486 passed, 0 failed**.
+
 ## Session: 2026-08-09 — Registry-complete Research market inventory
 
 ### What was changed
