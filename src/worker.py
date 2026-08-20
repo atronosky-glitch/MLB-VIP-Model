@@ -53,6 +53,15 @@ WORKER_HEARTBEAT_INTERVAL = 60  # seconds
 STALE_JOB_THRESHOLD_MINUTES = 30
 GRADING_CHECK_INTERVAL_MINUTES = 15
 PREGAME_CHECK_INTERVAL_MINUTES = 10
+# NFL/WNBA scheduling-CHECK cadence — how often the worker loop asks "is
+# a job due yet". This is deliberately coarser than MLB's, and separate
+# from the actual job cadence those checks decide (see
+# src/league_schedule.py) — checking every 20-30 min is plenty responsive
+# for kickoff/tip-off windows measured in hours, and keeps schedule
+# discovery calls (NFL: rate-limited API; WNBA: free but still a network
+# call) from firing every worker tick.
+NFL_SCHEDULE_CHECK_INTERVAL_MINUTES = 30
+WNBA_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
 
 TZ_NAME = os.environ.get("MLB_SCHEDULER_TIMEZONE", os.environ.get("MLB_TIMEZONE", "America/New_York"))
 
@@ -265,15 +274,20 @@ def _run_pregame_checks(conn: DB, config) -> dict:
 
 
 def _run_pregame_scan(conn: DB, config, event_id: str | None = None, league: str = "MLB") -> dict:
-    """Run a scheduled pregame pipeline so it records a scan_run."""
+    """Run a scheduled pregame pipeline so it records a scan_run.
+
+    Lock is scoped per-league (``pregame-pipeline-{league}``) — a
+    long-running MLB pregame pipeline must never block an NFL or WNBA one
+    that becomes due at the same time, and vice versa.
+    """
     from src.daily_pipeline import run_pipeline, PipelineConfig
 
-    lock_key = _acquire_lock(conn, "pregame-pipeline")
+    lock_key = _acquire_lock(conn, f"pregame-pipeline-{league}")
     if not lock_key:
-        logger.warning("PREGAME JOB SKIPPED reason=another_pregame_running event_id=%s", event_id)
+        logger.warning("[%s] PREGAME JOB SKIPPED reason=another_pregame_running event_id=%s", league, event_id)
         return {"status": "success", "skipped": True, "reason": "another_pregame_running"}
     started = time.monotonic()
-    logger.info("PREGAME JOB START event_id=%s games_targeted=%s", event_id, 1 if event_id else "all")
+    logger.info("[%s] PREGAME JOB START event_id=%s games_targeted=%s", league, event_id, 1 if event_id else "all")
     try:
         exit_code = run_pipeline(PipelineConfig(
             live=True,
@@ -291,12 +305,38 @@ def _run_pregame_scan(conn: DB, config, event_id: str | None = None, league: str
             "exit_code": exit_code,
         }
         logger.info(
-            "PREGAME JOB COMPLETE elapsed=%.1fs event_id=%s games_targeted=%s exit_code=%s",
-            time.monotonic() - started, event_id, 1 if event_id else "all", exit_code,
+            "[%s] PREGAME JOB COMPLETE elapsed=%.1fs event_id=%s games_targeted=%s exit_code=%s",
+            league, time.monotonic() - started, event_id, 1 if event_id else "all", exit_code,
         )
         return result
     finally:
         _release_lock(conn, lock_key)
+
+
+def _run_wnba_odds_scan(config) -> dict:
+    """WNBA game-market-only scan (moneyline/spread/total) — a flat,
+    cheap 3-credit call regardless of slate size. Never fetches props;
+    see _run_wnba_props_scan for that, gated much harder on credits."""
+    from src.daily_pipeline import run_pipeline, PipelineConfig
+    exit_code = run_pipeline(PipelineConfig(
+        output_dir=config.output_dir, live=True, challenger_shadow=False,
+        league="WNBA", fetch_props=False,
+    ))
+    return {"status": "success" if exit_code in (0, 1) else "failed", "exit_code": exit_code}
+
+
+def _run_wnba_props_scan(config) -> dict:
+    """WNBA player-prop scan — the credit-expensive path. Only reached
+    when src.league_schedule.wnba_should_fetch_props already said yes
+    (checked again against real-time budget inside fetch_and_parse_props
+    itself, via src.odds_api_credits.credit_budget_check, as a second
+    line of defense against a stale scheduling decision)."""
+    from src.daily_pipeline import run_pipeline, PipelineConfig
+    exit_code = run_pipeline(PipelineConfig(
+        output_dir=config.output_dir, live=True, challenger_shadow=False,
+        league="WNBA", fetch_props=True,
+    ))
+    return {"status": "success" if exit_code in (0, 1) else "failed", "exit_code": exit_code}
 
 
 def _run_grading(conn: DB, config) -> dict:
@@ -319,8 +359,15 @@ def _run_catchup_grading(conn: DB) -> dict:
     interface (``src/sports/<league>.py::get_settlement_module()``), so
     unresolved recommendations are grouped by their ``league`` column and
     each group is routed to its own verified results source (MLB StatsAPI,
-    ESPN NFL, ...). A league with no settlement module (e.g. WNBA, not yet
-    available) is skipped rather than guessed.
+    ESPN NFL, ESPN WNBA). A league with no settlement module is skipped
+    rather than guessed.
+
+    Each league's ingest runs inside its own try/except: a result-source
+    outage or API exhaustion for one league (e.g. WNBA hitting its
+    monthly credit ceiling) must never prevent MLB/NFL's ingest — or the
+    grading passes below, which cover every league at once — from
+    running. A single unhandled exception here previously meant one
+    league's failure could silently stop grading for all three.
     """
     from database.db_manager import get_unsettled_recommendations
     from src.automatic_grading import grade_available_recommendations, grade_available_game_recommendations
@@ -340,10 +387,23 @@ def _run_catchup_grading(conn: DB) -> dict:
         if settlement_module is None:
             results_by_league[league] = {"skipped": True, "recommendations": len(recs)}
             continue
-        results_by_league[league] = settlement_module.ingest_results_for_recommendations(conn, recs)
+        try:
+            results_by_league[league] = settlement_module.ingest_results_for_recommendations(conn, recs)
+        except Exception:
+            logger.exception("[%s] Result ingestion failed — other leagues continue", league)
+            results_by_league[league] = {"error": True, "recommendations": len(recs)}
 
-    result = grade_available_recommendations(conn)
-    game_result = grade_available_game_recommendations(conn)
+    try:
+        result = grade_available_recommendations(conn)
+    except Exception:
+        logger.exception("Player-prop grading pass failed")
+        result = {"graded": 0, "error": True}
+    try:
+        game_result = grade_available_game_recommendations(conn)
+    except Exception:
+        logger.exception("Game-market grading pass failed")
+        game_result = {"graded": 0, "error": True}
+
     combined = {"results": results_by_league, "grading": result, "game_grading": game_result}
     total_facts_saved = sum(r.get("facts_saved", 0) for r in results_by_league.values())
     if result.get("graded") or game_result.get("graded") or total_facts_saved:
@@ -467,10 +527,21 @@ def _check_api_quota_and_alert(conn: DB, config) -> None:
 
 
 def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -> dict:
-    """Dispatch and execute a single job."""
+    """Dispatch and execute a single job.
+
+    NFL/WNBA job types are separate entries rather than a league
+    parameter on the shared ones — each league's cadence and credit
+    profile is different enough (see src/league_schedule.py) that
+    keeping them distinct in scheduled_jobs makes the job history/logs
+    self-explanatory without needing to inspect metadata.
+    """
     dispatch = {
         "morning-run": lambda: _run_morning_scan(config),
         "pregame-check": lambda: _run_pregame_scan(conn, config, event_id),
+        "morning-run-nfl": lambda: _run_morning_scan(config, league="NFL"),
+        "pregame-check-nfl": lambda: _run_pregame_scan(conn, config, event_id, league="NFL"),
+        "wnba-odds-scan": lambda: _run_wnba_odds_scan(config),
+        "wnba-props-scan": lambda: _run_wnba_props_scan(config),
         "grading": lambda: _run_grading(conn, config),
         "backup": lambda: _run_backup(config),
         "adaptive-learning": lambda: _run_adaptive_learning(conn, config),
@@ -556,6 +627,155 @@ def _process_pending_jobs(conn: DB, config) -> int:
     return executed
 
 
+def _discover_nfl_game_times() -> list:
+    """Discover today's/upcoming NFL kickoff times via the same
+    SportsGameOdds client/cache MLB and NFL scans already use — no extra
+    rate cost beyond what a normal scan would incur, since the client's
+    own disk cache absorbs repeated calls inside its TTL. Real schedule,
+    never a day-of-week assumption — see src/league_schedule.py.
+
+    There is no "date" query parameter on this API (verified live
+    2026-08-20 — see SportsGameOddsClient.get_events's docstring);
+    without an explicit startsAfter/startsBefore window the API returns
+    an arbitrary default page, not "this week's games". A 9-day window
+    (1 day back, 8 ahead) is wide enough to always see the full current
+    NFL week regardless of which day this check runs on.
+    """
+    from src.api_client import SportsGameOddsClient
+    from src.league_schedule import extract_game_start_times
+    try:
+        client = SportsGameOddsClient(max_cache_age=900.0)
+        now = _now_local().astimezone(timezone.utc)
+        data, _from_cache = client.get_events(
+            league="NFL", odds_available=False,
+            starts_after=(now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            starts_before=(now + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        events = data.get("data", data.get("events", [])) or []
+        return extract_game_start_times(events)
+    except Exception:
+        logger.warning("[NFL] Could not discover game schedule", exc_info=True)
+        return []
+
+
+def _discover_wnba_game_times() -> list:
+    """Discover today's/upcoming WNBA game times via the FREE /events
+    endpoint (0 credits, confirmed live — see src/odds_api_client.py) —
+    safe to call often regardless of the monthly credit budget."""
+    from src.odds_api_client import OddsAPIClient, OddsAPIKeyError
+    from src.league_schedule import extract_game_start_times
+    try:
+        client = OddsAPIClient()
+        events, _from_cache = client.get_events()
+        return extract_game_start_times(events)
+    except OddsAPIKeyError:
+        return []  # no WNBA key configured — silently unavailable, not an error
+    except Exception:
+        logger.warning("[WNBA] Could not discover game schedule", exc_info=True)
+        return []
+
+
+def _get_last_completed_job_at(conn: DB, job_type: str):
+    """Most recent completion time for a job_type, or None. Backs the
+    "last_fetch"/"last_check" inputs src/league_schedule.py's decision
+    functions need — persisted in scheduled_jobs so it survives worker
+    restarts and works identically in one-shot (cron) mode.
+    """
+    row = conn.execute(
+        "SELECT completed_at FROM scheduled_jobs "
+        "WHERE job_type = ? AND status = 'completed' AND completed_at IS NOT NULL "
+        "ORDER BY completed_at DESC LIMIT 1",
+        (job_type,),
+    ).fetchone()
+    if not row or not row["completed_at"]:
+        return None
+    try:
+        dt = datetime.fromisoformat(row["completed_at"].replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def _create_job_if_not_queued(conn: DB, job_type: str) -> str | None:
+    """Create *job_type* unless one is already pending or running —
+    prevents a scheduling check that fires every loop tick from queuing
+    the same job repeatedly while the prior one is still in flight."""
+    existing = conn.execute(
+        "SELECT 1 FROM scheduled_jobs WHERE job_type = ? AND status IN ('pending','running') LIMIT 1",
+        (job_type,),
+    ).fetchone()
+    if existing:
+        return None
+    from src.automation import create_job
+    return create_job(conn, job_type=job_type, scheduled_at=datetime.now(timezone.utc).isoformat())
+
+
+def _check_and_schedule_nfl(conn: DB) -> None:
+    """NFL: daily scan + pregame tracking, but only on actual game days
+    and around actual kickoff times — see src/league_schedule.py. Skips
+    entirely (no API calls beyond the cheap, cached schedule discovery)
+    on the many NFL-week days with no games at all.
+    """
+    from src.league_schedule import nfl_should_run_daily_scan, nfl_should_run_pregame_check
+
+    now = _now_local()
+    game_times = _discover_nfl_game_times()
+    if not game_times:
+        return
+
+    last_scan = _get_last_completed_job_at(conn, "morning-run-nfl")
+    already_ran_today = bool(
+        last_scan and last_scan.astimezone(now.tzinfo).date() == now.date()
+    )
+    scan_decision = nfl_should_run_daily_scan(now, game_times, already_ran_today)
+    if scan_decision.should_run:
+        job_id = _create_job_if_not_queued(conn, "morning-run-nfl")
+        if job_id:
+            logger.info("[NFL] Scheduled daily scan: %s (%s)", job_id[:8], scan_decision.reason)
+
+    pregame_decision = nfl_should_run_pregame_check(now, game_times)
+    if pregame_decision.should_run:
+        job_id = _create_job_if_not_queued(conn, "pregame-check-nfl")
+        if job_id:
+            logger.info("[NFL] Scheduled pregame check: %s (%s)", job_id[:8], pregame_decision.reason)
+
+
+def _check_and_schedule_wnba(conn: DB) -> None:
+    """WNBA: schedule discovery is free; game odds are a cheap flat rate;
+    props are rationed hard against the monthly credit budget — see
+    src/league_schedule.py and src/odds_api_credits.py.
+    """
+    from src.league_schedule import wnba_should_fetch_game_odds, wnba_should_fetch_props
+    from src.odds_api_credits import get_latest_credit_status
+
+    now = _now_local()
+    game_times = _discover_wnba_game_times()
+    if not game_times:
+        return  # no key configured, or genuinely no games today/soon
+
+    last_odds = _get_last_completed_job_at(conn, "wnba-odds-scan")
+    odds_decision = wnba_should_fetch_game_odds(now, game_times, last_odds)
+    if odds_decision.should_run:
+        job_id = _create_job_if_not_queued(conn, "wnba-odds-scan")
+        if job_id:
+            logger.info("[WNBA] Scheduled odds scan: %s (%s)", job_id[:8], odds_decision.reason)
+
+    try:
+        status = get_latest_credit_status(conn)
+    except Exception:
+        status = None
+    credits_remaining = status.get("requests_remaining") if status else None
+
+    last_props = _get_last_completed_job_at(conn, "wnba-props-scan")
+    props_decision = wnba_should_fetch_props(now, game_times, last_props, credits_remaining)
+    if props_decision.should_run:
+        job_id = _create_job_if_not_queued(conn, "wnba-props-scan")
+        if job_id:
+            logger.info("[WNBA] Scheduled props scan: %s (%s)", job_id[:8], props_decision.reason)
+
+
 def _check_and_schedule_pregame(conn: DB) -> None:
     """Check if pregame checks need scheduling (hourly during game windows)."""
     now = _now_local()
@@ -628,6 +848,8 @@ def run_worker_persistent(config) -> None:
     last_pregame_check = 0
     last_grading_check = 0
     last_morning_check = 0
+    last_nfl_check = 0
+    last_wnba_check = 0
     last_backup_minute = -1
     last_maintenance_day = ""
 
@@ -670,6 +892,25 @@ def run_worker_persistent(config) -> None:
             if now - last_grading_check >= GRADING_CHECK_INTERVAL_MINUTES * 60:
                 _check_and_schedule_grading(conn)
                 last_grading_check = now
+
+            # NFL: daily scan + pregame tracking, only on real game days
+            # (see src/league_schedule.py) — a failure here must never
+            # affect MLB/WNBA scheduling in the same loop iteration.
+            if now - last_nfl_check >= NFL_SCHEDULE_CHECK_INTERVAL_MINUTES * 60:
+                try:
+                    _check_and_schedule_nfl(conn)
+                except Exception:
+                    logger.exception("[NFL] Scheduling check failed")
+                last_nfl_check = now
+
+            # WNBA: schedule/odds/props, credit-aware (see
+            # src/odds_api_credits.py) — isolated the same way.
+            if now - last_wnba_check >= WNBA_SCHEDULE_CHECK_INTERVAL_MINUTES * 60:
+                try:
+                    _check_and_schedule_wnba(conn)
+                except Exception:
+                    logger.exception("[WNBA] Scheduling check failed")
+                last_wnba_check = now
 
             # Daily backup at 3:30 AM ET
             if _is_backup_time(now_local) and last_backup_minute != now_local.minute:
@@ -721,6 +962,21 @@ def run_worker_once(config) -> None:
         _check_and_schedule_morning_run(conn)
         _check_and_schedule_pregame(conn)
         _check_and_schedule_grading(conn)
+        # NFL/WNBA scheduling checks — isolated so a failure in one
+        # league's discovery/credit check never blocks MLB's one-shot run.
+        try:
+            _check_and_schedule_nfl(conn)
+        except Exception:
+            logger.exception("[NFL] Scheduling check failed")
+        try:
+            _check_and_schedule_wnba(conn)
+        except Exception:
+            logger.exception("[WNBA] Scheduling check failed")
+        # Newly-queued NFL/WNBA jobs from the checks above are due
+        # immediately — run them now rather than waiting for the next
+        # one-shot invocation (which, on a cron schedule, could be hours
+        # away for a job that's actually time-sensitive right now).
+        executed += _process_pending_jobs(conn, config)
         _check_api_quota_and_alert(conn, config)
 
         now_local = _now_local()

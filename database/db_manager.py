@@ -987,6 +987,49 @@ def init_db(db_path: str | None = None) -> None:
     # moved and a same-line price comparison isn't available — see
     # src/grading.py::calculate_clv / classify_line_movement.
     _add_columns_if_missing(conn, "closing_prices", [("line_movement_direction", "TEXT")])
+
+    # Duplicate-pick suppression: a scan re-running every few minutes must
+    # not freeze a new official pick every time the price wiggles a cent.
+    # bet_slot_key identifies "the same logical bet" (event+player+market+
+    # side) across scans; pick_status distinguishes the one ACTIVE row per
+    # slot from SUPERSEDED history when a materially different price/line
+    # replaces it. See src/official_picks.py::classify_pick_update.
+    _add_columns_if_missing(conn, "official_picks", [
+        ("pick_status", "TEXT NOT NULL DEFAULT 'ACTIVE'"),
+        ("bet_slot_key", "TEXT"),
+        ("superseded_by", "TEXT"),
+        ("superseded_at", "TEXT"),
+        ("first_recommended_at", "TEXT"),
+        ("best_american_odds", "INTEGER"),
+        ("best_odds_at", "TEXT"),
+        ("latest_american_odds", "INTEGER"),
+        ("latest_odds_at", "TEXT"),
+        ("update_count", "INTEGER NOT NULL DEFAULT 0"),
+    ])
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_op_slot_status ON official_picks(bet_slot_key, pick_status)"
+    )
+
+    # The Odds API (WNBA's provider) returns real credit-remaining headers
+    # on every response (x-requests-used/x-requests-remaining/x-requests-
+    # last) — see src/odds_api_client.py. Persisting them is how the
+    # platform stays credit-aware on a hard monthly-quota free tier
+    # instead of guessing usage. See src/odds_api_credits.py.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS odds_api_credits (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at         TEXT NOT NULL DEFAULT (datetime('now')),
+            endpoint            TEXT NOT NULL,
+            job_type            TEXT NOT NULL DEFAULT '',
+            requests_used       INTEGER,
+            requests_remaining  INTEGER,
+            requests_last       INTEGER,
+            cache_hit           INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_oac_recorded ON odds_api_credits(recorded_at)"
+    )
     _add_columns_if_missing(conn, "player_stat_results", [("league", "TEXT DEFAULT 'MLB'")])
     _add_columns_if_missing(conn, "market_settlements", [("league", "TEXT DEFAULT 'MLB'")])
     _add_columns_if_missing(conn, "closing_prices", [("league", "TEXT DEFAULT 'MLB'")])
@@ -1822,6 +1865,141 @@ def freeze_official_pick(
         return False
 
 
+def _is_better_price(candidate_odds: int | None, current_odds: int | None) -> bool:
+    """True if *candidate_odds* pays more per dollar risked than *current_odds*.
+
+    Compared via implied probability (lower is better for the bettor) so
+    the comparison is correct on both sides of the American-odds sign
+    boundary, unlike a raw numeric comparison of the odds themselves.
+    """
+    if candidate_odds is None:
+        return False
+    if current_odds is None:
+        return True
+    from src.market_analysis import american_to_probability
+    try:
+        return american_to_probability(int(candidate_odds)) < american_to_probability(int(current_odds))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return False
+
+
+def freeze_or_update_official_pick(
+    conn: DB,
+    rec: dict,
+    tier: str = "OFFICIAL_TRACKED",
+    official_rank: int | None = None,
+    rules_version: str = "official_pick_rules_v2",
+) -> dict:
+    """Freeze *rec* as an official pick, suppressing duplicate re-observations
+    of the same bet and superseding it only on a materially different price
+    or line — see src/official_picks.py::classify_pick_update.
+
+    Returns {"action": "frozen"|"duplicate"|"superseded"|"error",
+             "recommendation_id": <the ACTIVE pick's recommendation_id>}.
+    Idempotent: rerunning with the exact same rec is safe (ON CONFLICT DO
+    NOTHING on insert; duplicate branch just refreshes tracking fields).
+    """
+    from src.official_picks import compute_bet_slot_key, classify_pick_update, UPDATE_DUPLICATE
+
+    recommendation_id = rec.get("recommendation_id")
+    if not recommendation_id:
+        return {"action": "error", "reason": "missing recommendation_id"}
+
+    slot_key = compute_bet_slot_key(rec)
+    now = datetime.now(timezone.utc).isoformat()
+    candidate_odds = rec.get("offered_american_odds")
+
+    existing = conn.execute("""
+        SELECT op.*, hr.line AS hr_line, hr.offered_american_odds AS hr_odds
+        FROM official_picks op
+        JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
+        WHERE op.bet_slot_key = ? AND op.pick_status = 'ACTIVE'
+    """, (slot_key,)).fetchone()
+
+    if existing is None:
+        try:
+            conn.execute("""
+                INSERT INTO official_picks (
+                    recommendation_id, tier, official_rank, rules_version,
+                    league, sport, pick_status, bet_slot_key,
+                    first_recommended_at, best_american_odds, best_odds_at,
+                    latest_american_odds, latest_odds_at, update_count
+                ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, 0)
+                ON CONFLICT (recommendation_id) DO NOTHING
+            """, (
+                recommendation_id, tier, official_rank, rules_version,
+                rec.get("league", "MLB"), rec.get("sport", "baseball"), slot_key,
+                now, candidate_odds, now, candidate_odds, now,
+            ))
+            conn.commit()
+            return {"action": "frozen", "recommendation_id": recommendation_id}
+        except Exception:
+            conn.rollback()
+            return {"action": "error", "recommendation_id": recommendation_id}
+
+    existing_dict = dict(existing)
+    existing_recommendation_id = existing_dict["recommendation_id"]
+
+    if existing_recommendation_id == recommendation_id:
+        # Same recommendation snapshot re-selected on a later scan (e.g.
+        # a stable price with no new opportunity to compare against) —
+        # nothing to do, still the active pick.
+        return {"action": "duplicate", "recommendation_id": existing_recommendation_id}
+
+    update_kind = classify_pick_update(
+        {"line": existing_dict.get("hr_line"), "offered_american_odds": existing_dict.get("hr_odds")},
+        rec,
+    )
+
+    if update_kind == UPDATE_DUPLICATE:
+        best_odds = existing_dict.get("best_american_odds")
+        best_at = existing_dict.get("best_odds_at")
+        if _is_better_price(candidate_odds, best_odds):
+            best_odds, best_at = candidate_odds, now
+        try:
+            conn.execute("""
+                UPDATE official_picks
+                SET latest_american_odds = ?, latest_odds_at = ?,
+                    best_american_odds = ?, best_odds_at = ?,
+                    update_count = update_count + 1
+                WHERE recommendation_id = ?
+            """, (candidate_odds, now, best_odds, best_at, existing_recommendation_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        return {"action": "duplicate", "recommendation_id": existing_recommendation_id}
+
+    # Material update: supersede the old ACTIVE pick, freeze the new one.
+    try:
+        conn.execute("""
+            UPDATE official_picks SET pick_status = 'SUPERSEDED', superseded_by = ?, superseded_at = ?
+            WHERE recommendation_id = ? AND pick_status = 'ACTIVE'
+        """, (recommendation_id, now, existing_recommendation_id))
+        conn.execute("""
+            INSERT INTO official_picks (
+                recommendation_id, tier, official_rank, rules_version,
+                league, sport, pick_status, bet_slot_key,
+                first_recommended_at, best_american_odds, best_odds_at,
+                latest_american_odds, latest_odds_at, update_count
+            ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (recommendation_id) DO NOTHING
+        """, (
+            recommendation_id, tier, official_rank, rules_version,
+            rec.get("league", "MLB"), rec.get("sport", "baseball"), slot_key,
+            existing_dict.get("first_recommended_at") or now,
+            candidate_odds, now, candidate_odds, now,
+            (existing_dict.get("update_count") or 0) + 1,
+        ))
+        conn.commit()
+        return {
+            "action": "superseded", "recommendation_id": recommendation_id,
+            "superseded_recommendation_id": existing_recommendation_id,
+        }
+    except Exception:
+        conn.rollback()
+        return {"action": "error", "recommendation_id": recommendation_id}
+
+
 def get_official_picks_today(conn: DB) -> list[dict]:
     """Get today's official picks."""
     rows = conn.execute("""
@@ -1833,6 +2011,7 @@ def get_official_picks_today(conn: DB) -> list[dict]:
         FROM official_picks op
         JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
         WHERE date(op.selected_at) = date('now')
+          AND op.pick_status = 'ACTIVE'
         ORDER BY op.official_rank
     """).fetchall()
     return [dict(r) for r in rows]
@@ -1955,26 +2134,39 @@ def settle_recommendation(
     settlement_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
+    # market_settlements.league defaults to 'MLB' at the schema level (a
+    # pre-existing column added for multi-league reporting) but was never
+    # actually populated here — every WNBA/NFL settlement silently landed
+    # labeled MLB. Look up the real league from the recommendation itself
+    # rather than trusting the column default.
+    league_row = conn.execute(
+        "SELECT league FROM historical_recommendations WHERE recommendation_id = ?",
+        (recommendation_id,),
+    ).fetchone()
+    league = (league_row["league"] if league_row and league_row["league"] else "MLB")
+
     try:
         if existing:
             # Update existing UNRESOLVED row
             conn.execute(
                 """UPDATE market_settlements SET
                    settlement_status = ?, final_stat_value = ?,
-                   settled_at = ?, settlement_reason = ?, grader_version = ?
+                   settled_at = ?, settlement_reason = ?, grader_version = ?,
+                   league = ?
                    WHERE recommendation_id = ?""",
                 (settlement_status, final_stat_value, now,
-                 settlement_reason, grader_version, recommendation_id),
+                 settlement_reason, grader_version, league, recommendation_id),
             )
         else:
             # Insert new
             conn.execute(
                 """INSERT INTO market_settlements
                    (settlement_id, recommendation_id, settlement_status,
-                    final_stat_value, settled_at, settlement_reason, grader_version)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    final_stat_value, settled_at, settlement_reason, grader_version,
+                    league)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (settlement_id, recommendation_id, settlement_status,
-                 final_stat_value, now, settlement_reason, grader_version),
+                 final_stat_value, now, settlement_reason, grader_version, league),
             )
         conn.commit()
         record_settlement_lifecycle(
@@ -2171,14 +2363,25 @@ def get_unsettled_recommendations(conn: DB) -> list[dict]:
 
 
 def get_settled_recommendations(conn: DB) -> list[dict]:
-    """Return all settled (non-UNRESOLVED) recommendations with units."""
+    """Return all settled (non-UNRESOLVED) recommendations with units and CLV.
+
+    Found live 2026-08-20: this previously omitted closing_prices, so
+    every caller of performance_summary() fed by this function (e.g.
+    src/grade_recommendations.py) always saw clv_probability/
+    line_movement_direction as None, regardless of how much real CLV
+    data had actually accumulated. The website (src/customer_view.py)
+    has its own separate CLV-inclusive query and was unaffected.
+    """
     cur = conn.execute(
         """SELECT hr.*, ms.settlement_status, ms.final_stat_value,
                   ms.settled_at, ms.settlement_reason,
-                  bu.risk_units, bu.profit_units, bu.return_units
+                  bu.risk_units, bu.profit_units, bu.return_units,
+                  cp.clv_probability, cp.line_movement_direction,
+                  cp.closing_american, cp.closing_line
            FROM historical_recommendations hr
            JOIN market_settlements ms ON hr.recommendation_id = ms.recommendation_id
            LEFT JOIN bet_units bu ON hr.recommendation_id = bu.recommendation_id
+           LEFT JOIN closing_prices cp ON hr.recommendation_id = cp.recommendation_id
            WHERE ms.settlement_status != 'UNRESOLVED'
            ORDER BY ms.settled_at"""
     )

@@ -91,6 +91,17 @@ FRESHNESS_THRESHOLD_SECONDS = 3600  # 1 hour
 # re-fetched from the API so a live run never analyzes a previous day's slate.
 LIVE_CACHE_TTL_SECONDS = 900  # 15 minutes
 
+# ── Duplicate official-pick suppression ─────────────────────────────
+# How much an already-frozen official pick's price must move (in implied-
+# probability percentage points) before a rescan's new snapshot counts as
+# a materially different opportunity rather than the same pick re-observed.
+# +110 -> +108 is ~0.46pp (noise, same pick); +110 -> +125 is ~3.2pp
+# (real market movement, treated as a new opportunity). Chosen below the
+# smallest MARGINAL EV bucket and above typical same-book quote noise.
+# A line change is ALWAYS material regardless of this threshold — a
+# different number is a structurally different wager.
+MATERIAL_PRICE_DELTA_PP = 0.015  # 1.5 percentage points of implied probability
+
 
 # ── Pinnacle-first sharp value model ───────────────────────────────
 # When enabled, Pinnacle's two-sided prices define the no-vig fair

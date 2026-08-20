@@ -32,7 +32,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +69,7 @@ EXIT_UNEXPECTED_FAILURE = 6
 
 _LIVE_STATES = {"live", "inprogress", "in_progress", "started", "in-progress"}
 _COMPLETED_STATES = {"final", "finished", "completed", "closed", "ended"}
+_CANCELLED_STATES = {"cancelled", "canceled", "postponed", "suspended", "void"}
 
 
 def _is_game_skippable(
@@ -92,6 +93,8 @@ def _is_game_skippable(
         return True, f"Game is live (status={event_status})"
     if status_lower in _COMPLETED_STATES:
         return True, f"Game is completed (status={event_status})"
+    if status_lower in _CANCELLED_STATES:
+        return True, f"Game is cancelled/postponed (status={event_status})"
 
     # 2. Start-time check (skip if game has already started)
     if start_time:
@@ -148,6 +151,11 @@ class PipelineConfig:
     # League to run this pipeline for (e.g. "MLB", "NFL"). Defaults to MLB
     # so every existing caller keeps its exact current behavior.
     league: str = "MLB"
+    # Opt-in: also fetch and score this league's player props (currently
+    # meaningful for WNBA only — see run_scan's fetch_props docstring).
+    # False by default since props are billed per-event and must never be
+    # silently bundled into a routine scan.
+    fetch_props: bool = False
 
 
 @dataclass
@@ -343,9 +351,22 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
         # cache TTL; research runs may reuse a recent snapshot (1 hour).
         max_cache_age = cfg.LIVE_CACHE_TTL_SECONDS if config.live else 3600.0
         client = SportsGameOddsClient(max_cache_age=max_cache_age)
+        # There is no "date" query parameter on this API (verified live
+        # 2026-08-20 — SportsGameOddsClient.get_events's docstring has the
+        # full story) — without an explicit startsAfter/startsBefore
+        # window, the API returns an arbitrary default page that is NOT
+        # "today's games". event_id lookups are exact and skip this.
+        window_kwargs = {}
+        if not config.event_id:
+            now = datetime.now(timezone.utc)
+            window_kwargs = {
+                "starts_after": (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "starts_before": (now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
         data, from_cache = client.get_events(
             league=config.league, event_id=config.event_id,
             odds_available=True, include_alt_lines=True,
+            **window_kwargs,
         )
         state.data_source = "CACHE" if from_cache else "LIVE API"
 
@@ -423,7 +444,7 @@ def _stage_ingest(config: PipelineConfig, state: PipelineState) -> bool:
             )
             state.ingestion_run_id = ingestion_run_id
 
-            save_raw_response(conn, "/events", {"league": "MLB"}, {"data": events})
+            save_raw_response(conn, "/events", {"league": config.league}, {"data": events})
 
             n_odds_total = 0
             n_audit_total = 0
@@ -438,7 +459,7 @@ def _stage_ingest(config: PipelineConfig, state: PipelineState) -> bool:
                     status_obj = event.get("status", {}) or {}
                     game_record = {
                         "event_id": event_id,
-                        "league": "MLB",
+                        "league": config.league,
                         "away_team": away.get("names", {}).get("long") or away.get("name", ""),
                         "home_team": home.get("names", {}).get("long") or home.get("name", ""),
                         "start_time": (status_obj.get("startsAt") if isinstance(status_obj, dict)
@@ -553,6 +574,7 @@ def _stage_scan(config: PipelineConfig, state: PipelineState) -> bool:
             limit=25,
             event_id=config.event_id,
             league=config.league,
+            fetch_props=config.fetch_props,
         )
 
         state.scan_result = scan_result
@@ -644,9 +666,19 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
             for opp in all_opps:
                 eid = opp.get("event_id", "")
                 gi = game_info.get(eid, {})
-                event_status = gi.get("status", "")
-                start_time = gi.get("start_time", "")
-                matchup = _build_matchup(gi.get("away_team", ""), gi.get("home_team", ""))
+                # gi comes from the `games` table, populated only for the
+                # SportsGameOdds ingest path (_stage_ingest). A league on
+                # its own provider (WNBA) never writes there, so gi is
+                # always {} for it — falling back to the opportunity's own
+                # away_team/home_team/start_time (already populated by
+                # run_scan's event_map for every provider) keeps both the
+                # matchup label AND the live/already-started safety check
+                # below from silently going blind for that league.
+                event_status = gi.get("status", "") or opp.get("event_status", "")
+                start_time = gi.get("start_time", "") or opp.get("start_time", "")
+                away_team = gi.get("away_team", "") or opp.get("away_team", "")
+                home_team = gi.get("home_team", "") or opp.get("home_team", "")
+                matchup = _build_matchup(away_team, home_team)
 
                 # Live-game filtering
                 skippable, reason = _is_game_skippable(
@@ -879,18 +911,27 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     today_recs = [dict(r) for r in today_recs]
                     official = rank_and_select_official_picks(today_recs)
                     if official:
-                        from database.db_manager import freeze_official_pick
-                        n_frozen = 0
+                        from database.db_manager import freeze_or_update_official_pick
+                        n_frozen = n_duplicate = n_superseded = 0
                         for rank, rec in enumerate(official, 1):
-                            if freeze_official_pick(
-                                conn,
-                                rec["recommendation_id"],
+                            result = freeze_or_update_official_pick(
+                                conn, rec,
                                 tier=rec.get("recommendation_tier", "OFFICIAL_TRACKED"),
                                 official_rank=rank,
-                            ):
+                            )
+                            action = result.get("action")
+                            if action == "frozen":
                                 n_frozen += 1
-                        state.n_official_picks = n_frozen
-                        print(f"  Official picks frozen: {n_frozen}")
+                            elif action == "duplicate":
+                                n_duplicate += 1
+                            elif action == "superseded":
+                                n_superseded += 1
+                        state.n_official_picks = n_frozen + n_superseded
+                        print(
+                            f"  Official picks frozen: {n_frozen}  |  "
+                            f"Superseded (material update): {n_superseded}  |  "
+                            f"Suppressed (same pick re-observed): {n_duplicate}"
+                        )
                     else:
                         state.n_official_picks = 0
                         print("  Official picks frozen: 0 (none qualified)")
@@ -1226,11 +1267,33 @@ def _write_text(path: Path, content: str, dry_run: bool) -> None:
 # ==================================================================
 
 def _parse_status(status_obj: dict | str) -> str:
-    """Normalize game status string."""
+    """Normalize game status string.
+
+    The real SportsGameOdds status object (verified live 2026-08-20
+    against both MLB and NFL) has no "state" string field at all — it's
+    boolean flags: ``live``, ``started``, ``completed``, ``ended``,
+    ``finalized``, ``cancelled``. This previously always fell through to
+    the "scheduled" default regardless of actual game state — the
+    _is_game_skippable() start-time fallback check happened to mask most
+    of the practical impact (a game whose start_time has passed gets
+    skipped either way), but a cancelled game with a *future* start_time
+    would have incorrectly been treated as scheduled and normal, since
+    only the status field (never correctly populated) could have caught
+    that case — the time check can't, by definition, since the game
+    hasn't "started" yet.
+    """
     if isinstance(status_obj, str):
         return status_obj or "scheduled"
     if isinstance(status_obj, dict):
-        return status_obj.get("state", "scheduled")
+        if status_obj.get("state"):
+            return status_obj["state"]
+        if status_obj.get("cancelled"):
+            return "cancelled"
+        if status_obj.get("completed") or status_obj.get("ended") or status_obj.get("finalized"):
+            return "completed"
+        if status_obj.get("live") or status_obj.get("started"):
+            return "live"
+        return "scheduled"
     return "scheduled"
 
 

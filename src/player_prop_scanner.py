@@ -25,7 +25,7 @@ import argparse
 import logging
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import NamedTuple
 
 from . import prop_config as cfg
@@ -294,6 +294,7 @@ def run_scan(
     game: str | None = None,
     event_id: str | None = None,
     league: str = "MLB",
+    fetch_props: bool = False,
 ) -> dict:
     """Run the full generic scanner pipeline.
 
@@ -321,6 +322,16 @@ def run_scan(
         League to scan (``"MLB"``, ``"NFL"``, ...). Defaults to ``"MLB"``
         so every existing caller keeps its exact current behavior.
         Resolves that league's market registry via ``src.sports.get_league``.
+    fetch_props : bool
+        Opt-in (default False): also fetch and merge this league's player
+        props into the scan, for leagues whose adapter exposes
+        ``fetch_and_parse_props`` (currently WNBA only — props are billed
+        per event there, so a caller must ask for this explicitly rather
+        than have it silently bundled into every scan; see
+        docs/MARKET_CAPABILITY.md). Ignored (with a debug log) for any
+        league without that method. Merged prop rows flow through the
+        exact same grouping/EV/qualification code as game-market rows —
+        no separate pipeline.
 
     Returns
     -------
@@ -358,9 +369,25 @@ def run_scan(
 
     if odds_provider == "sportsgameodds":
         client = SportsGameOddsClient(max_cache_age=cfg.LIVE_CACHE_TTL_SECONDS)
+        # There is no "date" query parameter on this API (verified live
+        # 2026-08-20 — see SportsGameOddsClient.get_events's docstring) —
+        # without an explicit startsAfter/startsBefore window, the API
+        # returns an arbitrary default page, not "today's/upcoming games".
+        # This is the call that actually drives recommendation generation
+        # for every SportsGameOdds league (MLB daily, NFL weekly), so the
+        # window is wide enough to cover both cadences; event_id lookups
+        # are exact and skip this.
+        window_kwargs = {}
+        if not event_id:
+            now = datetime.now(timezone.utc)
+            window_kwargs = {
+                "starts_after": (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "starts_before": (now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
         data, from_cache = client.get_events(
             league=league, event_id=event_id,
             odds_available=True, include_alt_lines=True,
+            **window_kwargs,
         )
         events = data.get("data", data.get("events", [])) or []
 
@@ -374,8 +401,34 @@ def run_scan(
         # A league with its own odds provider (different wire format —
         # e.g. WNBA via The Odds API) exposes fetch_and_parse() directly,
         # already returning generic odds rows plus events normalized to a
-        # shape _build_event_map() already accepts.
-        all_odds, all_audit, events, from_cache = league_mod.fetch_and_parse(event_id=event_id)
+        # shape _build_event_map() already accepts. A connection is opened
+        # here (rather than after, as the SportsGameOdds branch does)
+        # because credit-aware providers (WNBA) need it to persist real
+        # usage headers from the call itself — see src/odds_api_credits.py.
+        _fetch_conn = get_connection()
+        try:
+            all_odds, all_audit, events, from_cache = league_mod.fetch_and_parse(
+                event_id=event_id, conn=_fetch_conn,
+            )
+            if fetch_props:
+                fetch_props_fn = getattr(league_mod, "fetch_and_parse_props", None)
+                if fetch_props_fn is None:
+                    logger.debug(
+                        "fetch_props=True but %s has no fetch_and_parse_props — ignored",
+                        league,
+                    )
+                else:
+                    try:
+                        prop_odds, prop_audit = fetch_props_fn(_fetch_conn, event_id=event_id)
+                        all_odds = all_odds + prop_odds
+                        all_audit = all_audit + prop_audit
+                        logger.info(
+                            "[%s] merged %d player-prop odds rows into scan", league, len(prop_odds),
+                        )
+                    except Exception:
+                        logger.exception("[%s] player-prop fetch failed, continuing with game markets only", league)
+        finally:
+            _fetch_conn.close()
 
     data_source = "CACHE" if from_cache else "LIVE API"
     fetch_time = datetime.now(timezone.utc)

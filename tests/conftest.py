@@ -271,8 +271,11 @@ def db_conn():
             league                TEXT DEFAULT 'MLB',
             sport                 TEXT DEFAULT 'baseball',
             raw_line              REAL,
+            confidence_score      REAL,
+            confidence_grade      TEXT,
             created_at            TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_hr_fingerprint ON historical_recommendations(fingerprint);
         CREATE TABLE IF NOT EXISTS closing_prices (
             recommendation_id     TEXT PRIMARY KEY,
             closing_american_odds INTEGER,
@@ -308,12 +311,20 @@ def db_conn():
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS market_settlements (
-            recommendation_id     TEXT PRIMARY KEY,
-            settlement_status     TEXT NOT NULL DEFAULT 'ungraded',
-            final_stat_value      REAL,
-            graded_at             TEXT,
-            FOREIGN KEY (recommendation_id) REFERENCES historical_recommendations(recommendation_id)
+            settlement_id       TEXT PRIMARY KEY,
+            recommendation_id   TEXT NOT NULL,
+            settlement_status   TEXT NOT NULL DEFAULT 'UNRESOLVED',
+            final_stat_value    REAL,
+            settled_at          TEXT,
+            settlement_reason   TEXT,
+            grader_version      TEXT DEFAULT 'v1',
+            manual_override     INTEGER NOT NULL DEFAULT 0,
+            override_reason     TEXT,
+            override_previous   TEXT,
+            league              TEXT DEFAULT 'MLB',
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ms_rec ON market_settlements(recommendation_id);
         CREATE TABLE IF NOT EXISTS event_results (
             event_id TEXT PRIMARY KEY, final_status TEXT DEFAULT 'UNRESOLVED',
             away_score INTEGER, home_score INTEGER, result_source TEXT,
@@ -334,7 +345,17 @@ def db_conn():
             final_stat_value REAL,
             grader_version TEXT,
             league TEXT DEFAULT 'MLB',
-            sport TEXT DEFAULT 'baseball'
+            sport TEXT DEFAULT 'baseball',
+            pick_status TEXT NOT NULL DEFAULT 'ACTIVE',
+            bet_slot_key TEXT,
+            superseded_by TEXT,
+            superseded_at TEXT,
+            first_recommended_at TEXT,
+            best_american_odds INTEGER,
+            best_odds_at TEXT,
+            latest_american_odds INTEGER,
+            latest_odds_at TEXT,
+            update_count INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS pick_observations (
             observation_id TEXT PRIMARY KEY,
@@ -410,6 +431,16 @@ def db_conn():
             overfitting_risk TEXT DEFAULT 'UNKNOWN',
             status TEXT DEFAULT 'INSUFFICIENT_DATA',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS odds_api_credits (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at         TEXT NOT NULL DEFAULT (datetime('now')),
+            endpoint            TEXT NOT NULL,
+            job_type            TEXT NOT NULL DEFAULT '',
+            requests_used       INTEGER,
+            requests_remaining  INTEGER,
+            requests_last       INTEGER,
+            cache_hit           INTEGER NOT NULL DEFAULT 0
         );
     """)
 

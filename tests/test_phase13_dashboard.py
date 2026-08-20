@@ -210,10 +210,21 @@ class TestIsGameSkippable:
         assert skippable is True
         assert "started" in reason.lower() or "past" in reason.lower()
 
-    def test_postponed_not_skipped(self):
+    def test_postponed_skipped(self):
+        """A postponed game must never be scanned for recommendations —
+        consistent with src/game_settlement.py voiding postponed games at
+        settlement time; recommending on a game that may not happen at
+        its listed time would be exactly the kind of guess this project's
+        "never guess/fabricate" discipline exists to prevent. (This was
+        previously asserted the other way, from before _parse_status()
+        was found to never actually produce "postponed" in practice —
+        see its docstring for the real API status-field investigation.)
+        """
         from src.daily_pipeline import _is_game_skippable
-        skippable, _ = _is_game_skippable("postponed", datetime.now(timezone.utc))
-        assert skippable is False
+        future = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+        skippable, reason = _is_game_skippable("postponed", future)
+        assert skippable is True
+        assert "cancelled" in reason.lower() or "postponed" in reason.lower()
 
     def test_empty_status_not_skipped(self):
         from src.daily_pipeline import _is_game_skippable

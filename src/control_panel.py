@@ -754,6 +754,7 @@ tabs = st.tabs([
     ":material/insights: Market Intelligence",
     ":material/settings: Run & Operations",
     ":material/psychology: Adaptive Learning",
+    ":material/monitor_heart: Multi-League Health",
 ])
 
 # ==================================================================
@@ -906,7 +907,7 @@ with tabs[1]:
                        hr.model_score, hr.score_explanation
                 FROM official_picks op
                 JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
-                WHERE op.tier = 'OFFICIAL_TRACKED'
+                WHERE op.tier = 'OFFICIAL_TRACKED' AND op.pick_status = 'ACTIVE'
                 ORDER BY op.official_rank
             """).fetchall()
             official_picks = [dict(r) for r in op_rows]
@@ -1191,7 +1192,7 @@ with tabs[3]:
                        hr.line, hr.sportsbook, hr.matchup, op.selected_at
                 FROM official_picks op
                 JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
-                WHERE date(op.selected_at) = date('now')
+                WHERE date(op.selected_at) = date('now') AND op.pick_status = 'ACTIVE'
                 ORDER BY op.official_rank
             """).fetchall()
             official_picks_list = [dict(r) for r in official_rows]
@@ -1290,7 +1291,7 @@ with tabs[4]:
                 rows = conn_chart.execute("""
                     SELECT op.selected_at, op.profit_units
                     FROM official_picks op
-                    WHERE op.outcome IN ('win', 'loss')
+                    WHERE op.outcome IN ('win', 'loss') AND op.pick_status = 'ACTIVE'
                     ORDER BY op.selected_at ASC
                 """).fetchall()
             finally:
@@ -1333,6 +1334,7 @@ with tabs[4]:
                     FROM official_picks op
                     JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
                     WHERE op.outcome IN ('win', 'loss')
+                      AND op.pick_status = 'ACTIVE'
                       AND hr.ev_pct IS NOT NULL
                 """).fetchall()
             finally:
@@ -2273,6 +2275,104 @@ with tabs[7]:
 
     finally:
         _conn_al.close()
+
+# ==================================================================
+# Tab 9: Multi-League Health
+# ==================================================================
+with tabs[8]:
+    st.subheader(":material/monitor_heart: Multi-League Health")
+    st.caption(
+        "Per-league production status — MLB/NFL/WNBA are scheduled, graded, and "
+        "credit-budgeted independently, so a problem in one must never be masked "
+        "by the other two looking fine."
+    )
+
+    try:
+        from src.league_health import run_all_leagues_health_checks
+        from src.odds_api_credits import get_latest_credit_status, get_usage_this_month
+
+        _conn_lh = _open_dashboard_connection(db_path)
+        try:
+            _reports = run_all_leagues_health_checks(_conn_lh)
+
+            cols = st.columns(3)
+            for col, league in zip(cols, ["MLB", "NFL", "WNBA"]):
+                report = _reports[league]
+                with col:
+                    st.markdown(f"##### {league}")
+                    st.markdown(
+                        f":{_status_color(report.overall_status)}[**{report.overall_status.upper()}**] "
+                        f"({report.ok_count} ok / {report.warning_count} warn / {report.error_count} fail)"
+                    )
+                    for check in report.checks:
+                        icon = {"ok": "🟢", "warning": "🟡", "error": "🔴"}.get(check.status, "⚪")
+                        label = check.name.split(": ", 1)[-1]
+                        st.caption(f"{icon} {label}: {check.message}")
+
+            st.divider()
+            st.markdown("##### WNBA API Credit Usage (The Odds API, free tier)")
+            status = get_latest_credit_status(_conn_lh)
+            usage = get_usage_this_month(_conn_lh)
+            credit_cols = st.columns(4)
+            if status and status.get("requests_remaining") is not None:
+                credit_cols[0].metric("Credits Remaining", status["requests_remaining"])
+                credit_cols[1].metric("Credits Used (provider)", status.get("requests_used") or "—")
+            else:
+                credit_cols[0].metric("Credits Remaining", "no reading yet")
+                credit_cols[1].metric("Credits Used (est.)", usage["credits_used_so_far"])
+            credit_cols[2].metric("Calls This Month", usage["calls_recorded"])
+            credit_cols[3].metric("Projected Month Total", usage["projected_month_total"])
+
+            st.divider()
+            st.markdown("##### Upcoming Games Discovered (next 7 days)")
+            game_cols = st.columns(3)
+            for gcol, league in zip(game_cols, ["MLB", "NFL", "WNBA"]):
+                with gcol:
+                    upcoming_rows = _conn_lh.execute(
+                        "SELECT event_id, away_team, home_team, start_time FROM games "
+                        "WHERE league = ? AND start_time >= datetime('now') "
+                        "AND start_time <= datetime('now', '+7 days') "
+                        "ORDER BY start_time LIMIT 10",
+                        (league,),
+                    ).fetchall()
+                    st.caption(f"**{league}** — {len(upcoming_rows)} game(s)")
+                    if upcoming_rows:
+                        st.dataframe(
+                            pd.DataFrame([
+                                {"Matchup": f"{r['away_team']} @ {r['home_team']}",
+                                 "Start": (r["start_time"] or "")[:16]}
+                                for r in upcoming_rows
+                            ]),
+                            hide_index=True, use_container_width=True, height=180,
+                        )
+                    else:
+                        st.caption("No games discovered in this window.")
+
+            st.divider()
+            st.markdown("##### Recent Job Activity")
+            job_rows = _conn_lh.execute(
+                "SELECT job_type, status, started_at, completed_at, error_message "
+                "FROM scheduled_jobs WHERE job_type LIKE '%-nfl' OR job_type LIKE 'wnba-%' "
+                "OR job_type IN ('morning-run', 'pregame-check', 'grading') "
+                "ORDER BY created_at DESC LIMIT 20",
+            ).fetchall()
+            if job_rows:
+                st.dataframe(
+                    pd.DataFrame([
+                        {"Job Type": r["job_type"], "Status": r["status"],
+                         "Started": (r["started_at"] or "")[:19],
+                         "Completed": (r["completed_at"] or "")[:19],
+                         "Error": (r["error_message"] or "")[:80]}
+                        for r in job_rows
+                    ]),
+                    hide_index=True, use_container_width=True,
+                )
+            else:
+                st.caption("No job activity recorded yet.")
+        finally:
+            _conn_lh.close()
+    except Exception as e:
+        st.error(f"Multi-league health unavailable: {e}")
 
 # ── Footer ─────────────────────────────────────────────────────────
 st.divider()

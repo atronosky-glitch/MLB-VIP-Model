@@ -208,15 +208,28 @@ def _fetch_canary_sample(
     different provider's schema. ``max_cache_age=0`` forces a live
     fetch (a canary that silently reused a stale cache would prove
     nothing about current connectivity).
+
+    Passes an explicit startsAfter/startsBefore window — there is no
+    "date" query parameter on this API (verified live 2026-08-20 — see
+    SportsGameOddsClient.get_events's docstring), and a canary that
+    validated schema against arbitrary old events instead of real
+    current ones would prove nothing about production data freshness.
     """
+    from datetime import datetime, timezone, timedelta
     from src.api_client import SportsGameOddsClient
 
     client = SportsGameOddsClient(max_cache_age=0)
+    now = datetime.now(timezone.utc)
+    window_kwargs = {} if event_id else {
+        "starts_after": (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "starts_before": (now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
     data, _from_cache = client.get_events(
         league=league,
         event_id=event_id or None,
         odds_available=True,
         include_alt_lines=True,
+        **window_kwargs,
     )
     events = data.get("data", []) or []
     return events[:3]  # Limit to 3 events for canary

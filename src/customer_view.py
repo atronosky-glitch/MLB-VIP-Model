@@ -150,6 +150,7 @@ def load_customer_data(authorized: bool) -> dict:
             LEFT JOIN bet_units bu ON bu.recommendation_id = hr.recommendation_id
             LEFT JOIN closing_prices cp ON cp.recommendation_id = hr.recommendation_id
             WHERE ms.settlement_status IN ('WIN','LOSS','PUSH','VOID','CANCELLED')
+              AND op.pick_status = 'ACTIVE'
               AND hr.scan_timestamp >= ?
             ORDER BY hr.scan_timestamp DESC
         """, (baseline,)).fetchall()
@@ -165,6 +166,7 @@ def load_customer_data(authorized: bool) -> dict:
             LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
             WHERE hr.event_start_time IS NOT NULL
               AND hr.event_start_time >= ? AND hr.event_start_time <= ?
+              AND op.pick_status = 'ACTIVE'
               AND (ms.recommendation_id IS NULL
                    OR ms.settlement_status IN ('UNRESOLVED','ungraded'))
             ORDER BY hr.event_start_time, op.official_rank
@@ -184,6 +186,7 @@ def load_customer_data(authorized: bool) -> dict:
                 LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
                 WHERE hr.event_start_time IS NOT NULL
                   AND hr.event_start_time >= ? AND hr.event_start_time <= ?
+                  AND op.pick_status = 'ACTIVE'
                   AND (ms.recommendation_id IS NULL
                        OR ms.settlement_status IN ('UNRESOLVED','ungraded'))
                 ORDER BY hr.event_start_time, op.official_rank

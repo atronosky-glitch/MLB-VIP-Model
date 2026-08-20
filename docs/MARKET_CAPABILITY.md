@@ -46,6 +46,29 @@ run-line semantics).
 
 Status: **active production pipeline**, running on Render.
 
+**2026-08-20 caveat — SUPERSEDED same day, corrected below.** An earlier
+pass today concluded the local `.env` `SPORTSODDS_API_KEY` was tier-limited
+to a fixed ~10-event 2024 historical dataset. Re-investigated after being
+asked to stop assuming and use actual API responses/timestamps: that was
+wrong. Root cause was two code bugs, not the account or key: (1)
+`get_events()` sent the requested date via a `date` query parameter that
+doesn't exist on the real API (confirmed against live reference docs —
+the real filters are `startsAfter`/`startsBefore`), so date-scoped calls
+silently fell back to the provider's default (oldest-first) page; (2)
+`_parse_status()` looked for a `"state"` string key the real event-status
+object never has (it's boolean flags: `live`/`started`/`completed`/
+`ended`/`finalized`/`cancelled`/`delayed`/`hardStart`), so every event's
+derived status silently defaulted to `"scheduled"` forever. The actual
+production call shape (`odds_available=True`, no date filter) was
+returning real current data the whole time and was never affected by bug
+(1); bug (2) affected status-dependent logic everywhere. Both fixed and
+live-verified: 34 real MLB recommendations and 25 real NFL recommendations
+generated end-to-end against real current games, including one real
+simultaneously-live MLB game correctly excluded by the freshness/skip
+logic. This key is production-capable for live current MLB/NFL data —
+no tier upgrade needed. Full findings: `docs/SESSION_HANDOFF.md` →
+"SportsGameOdds investigation" (2026-08-20).
+
 ## NFL — Supported (verified, not yet in production)
 
 Data provider: SportsGameOdds v2 (`leagueID=NFL`) — confirmed identical
@@ -94,8 +117,12 @@ Also available with real liquidity but not yet wired in: 1st-half /
 reasonable near-term expansion (the provider data is already there),
 distinct from the list above where liquidity itself was the blocker.
 
-Status: **not yet run in production** — no NFL cron/schedule is wired into
-`render.yaml` or `src/scheduler.py` yet. Pinnacle sharp-reference pricing
+Status: **not yet run in production** — the scheduling logic exists and
+is tested (`src/league_schedule.py::nfl_should_run_daily_scan`/
+`nfl_should_run_pregame_check`, driven by real discovered kickoff times,
+2026-08-20), and `src/worker.py` has the job types/dispatch wired
+(`morning-run-nfl`, `pregame-check-nfl`), but none of it is deployed —
+nothing runs it on Render's actual worker service yet. Pinnacle sharp-reference pricing
 is unverified for NFL (`pinnacle_feed.py` is hardcoded to baseball's sport
 ID); NFL runs on LOO market-median consensus only, the same fallback path
 MLB itself uses whenever Pinnacle is absent.
@@ -187,18 +214,49 @@ per team (`MIN, PTS, FG, 3PT, FT, REB, AST, TO, STL, BLK, OREB, DREB, PF,
 suspended games settle as VOID via ESPN's `status.type.name` STATUS_*
 vocabulary, same pattern as NFL.
 
-### Cost note for continuous scanning
+### Cost note for continuous scanning (updated 2026-08-20 with real scheduler math)
 
-Game markets alone cost ~3 credits per scan (all games, one call) — a
-daily cadence comfortably fits the free 500-credits/month tier
-(~90/month). Player props are billed per event and registered 8 markets
-(vs. the original 4 checked for cost purposes), so the per-event cost is
-higher than originally estimated: on a 5-game day, fetching props for
-every game at a full daily cadence would exceed the free 500-credits/month
-tier. This is exactly why `fetch_and_parse_props()` is opt-in rather than
-part of the default scan — nothing forces the paid tier just to keep
-running game markets. Re-cost before turning on a scheduled props cadence;
-see `CHANGELOG.md` → 2026-08-19 for the original comparison math.
+`src/league_schedule.py` now implements the actual credit-aware cadence
+this section used to only estimate; `src/odds_api_credits.py` persists
+The Odds API's real `x-requests-*` headers, so the numbers below are
+either live-verified or computed from the exact same cost constants the
+scheduler itself uses (`GAME_ODDS_COST=3`, `PROPS_COST_PER_EVENT=8`).
+
+**Live-verified as of 2026-08-20**: 436/500 credits remaining this
+billing cycle (64 already used from this and earlier sessions' live
+testing) — confirmed via a real, non-cached `/events` call's response
+headers.
+
+**Game markets** (`wnba_should_fetch_game_odds`, flat 3 credits/call
+regardless of slate size): a conservative once-daily cadence costs ~90
+credits/month, comfortably free-tier-sustainable. The scheduler's actual
+ramped cadence (wider interval far from tip-off, tighter near it) lands
+in roughly the 4-6 fetches/day range on an active game day — 360-540
+credits/month if every day had games (WNBA doesn't play every day, so
+real usage is lower) — still within budget on a typical schedule, worth
+monitoring via the Multi-League Health tab if it isn't.
+
+**Player props** (`wnba_should_fetch_props`, 8 credits/event, gated to a
+3-hour pregame window, throttled to once/hour): added per-event dedup
+this session (`_recently_captured_prop_event_ids`) so the scheduler's
+hourly rechecks don't re-spend credits on games already covered — but
+even with that, a single busy multi-game WNBA day (several games, each
+checked a few times across its own pregame window) can consume
+**80-120+ credits in one day**. Against a 500/month budget (~16.7/day
+average), this means a sustained daily props cadence is **not**
+comfortably free-tier-sustainable — `credit_budget_check()`'s reserve
+(10% of the monthly budget held back) is the real backstop that
+prevents this from silently exhausting the account, not the scheduling
+cadence alone. `fetch_and_parse_props()` remains opt-in
+(`fetch_props=True` on `run_scan()`/`PipelineConfig`), not part of the
+default scan.
+
+**Verdict on the $30/mo tier**: not needed for game markets under any
+realistic cadence. Needed only if the operator wants player props
+running on a *sustained daily* cadence across most/all of a full WNBA
+season — an occasional or manually-triggered props scan stays well
+within the free tier. Nothing purchased; this is presented for an
+operator decision, not acted on.
 
 ## Future leagues (architecture ready, not started)
 

@@ -472,14 +472,14 @@ class TestPerformance:
     def _seed_official_pick(self, conn, rec_id, outcome="pending", profit=None):
         conn.execute("""
             INSERT INTO historical_recommendations (
-                recommendation_id, event_id, player_id, player_name,
+                recommendation_id, fingerprint, event_id, player_id, player_name,
                 market_type, market_form, side, sportsbook, offered_american_odds,
                 offered_decimal_odds, offered_implied_prob, ev_pct,
                 n_consensus_books, rec_status, scan_timestamp, freshness_status,
                 model_score, recommendation_tier, qualification_passed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            rec_id, "ev_001", "p1", "Test Player",
+            rec_id, f"fp_{rec_id}", "ev_001", "p1", "Test Player",
             "strikeouts", "ou", "over", "DraftKings", -115,
             1.87, 0.535, 3.5,
             5, "QUALIFIED", datetime.now(timezone.utc).isoformat(), "FRESH",
@@ -819,14 +819,14 @@ class TestExportValidation:
             score = round(5.5 + random.random() * 0.8, 2)
             db_conn.execute("""
                 INSERT INTO historical_recommendations (
-                    recommendation_id, event_id, player_id, player_name,
+                    recommendation_id, fingerprint, event_id, player_id, player_name,
                     market_type, market_form, side, sportsbook, offered_american_odds,
                     offered_decimal_odds, offered_implied_prob, ev_pct,
                     n_consensus_books, rec_status, scan_timestamp, freshness_status,
                     model_score, recommendation_tier, qualification_passed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                rec_id, f"ev_{i}", f"p_{i}", f"Player {i}",
+                rec_id, f"fp_{rec_id}", f"ev_{i}", f"p_{i}", f"Player {i}",
                 "strikeouts", "ou", "over", sportsbooks[i % 5], -115,
                 1.87, 0.535, 1.0 + random.random() * 2,
                 3, "RESEARCH", datetime.now(timezone.utc).isoformat(), "FRESH",

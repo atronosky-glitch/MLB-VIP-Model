@@ -154,7 +154,7 @@ def db():
             settlement_status TEXT DEFAULT 'UNRESOLVED', final_stat_value REAL,
             settled_at TEXT, settlement_reason TEXT,
             grader_version TEXT DEFAULT 'v1', manual_override INTEGER DEFAULT 0,
-            override_reason TEXT, override_previous TEXT,
+            override_reason TEXT, override_previous TEXT, league TEXT DEFAULT 'MLB',
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ms_rec ON market_settlements(recommendation_id);
@@ -629,6 +629,20 @@ class TestSettlement:
         ).fetchone()
         assert row["settlement_status"] == "WIN"
 
+    def test_settlement_league_matches_recommendation_not_hardcoded_mlb(self, db):
+        """Found live 2026-08-20 against a real completed WNBA game:
+        market_settlements.league defaults to 'MLB' at the schema level
+        and settle_recommendation() never overrode it — every WNBA/NFL
+        settlement was silently mislabeled MLB in the database."""
+        rec = _make_rec(league="WNBA", sport="basketball")
+        rec_id = save_recommendation(db, rec)
+        settle_recommendation(db, rec_id, "WIN", final_stat_value=7.0)
+        row = db.execute(
+            "SELECT league FROM market_settlements WHERE recommendation_id = ?",
+            (rec_id,),
+        ).fetchone()
+        assert row["league"] == "WNBA"
+
     def test_idempotent_regrading(self, db):
         rec = _make_rec()
         rec_id = save_recommendation(db, rec)
@@ -989,6 +1003,27 @@ class TestCLVStorage:
         assert row is not None
         assert row["closing_american"] == -105
         assert row["clv_available"] == 1
+
+    def test_get_settled_recommendations_includes_clv(self, db):
+        """Found live 2026-08-20: get_settled_recommendations() never
+        joined closing_prices, so every caller of performance_summary()
+        fed by it (e.g. src/grade_recommendations.py) always saw
+        clv_probability as None regardless of real accumulated CLV data."""
+        rec = _make_rec()
+        rec_id = save_recommendation(db, rec)
+        settle_recommendation(db, rec_id, "WIN", final_stat_value=7.0)
+        save_closing_price(
+            db, rec_id,
+            closing_american=-105, closing_decimal=1.9524,
+            closing_implied_prob=0.5238, closing_line=5.5,
+            closing_observed_at="2026-07-23T23:00:00Z",
+            closing_sportsbook="draftkings",
+            line_move_type="same_line",
+            clv_probability=0.02, clv_price_diff=5, clv_available=True,
+        )
+        settled = get_settled_recommendations(db)
+        assert len(settled) == 1
+        assert settled[0]["clv_probability"] == 0.02
 
 
 # ==================================================================

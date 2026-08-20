@@ -218,6 +218,191 @@ class TestMaintenanceCleanup:
         assert recent_failed in {r["job_id"] for r in rows}
 
 
+class TestPerLeagueJobLockIsolation:
+    """A long-running pregame pipeline for one league must never block
+    another league's pregame job — this was a real bug: the lock key used
+    to be the single fixed string 'pregame-pipeline' for every league."""
+
+    def test_mlb_and_nfl_pregame_locks_are_independent(self, db_conn):
+        mlb_lock = worker._acquire_lock(db_conn, "pregame-pipeline-MLB")
+        nfl_lock = worker._acquire_lock(db_conn, "pregame-pipeline-NFL")
+        assert mlb_lock is not None
+        assert nfl_lock is not None
+        assert mlb_lock != nfl_lock
+
+    def test_second_call_for_same_league_is_blocked(self, db_conn):
+        first = worker._acquire_lock(db_conn, "pregame-pipeline-WNBA")
+        second = worker._acquire_lock(db_conn, "pregame-pipeline-WNBA")
+        assert first is not None
+        assert second is None
+
+    def test_run_pregame_scan_uses_league_scoped_lock(self, db_conn):
+        with patch("src.daily_pipeline.run_pipeline", return_value=0):
+            worker._run_pregame_scan(db_conn, MagicMock(output_dir="output"), league="NFL")
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE metadata = 'worker-lock'"
+        ).fetchone()
+        assert row["job_type"] == "pregame-pipeline-NFL"
+
+
+class TestCatchupGradingResilience:
+    """One league's result-ingestion failure must not prevent grading for
+    the other two leagues, or for the game-market grading pass."""
+
+    def test_one_league_ingest_exception_does_not_block_others_or_grading(self):
+        recs = [
+            {"recommendation_id": "r-mlb", "league": "MLB"},
+            {"recommendation_id": "r-wnba", "league": "WNBA"},
+        ]
+
+        def fake_mlb_ingest(conn, recommendations, client=None):
+            return {"facts_saved": 1}
+
+        def fake_wnba_ingest(conn, recommendations, client=None):
+            raise RuntimeError("WNBA API exhausted / credits gone")
+
+        with patch("database.db_manager.get_unsettled_recommendations", return_value=recs), \
+             patch("src.automatic_grading.grade_available_recommendations",
+                   return_value={"graded": 2}) as grade_mock, \
+             patch("src.automatic_grading.grade_available_game_recommendations",
+                   return_value={"graded": 1}) as game_grade_mock, \
+             patch("src.mlb_results.ingest_results_for_recommendations", side_effect=fake_mlb_ingest), \
+             patch("src.wnba_results.ingest_results_for_recommendations", side_effect=fake_wnba_ingest):
+            result = worker._run_catchup_grading(conn=MagicMock())
+
+        assert result["results"]["MLB"]["facts_saved"] == 1
+        assert result["results"]["WNBA"]["error"] is True
+        # Grading passes (which cover ALL leagues) still ran despite WNBA's failure.
+        grade_mock.assert_called_once()
+        game_grade_mock.assert_called_once()
+        assert result["grading"]["graded"] == 2
+        assert result["game_grading"]["graded"] == 1
+
+
+class TestNFLWNBASchedulingChecks:
+    """src.worker._check_and_schedule_nfl / _check_and_schedule_wnba —
+    the glue between src/league_schedule.py's pure decisions and the
+    scheduled_jobs queue."""
+
+    def test_no_nfl_games_creates_no_jobs(self, db_conn):
+        with patch.object(worker, "_discover_nfl_game_times", return_value=[]):
+            worker._check_and_schedule_nfl(db_conn)
+        count = db_conn.execute("SELECT COUNT(*) AS c FROM scheduled_jobs").fetchone()["c"]
+        assert count == 0
+
+    def test_nfl_game_day_creates_daily_scan_job(self, db_conn):
+        now = worker._now_local()
+        kickoff = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        with patch.object(worker, "_discover_nfl_game_times", return_value=[kickoff]), \
+             patch.object(worker, "_now_local", return_value=now.replace(hour=9)):
+            worker._check_and_schedule_nfl(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'morning-run-nfl'"
+        ).fetchone()
+        assert row is not None
+
+    def test_nfl_scheduling_does_not_duplicate_queued_job(self, db_conn):
+        now = worker._now_local().replace(hour=9)
+        kickoff = now.replace(hour=20)
+        with patch.object(worker, "_discover_nfl_game_times", return_value=[kickoff]), \
+             patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_nfl(db_conn)
+            worker._check_and_schedule_nfl(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'morning-run-nfl'"
+        ).fetchone()["c"]
+        assert count == 1
+
+    def test_no_wnba_key_or_games_creates_no_jobs(self, db_conn):
+        with patch.object(worker, "_discover_wnba_game_times", return_value=[]):
+            worker._check_and_schedule_wnba(db_conn)
+        count = db_conn.execute("SELECT COUNT(*) AS c FROM scheduled_jobs").fetchone()["c"]
+        assert count == 0
+
+    def test_wnba_game_today_schedules_odds_scan(self, db_conn):
+        # Fixed midday "now" so tipoff (+6h) never crosses into the next
+        # calendar day regardless of wall-clock time the suite runs at —
+        # wnba_has_games_today is a same-local-date check, so a real
+        # `_now_local()` near end-of-day made this test flaky.
+        now = worker._now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        tipoff = now + timedelta(hours=6)
+        with patch.object(worker, "_discover_wnba_game_times", return_value=[tipoff]), \
+             patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_wnba(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'wnba-odds-scan'"
+        ).fetchone()
+        assert row is not None
+
+    def test_wnba_props_not_scheduled_when_credits_low(self, db_conn):
+        from src.odds_api_credits import record_credit_usage
+        now = worker._now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        tipoff = now + timedelta(minutes=60)  # inside the props window
+        record_credit_usage(db_conn, endpoint="odds", requests_remaining=10)
+        with patch.object(worker, "_discover_wnba_game_times", return_value=[tipoff]), \
+             patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_wnba(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'wnba-props-scan'"
+        ).fetchone()
+        assert row is None
+
+    def test_wnba_props_scheduled_near_tipoff_with_budget(self, db_conn):
+        from src.odds_api_credits import record_credit_usage
+        now = worker._now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        tipoff = now + timedelta(minutes=60)
+        record_credit_usage(db_conn, endpoint="odds", requests_remaining=400)
+        with patch.object(worker, "_discover_wnba_game_times", return_value=[tipoff]), \
+             patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_wnba(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'wnba-props-scan'"
+        ).fetchone()
+        assert row is not None
+
+
+class TestLastCompletedJobAt:
+    def test_none_when_never_run(self, db_conn):
+        assert worker._get_last_completed_job_at(db_conn, "wnba-odds-scan") is None
+
+    def test_returns_completion_time_of_completed_job(self, db_conn):
+        job_id = create_job(db_conn, "wnba-odds-scan")
+        db_conn.execute(
+            "UPDATE scheduled_jobs SET status = 'completed', completed_at = ? WHERE job_id = ?",
+            ("2026-08-19T22:00:00+00:00", job_id),
+        )
+        db_conn.commit()
+        result = worker._get_last_completed_job_at(db_conn, "wnba-odds-scan")
+        assert result is not None
+        assert result.year == 2026
+
+    def test_ignores_pending_and_failed_jobs(self, db_conn):
+        create_job(db_conn, "wnba-odds-scan")  # stays pending
+        assert worker._get_last_completed_job_at(db_conn, "wnba-odds-scan") is None
+
+
+class TestCreateJobIfNotQueued:
+    def test_creates_when_none_pending(self, db_conn):
+        job_id = worker._create_job_if_not_queued(db_conn, "wnba-odds-scan")
+        assert job_id is not None
+
+    def test_skips_when_already_pending(self, db_conn):
+        first = worker._create_job_if_not_queued(db_conn, "wnba-odds-scan")
+        second = worker._create_job_if_not_queued(db_conn, "wnba-odds-scan")
+        assert first is not None
+        assert second is None
+
+    def test_creates_again_once_prior_completed(self, db_conn):
+        first = worker._create_job_if_not_queued(db_conn, "wnba-odds-scan")
+        db_conn.execute(
+            "UPDATE scheduled_jobs SET status = 'completed' WHERE job_id = ?", (first,),
+        )
+        db_conn.commit()
+        second = worker._create_job_if_not_queued(db_conn, "wnba-odds-scan")
+        assert second is not None
+        assert second != first
+
+
 class TestAutomationStatusNextMorning:
     """Dashboard shows a future next-morning-run time."""
 

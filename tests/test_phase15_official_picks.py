@@ -7,6 +7,9 @@ import pytest
 from src.official_picks import (
     OfficialPickConfig, QualificationResult, classify_recommendation,
     TIER_OFFICIAL, TIER_DISCOVERY, TIER_RESEARCH, RULES_VERSION, DEFAULT_CONFIG,
+    compute_bet_slot_key, classify_pick_update,
+    UPDATE_DUPLICATE, UPDATE_MATERIAL,
+    PICK_STATUS_ACTIVE, PICK_STATUS_SUPERSEDED,
 )
 from src import prop_config as cfg
 
@@ -446,3 +449,235 @@ class TestImmutability:
         q2 = classify_recommendation(rec)
         assert q2.tier == TIER_RESEARCH
         assert rec["recommendation_tier"] == TIER_OFFICIAL
+
+
+class TestBetSlotKey:
+    def test_same_event_player_market_side_same_key(self):
+        a = _make_rec(line=5.5, offered_american_odds=-110)
+        b = _make_rec(line=4.5, offered_american_odds=+125, sportsbook="FanDuel")
+        assert compute_bet_slot_key(a) == compute_bet_slot_key(b)
+
+    def test_different_side_different_key(self):
+        a = _make_rec(side="Over")
+        b = _make_rec(side="Under")
+        assert compute_bet_slot_key(a) != compute_bet_slot_key(b)
+
+    def test_different_player_different_key(self):
+        a = _make_rec(player_id="P1")
+        b = _make_rec(player_id="P2")
+        assert compute_bet_slot_key(a) != compute_bet_slot_key(b)
+
+    def test_different_market_different_key(self):
+        a = _make_rec(market_type="strikeouts")
+        b = _make_rec(market_type="hits")
+        assert compute_bet_slot_key(a) != compute_bet_slot_key(b)
+
+
+class TestClassifyPickUpdate:
+    def test_small_price_wiggle_is_duplicate(self):
+        # +110 -> +108: ~0.46pp implied-probability move, below threshold.
+        existing = {"line": 5.5, "offered_american_odds": 110}
+        candidate = {"line": 5.5, "offered_american_odds": 108}
+        assert classify_pick_update(existing, candidate) == UPDATE_DUPLICATE
+
+    def test_large_favorable_price_move_is_material(self):
+        # +110 -> +125: ~3.2pp implied-probability move, above threshold.
+        existing = {"line": 5.5, "offered_american_odds": 110}
+        candidate = {"line": 5.5, "offered_american_odds": 125}
+        assert classify_pick_update(existing, candidate) == UPDATE_MATERIAL
+
+    def test_large_unfavorable_price_move_is_material(self):
+        existing = {"line": 5.5, "offered_american_odds": -110}
+        candidate = {"line": 5.5, "offered_american_odds": -150}
+        assert classify_pick_update(existing, candidate) == UPDATE_MATERIAL
+
+    def test_any_line_change_is_material_even_with_identical_price(self):
+        existing = {"line": 5.5, "offered_american_odds": -110}
+        candidate = {"line": 4.5, "offered_american_odds": -110}
+        assert classify_pick_update(existing, candidate) == UPDATE_MATERIAL
+
+    def test_identical_price_and_line_is_duplicate(self):
+        existing = {"line": 5.5, "offered_american_odds": -110}
+        candidate = {"line": 5.5, "offered_american_odds": -110}
+        assert classify_pick_update(existing, candidate) == UPDATE_DUPLICATE
+
+    def test_missing_price_data_defaults_to_material(self):
+        """Cannot prove it's the same pick without a comparable price —
+        never silently suppress on missing data."""
+        existing = {"line": 5.5, "offered_american_odds": None}
+        candidate = {"line": 5.5, "offered_american_odds": -110}
+        assert classify_pick_update(existing, candidate) == UPDATE_MATERIAL
+
+
+_rec_counter = [0]
+
+
+def _save_rec(conn, **overrides):
+    """Insert a full historical_recommendations row via the real save path."""
+    from database.db_manager import save_recommendation
+
+    _rec_counter[0] += 1
+    rec = {
+        "event_id": "E1", "player_id": "P1", "player_name": "Judge",
+        "market_type": "strikeouts", "market_form": "ou", "period": "game",
+        "line": 5.5, "side": "OVER", "sportsbook": "DraftKings",
+        "offered_american_odds": -110, "offered_decimal_odds": 1.909,
+        "offered_implied_prob": 0.524, "fair_prob": 0.55, "ev_pct": 5.0,
+        "n_consensus_books": 6, "market_quality": "VALID_MARKET",
+        "rec_status": "QUALIFIED", "rec_eligible": 1,
+        "scan_timestamp": f"2026-08-21T{9 + _rec_counter[0]:02d}:00:00+00:00",
+        "recommendation_tier": "OFFICIAL_TRACKED", "qualification_passed": 1,
+        "league": "MLB", "sport": "baseball",
+    }
+    rec.update(overrides)
+    rec["recommendation_id"] = save_recommendation(conn, rec)
+    assert rec["recommendation_id"] is not None
+    return rec
+
+
+class TestFreezeOrUpdateOfficialPick:
+    """Integration tests for database.db_manager.freeze_or_update_official_pick
+    — the mechanism preventing a rescan's price wiggle from inflating the
+    official-picks historical record with duplicated signal."""
+
+    def test_first_pick_for_a_slot_is_frozen(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick
+        rec = _save_rec(db_conn)
+        result = freeze_or_update_official_pick(db_conn, rec, official_rank=1)
+        assert result["action"] == "frozen"
+        row = db_conn.execute(
+            "SELECT pick_status, bet_slot_key, first_recommended_at, best_american_odds "
+            "FROM official_picks WHERE recommendation_id = ?",
+            (rec["recommendation_id"],),
+        ).fetchone()
+        assert row["pick_status"] == PICK_STATUS_ACTIVE
+        assert row["bet_slot_key"] == compute_bet_slot_key(rec)
+        assert row["best_american_odds"] == -110
+
+    def test_price_wiggle_does_not_create_second_pick(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick
+        rec1 = _save_rec(db_conn, offered_american_odds=-110)
+        freeze_or_update_official_pick(db_conn, rec1, official_rank=1)
+
+        rec2 = _save_rec(db_conn, offered_american_odds=-108)
+        result = freeze_or_update_official_pick(db_conn, rec2, official_rank=1)
+
+        assert result["action"] == "duplicate"
+        assert result["recommendation_id"] == rec1["recommendation_id"]
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM official_picks WHERE bet_slot_key = ?",
+            (compute_bet_slot_key(rec1),),
+        ).fetchone()["c"]
+        assert count == 1, "a small price move must not create a second official pick"
+
+    def test_duplicate_updates_latest_and_best_price_on_existing_row(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick
+        rec1 = _save_rec(db_conn, offered_american_odds=-110)
+        freeze_or_update_official_pick(db_conn, rec1, official_rank=1)
+
+        rec2 = _save_rec(db_conn, offered_american_odds=-105)  # better price, still a dup
+        freeze_or_update_official_pick(db_conn, rec2, official_rank=1)
+
+        row = db_conn.execute(
+            "SELECT best_american_odds, latest_american_odds, update_count "
+            "FROM official_picks WHERE recommendation_id = ?",
+            (rec1["recommendation_id"],),
+        ).fetchone()
+        assert row["best_american_odds"] == -105  # -105 is a better price than -110
+        assert row["latest_american_odds"] == -105
+        assert row["update_count"] == 1
+
+    def test_line_change_supersedes_and_freezes_new_pick(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick
+        rec1 = _save_rec(db_conn, line=5.5, offered_american_odds=-110)
+        freeze_or_update_official_pick(db_conn, rec1, official_rank=1)
+
+        rec2 = _save_rec(db_conn, line=4.5, offered_american_odds=-110)
+        result = freeze_or_update_official_pick(db_conn, rec2, official_rank=1)
+
+        assert result["action"] == "superseded"
+        assert result["recommendation_id"] == rec2["recommendation_id"]
+
+        old_row = db_conn.execute(
+            "SELECT pick_status, superseded_by FROM official_picks WHERE recommendation_id = ?",
+            (rec1["recommendation_id"],),
+        ).fetchone()
+        assert old_row["pick_status"] == PICK_STATUS_SUPERSEDED
+        assert old_row["superseded_by"] == rec2["recommendation_id"]
+
+        new_row = db_conn.execute(
+            "SELECT pick_status FROM official_picks WHERE recommendation_id = ?",
+            (rec2["recommendation_id"],),
+        ).fetchone()
+        assert new_row["pick_status"] == PICK_STATUS_ACTIVE
+
+    def test_large_price_move_supersedes(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick
+        rec1 = _save_rec(db_conn, offered_american_odds=110)
+        freeze_or_update_official_pick(db_conn, rec1, official_rank=1)
+
+        rec2 = _save_rec(db_conn, offered_american_odds=125)
+        result = freeze_or_update_official_pick(db_conn, rec2, official_rank=1)
+        assert result["action"] == "superseded"
+
+    def test_only_one_active_pick_survives_a_chain_of_updates(self, db_conn):
+        """Simulates several rescans of the same bet slot: two harmless
+        wiggles, then a real line move, then another wiggle. Exactly one
+        ACTIVE row must remain for the slot at the end."""
+        from database.db_manager import freeze_or_update_official_pick
+
+        r1 = _save_rec(db_conn, line=5.5, offered_american_odds=-110)
+        freeze_or_update_official_pick(db_conn, r1, official_rank=1)
+        r2 = _save_rec(db_conn, line=5.5, offered_american_odds=-108)  # wiggle
+        freeze_or_update_official_pick(db_conn, r2, official_rank=1)
+        r3 = _save_rec(db_conn, line=4.5, offered_american_odds=-110)  # line move
+        freeze_or_update_official_pick(db_conn, r3, official_rank=1)
+        r4 = _save_rec(db_conn, line=4.5, offered_american_odds=-112)  # wiggle
+        result4 = freeze_or_update_official_pick(db_conn, r4, official_rank=1)
+
+        assert result4["action"] == "duplicate"
+        assert result4["recommendation_id"] == r3["recommendation_id"]
+
+        active_rows = db_conn.execute(
+            "SELECT recommendation_id FROM official_picks "
+            "WHERE bet_slot_key = ? AND pick_status = 'ACTIVE'",
+            (compute_bet_slot_key(r1),),
+        ).fetchall()
+        assert len(active_rows) == 1
+        assert active_rows[0]["recommendation_id"] == r3["recommendation_id"]
+
+        all_rows = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM official_picks WHERE bet_slot_key = ?",
+            (compute_bet_slot_key(r1),),
+        ).fetchone()["c"]
+        assert all_rows == 2, "one ACTIVE + one SUPERSEDED, not four separate picks"
+
+    def test_preserves_first_recommended_at_across_supersession(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick
+        rec1 = _save_rec(db_conn, line=5.5, offered_american_odds=-110)
+        freeze_or_update_official_pick(db_conn, rec1, official_rank=1)
+        original_first = db_conn.execute(
+            "SELECT first_recommended_at FROM official_picks WHERE recommendation_id = ?",
+            (rec1["recommendation_id"],),
+        ).fetchone()["first_recommended_at"]
+
+        rec2 = _save_rec(db_conn, line=4.5, offered_american_odds=-110)
+        freeze_or_update_official_pick(db_conn, rec2, official_rank=1)
+
+        new_first = db_conn.execute(
+            "SELECT first_recommended_at FROM official_picks WHERE recommendation_id = ?",
+            (rec2["recommendation_id"],),
+        ).fetchone()["first_recommended_at"]
+        assert new_first == original_first
+
+    def test_get_official_picks_today_excludes_superseded(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick, get_official_picks_today
+        rec1 = _save_rec(db_conn, line=5.5, offered_american_odds=-110)
+        freeze_or_update_official_pick(db_conn, rec1, official_rank=1)
+        rec2 = _save_rec(db_conn, line=4.5, offered_american_odds=-110)
+        freeze_or_update_official_pick(db_conn, rec2, official_rank=1)
+
+        today = get_official_picks_today(db_conn)
+        ids = {r["recommendation_id"] for r in today}
+        assert rec2["recommendation_id"] in ids
+        assert rec1["recommendation_id"] not in ids

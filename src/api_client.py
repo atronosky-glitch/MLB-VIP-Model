@@ -127,6 +127,8 @@ class SportsGameOddsClient:
         self,
         league: str = "MLB",
         date_str: str | None = None,
+        starts_after: str | None = None,
+        starts_before: str | None = None,
         event_id: str | None = None,
         odds_available: bool = True,
         include_alt_lines: bool = True,
@@ -141,7 +143,23 @@ class SportsGameOddsClient:
         league : str
             League ID (e.g. ``"MLB"``).
         date_str : str or None
-            ISO date YYYY-MM-DD.  If omitted, defaults to today.
+            ISO date YYYY-MM-DD, translated to a full UTC-day
+            ``startsAfter``/``startsBefore`` window. Kept for backward
+            compatibility with existing callers; prefer ``starts_after``/
+            ``starts_before`` directly for anything other than "one
+            specific calendar day".
+        starts_after, starts_before : str or None
+            ISO datetime (e.g. ``2026-08-20T00:00:00Z``) bounding the
+            event's start time — the API's real date-range filter.
+            **There is no ``date`` query parameter on this API** (verified
+            2026-08-20 against the live endpoint and its published
+            reference docs — passing one is silently ignored, not
+            rejected). Without a starts_after/starts_before window (and
+            no event_id), the API returns an arbitrary default page that
+            is NOT "today's games" — every caller of this method should
+            pass one or the other rather than relying on this method to
+            guess a sensible default, since "today" means different
+            things to a daily MLB scan vs. a weekly NFL one.
         event_id : str or None
             Fetch a single event by ID instead of all events.
         odds_available : bool
@@ -150,8 +168,13 @@ class SportsGameOddsClient:
             Include alternate lines in the response.
         """
         params: dict[str, str] = {"leagueID": league}
-        if date_str:
-            params["date"] = date_str
+        if date_str and not (starts_after or starts_before):
+            starts_after = f"{date_str}T00:00:00Z"
+            starts_before = f"{date_str}T23:59:59Z"
+        if starts_after:
+            params["startsAfter"] = starts_after
+        if starts_before:
+            params["startsBefore"] = starts_before
         if event_id:
             params["eventID"] = event_id
         if odds_available:
@@ -184,8 +207,14 @@ class SportsGameOddsClient:
             for k, v in sorted(params.items()):
                 if v is not None:
                     parts.append(f"{k}_{v}")
-        # sanitise filename
-        safe = "_".join(parts).replace("?", "").replace("&", "_")
+        # Sanitize filename — strip every character Windows (and, for
+        # safety, POSIX shells) treat specially. ISO timestamps in
+        # startsAfter/startsBefore params contain ':', which Windows
+        # rejects outright (a real crash caught live 2026-08-20, not
+        # theoretical).
+        safe = "_".join(parts).replace("?", "")
+        for ch in ("&", ":", "/", "\\", "*", '"', "<", ">", "|"):
+            safe = safe.replace(ch, "_")
         # Limit filename length (Windows has 255 char path limit)
         safe = safe[:200]
         return self.cache_dir / f"{safe}.json"

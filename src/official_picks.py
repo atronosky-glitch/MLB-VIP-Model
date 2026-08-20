@@ -452,3 +452,74 @@ def rank_and_select_official_picks(
         selected.append(rec)
 
     return selected
+
+
+# ── Duplicate-pick suppression ───────────────────────────────────────
+#
+# A scanner that reruns every few minutes must not freeze a new official
+# pick every time a price wiggles a cent — that inflates the historical
+# record with duplicated signal for what is, in reality, one wager. See
+# the module docstring's tier system for how a recommendation becomes
+# eligible in the first place; everything below decides whether a newly
+# eligible recommendation for an already-picked bet is the SAME pick
+# (suppress) or a MATERIAL_UPDATE (freeze a new pick, supersede the old).
+
+PICK_STATUS_ACTIVE = "ACTIVE"
+PICK_STATUS_SUPERSEDED = "SUPERSEDED"
+
+UPDATE_DUPLICATE = "DUPLICATE"
+UPDATE_MATERIAL = "MATERIAL_UPDATE"
+
+
+def compute_bet_slot_key(rec: dict) -> str:
+    """Identity key for "the same logical bet" across rescans.
+
+    Deliberately excludes line/price/sportsbook — those are exactly the
+    dimensions ``classify_pick_update`` decides materiality on. Two scans
+    of the same event/player/market/side are the same bet slot even if
+    the number or the book quoting it changed.
+    """
+    return "|".join([
+        str(rec.get("event_id", "")),
+        str(rec.get("player_id", "")),
+        str(rec.get("market_type", "")),
+        str(rec.get("side", "")),
+    ])
+
+
+def classify_pick_update(existing: dict, candidate: dict) -> str:
+    """Decide whether *candidate* is the same pick as *existing* or a
+    material update that should supersede it.
+
+    Rules (see MATERIAL_PRICE_DELTA_PP in prop_config.py for the exact
+    threshold and reasoning):
+    - A line change is always material — a different number is a
+      structurally different wager, never "the same pick."
+    - Otherwise, compare implied probability of the American odds; a
+      move of at least MATERIAL_PRICE_DELTA_PP percentage points is
+      material. Smaller moves (a book's price wiggling a cent or two)
+      are the same pick, just re-observed.
+    """
+    from .market_analysis import american_to_probability
+
+    existing_line = existing.get("line")
+    candidate_line = candidate.get("line")
+    if existing_line != candidate_line:
+        return UPDATE_MATERIAL
+
+    existing_odds = existing.get("offered_american_odds") or existing.get("latest_american_odds")
+    candidate_odds = candidate.get("offered_american_odds")
+    if existing_odds is None or candidate_odds is None:
+        # No comparable price on one side (e.g. YN markets without a
+        # tracked American price) — cannot prove it's the same pick, so
+        # treat it as a fresh opportunity rather than silently suppress.
+        return UPDATE_MATERIAL
+
+    try:
+        existing_prob = american_to_probability(int(existing_odds))
+        candidate_prob = american_to_probability(int(candidate_odds))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return UPDATE_MATERIAL
+
+    delta = abs(candidate_prob - existing_prob)
+    return UPDATE_MATERIAL if delta >= cfg.MATERIAL_PRICE_DELTA_PP else UPDATE_DUPLICATE

@@ -4,7 +4,157 @@ Dated, narrative record of notable engineering sessions. `PROJECT_STATUS.md`
 is the authoritative current-state snapshot; this file is the story of how
 it got there. Newest entries first.
 
-## 2026-08-20 (latest) — WNBA player props + identity; shared game settlement; line-movement-aware CLV; confidence scoring wired in; multi-sport pick lifecycle website
+## 2026-08-20 (SportsGameOdds root cause) — Corrects the prior entry: this was a real code bug, not primarily an account/tier issue
+
+### Why
+
+The immediately preceding session flagged "SportsGameOdds only returns
+2024 demo data" as a critical, possibly account-level blocker. Operator
+asked for a rigorous re-investigation using real API responses before
+accepting that conclusion — it turned out to be wrong about the cause.
+
+### What was found
+
+Fetched the live SportsGameOdds API reference docs directly: **there is
+no `date` query parameter on this API at all** — the real filters are
+`startsAfter`/`startsBefore`. `src/api_client.py` had been sending a
+`date` param the API silently ignores. But the real production call
+(`odds_available=True`, no date filter — what `daily_pipeline.py`/
+`run_scan()` actually send) already returns real current games, verified
+directly (real 2026-08-20 MLB games, real NFL preseason games) — the
+`oddsAvailable=true` filter happens to exclude the account's old demo
+events. **MLB/NFL recommendation generation was very likely never
+actually broken.** What *was* broken: `_discover_nfl_game_times()` (built
+the prior session) used `odds_available=False` with no date filter — that
+exact combination does return stale 2024 data, meaning NFL's automatic
+scheduler would never have fired. A second, independent, more serious bug
+found by the same investigation: `_parse_status()` looked for a `"state"`
+key that doesn't exist in the real API (real shape: boolean flags `live`/
+`started`/`completed`/`ended`/`finalized`/`cancelled`) — every game
+status silently defaulted to "scheduled" forever. Redundant time-based
+skip logic masked most of the impact, except for one real gap: a
+cancelled game with a still-future scheduled time had no safety net.
+
+### What changed
+
+- `src/api_client.py::get_events()`: real `starts_after`/`starts_before`
+  params; `date_str` now actually works (translates to a UTC-day window)
+  instead of being silently ignored. Also fixed a filesystem bug the fix
+  immediately surfaced: the cache-filename builder didn't sanitize `:`,
+  which Windows rejects — ISO timestamps contain `:`.
+- All 4 real `SportsGameOddsClient.get_events()` call sites now pass
+  explicit date windows.
+- `_parse_status()` now derives real status from the real boolean fields;
+  `_is_game_skippable()` gained `_CANCELLED_STATES` handling.
+- `src/league_health.py`: new `_check_event_date_sanity` check — nothing
+  else would have caught "scan ran recently, price is fresh, but the
+  games are from the wrong year."
+
+Live-verified end-to-end after the fixes: 34 real MLB recs and 25 real
+NFL recs against real current/upcoming games, a real simultaneously-live
+MLB game correctly excluded, both rendering correctly on the website.
+Full suite: **1766 passed, 0 failed** (was 1757). See
+`docs/SESSION_HANDOFF.md` for the full account, including which parts of
+the prior entry's conclusion this corrects.
+
+## 2026-08-20 (latest) — Real end-to-end deployment validation: render.yaml fix + 4 real bugs found and fixed
+
+### Why
+
+"Tests pass" isn't proof a pipeline works — operator asked for genuine
+end-to-end validation against live data before calling anything
+deployment-ready, plus the exact Render config change needed to actually
+go live.
+
+### What was found and fixed
+
+- **`render.yaml`**: `mlb-vip-worker` had no `THE_ODDS_API_KEY` at all —
+  without it, WNBA scheduling silently no-ops forever, never crashing,
+  never logging loudly. Added (`sync: false`; operator sets the real
+  value in Render's dashboard).
+- Ran the real pipeline live against real WNBA games in progress
+  tonight: real schedule discovery, real odds collection (612 rows, 9
+  real books, 2 capture batches 6 minutes apart), 25 real
+  recommendations, verified rendering on the website via `AppTest`
+  (zero exceptions). Ran a full settlement+CLV cycle against a real
+  completed WNBA game fetched fresh from ESPN.
+- **4 real bugs found by this live validation** (none visible from
+  `pytest` alone — existing fixtures always populated the `games` table,
+  never hit WNBA's empty-lookup case): (1) blank matchup **and a
+  bypassed live-game safety check** for any non-SportsGameOdds league —
+  the most serious of the four, could have let an already-started game
+  get recommended on; (2) `_stage_ingest` hardcoded `"league": "MLB"`
+  regardless of `config.league`; (3) `market_settlements.league` always
+  defaulted to `'MLB'`, confirmed with a real WNBA settlement; (4)
+  `get_settled_recommendations()` never joined `closing_prices`, so CLV
+  never reached `performance_summary()`'s callers outside the website.
+  All four fixed, all four have regression tests now.
+- **Critical open finding, not a code bug**: the SportsGameOdds API key
+  in this checkout's `.env` returns the same fixed ~10 historical events
+  (dated Feb–Aug 2024) for MLB and NFL regardless of the date requested
+  — a "notice" field confirms a tier-limited account, not a broken key.
+  WNBA (different provider) is fully live and current. Cannot verify
+  whether Render's production key differs — needs operator confirmation.
+
+Full suite: **1757 passed, 0 failed** (was 1752). See
+`docs/SESSION_HANDOFF.md` for the full account.
+
+## 2026-08-20 — NFL/WNBA production scheduling, credit-aware WNBA polling, duplicate-pick suppression, per-league job isolation, per-league health
+
+### Why
+
+Everything built earlier in the day (player props, settlement, CLV,
+website) was verified and tested but nothing actually ran it on a
+schedule. Operator asked for NFL and WNBA to start real production
+operation alongside MLB — with credit-aware WNBA polling (free tier is a
+hard 500/month), real NFL scheduling (not a "Sunday only" assumption),
+league-isolated job/lock/grading behavior, duplicate-pick suppression so
+a rescan's price wiggle doesn't inflate the historical record, and
+per-league health visibility.
+
+### What changed
+
+- **`src/league_schedule.py`** (new): pure per-league scheduling
+  decisions. NFL driven by discovered kickoff times, not a day-of-week
+  table. WNBA: free schedule discovery, flat-rate game odds, hard-gated
+  player props (3h pregame window, once/hour, credit-reserve-aware).
+- **`src/odds_api_credits.py`** (new): persists The Odds API's real
+  `x-requests-*` credit headers; `credit_budget_check()` is checked both
+  at scheduling time and again inside the actual fetch call. Fixed a real
+  bug where a headerless/mocked response's NULL reading could mask a
+  genuine prior credit reading.
+- **Closed a real integration gap**: `fetch_and_parse_props()` (built
+  earlier the same day) was never called from `run_scan()` — WNBA props
+  could not have reached a recommendation. Added `fetch_props` to
+  `run_scan()`/`PipelineConfig`; added per-event dedup so the scheduler's
+  hourly rechecks don't re-spend credits on games just fetched.
+- **Duplicate-pick suppression** (`src/official_picks.py`,
+  `database/db_manager.py`): a real bug — every rescan froze a NEW
+  official pick even on a one-cent price move (fingerprint includes
+  `observation_timestamp`). `classify_pick_update()` (implied-probability
+  delta threshold, any line change is always material) +
+  `freeze_or_update_official_pick()` (supersede-and-replace vs.
+  update-tracking-fields-in-place) fix it. Website/admin queries filter
+  `pick_status = 'ACTIVE'`.
+- **Multi-league job isolation** (`src/worker.py`): pregame lock key is
+  now per-league (was a single shared string — a real cross-league
+  blocking bug). `_run_catchup_grading` isolates each league's
+  result-ingestion in its own try/except. New job types reuse the
+  existing job queue/lock infrastructure rather than a parallel one.
+- **`src/league_health.py`** (new) + a new Multi-League Health tab in
+  `control_panel.py`: per-league PASS/WARN/FAIL on last recommendation/
+  settlement, stale markets, qualified opportunities, job activity, and
+  (WNBA) credit budget.
+- **Live-verified** (read-only): NFL/WNBA schedule discovery against the
+  real APIs, and real WNBA credit headers — **436/500 credits remaining**
+  as of this session.
+
+Full suite: **1752 passed, 0 failed** (was 1643). One flaky test (real
+wall-clock-dependent day-boundary crossing in two WNBA scheduling tests)
+found and fixed; suite reran 3x clean afterward. See
+`docs/SESSION_HANDOFF.md` for the full account.
+
+## 2026-08-20 — WNBA player props + identity; shared game settlement; line-movement-aware CLV; confidence scoring wired in; multi-sport pick lifecycle website
 
 ### Why
 

@@ -94,6 +94,17 @@ services:
         sync: false
       - key: PINNAPI_API_KEY
         sync: false
+      # WNBA odds provider (The Odds API, the-odds-api.com) — separate
+      # from SportsGameOdds above, required for src/league_schedule.py's
+      # WNBA scheduling checks and src/sports/wnba.py's fetch calls to do
+      # anything at all. Without this set, WNBA schedule discovery raises
+      # OddsAPIKeyError, which is caught and treated as "WNBA
+      # unavailable" (no crash, no jobs ever scheduled) — silently inert,
+      # not failing loudly, so this is easy to miss without checking the
+      # Multi-League Health tab. Must be set manually in the Render
+      # dashboard (this key is not committed anywhere in the repo).
+      - key: THE_ODDS_API_KEY
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: mlb-postgres

@@ -42,7 +42,11 @@ instead of going through ``player_prop_parser.parse_player_props()``.
 
 from __future__ import annotations
 
+import logging
+
 from src.sports.base import MarketConfig
+
+logger = logging.getLogger(__name__)
 
 LEAGUE_ID = "WNBA"
 SPORT = "basketball"
@@ -195,7 +199,9 @@ def get_settlement_module():
     return wnba_results
 
 
-def fetch_and_parse(event_id: str | None = None) -> tuple[list[dict], list[dict], list[dict], bool]:
+def fetch_and_parse(
+    event_id: str | None = None, conn=None,
+) -> tuple[list[dict], list[dict], list[dict], bool]:
     """Fetch and parse live WNBA game odds via The Odds API.
 
     Returns (odds_rows, audit_rows, normalized_events, from_cache), where
@@ -208,6 +214,10 @@ def fetch_and_parse(event_id: str | None = None) -> tuple[list[dict], list[dict]
     odds endpoint has no per-event filter param); the per-event odds
     endpoint exists for player props, not used by this game-markets-only
     path yet.
+
+    *conn*, when given, persists the real credit-usage headers this call
+    returned (src/odds_api_credits.py) — optional so pure fetch+parse
+    callers (e.g. tests) don't need a database at all.
     """
     from src.odds_api_client import OddsAPIClient
     from src.wnba_odds_parser import parse_wnba_game_odds
@@ -216,6 +226,13 @@ def fetch_and_parse(event_id: str | None = None) -> tuple[list[dict], list[dict]
     games, from_cache = client.get_odds(
         sport_key=ODDS_API_SPORT_KEY, regions="us", markets="h2h,spreads,totals",
     )
+    if conn is not None:
+        from src.odds_api_credits import record_client_quota
+        try:
+            record_client_quota(conn, client, endpoint="odds", job_type="game_odds",
+                                 cache_hit=from_cache)
+        except Exception:
+            logger.warning("Could not record WNBA odds-API credit usage", exc_info=True)
     if event_id:
         games = [g for g in games if g.get("id") == event_id]
 
@@ -235,6 +252,23 @@ def fetch_and_parse(event_id: str | None = None) -> tuple[list[dict], list[dict]
     ]
 
     return parsed.odds_rows, parsed.audit_rows, normalized_events, from_cache
+
+
+def _recently_captured_prop_event_ids(conn, event_ids: list[str], within_hours: float = 1.0) -> set[str]:
+    """Event IDs that already have a player_prop_odds row captured within
+    the last *within_hours* — used to avoid re-spending props credits on
+    games the scheduler already covered this cycle."""
+    if not event_ids:
+        return set()
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=within_hours)).isoformat()
+    placeholders = ",".join("?" * len(event_ids))
+    rows = conn.execute(
+        f"""SELECT DISTINCT event_id FROM player_prop_odds
+            WHERE event_id IN ({placeholders}) AND captured_at >= ?""",
+        (*event_ids, cutoff),
+    ).fetchall()
+    return {r["event_id"] for r in rows}
 
 
 def fetch_and_parse_props(
@@ -257,21 +291,51 @@ def fetch_and_parse_props(
     from src.odds_api_client import OddsAPIClient
     from src.wnba_odds_parser import parse_wnba_player_props, PROP_MARKET_KEYS
     from src.player_identity import ESPNRosterClient
+    from src.odds_api_credits import (
+        record_client_quota, credit_budget_check, PROPS_COST_PER_EVENT,
+    )
 
     client = OddsAPIClient()
-    events, _from_cache = client.get_events(sport_key=ODDS_API_SPORT_KEY)
+    events, events_from_cache = client.get_events(sport_key=ODDS_API_SPORT_KEY)
+    record_client_quota(conn, client, endpoint="events", job_type="props_discovery",
+                         cache_hit=events_from_cache)
     if event_id:
         events = [e for e in events if e.get("id") == event_id]
+    else:
+        # Intelligent prioritization: skip events whose props were already
+        # captured recently. Without this, a scheduler that legitimately
+        # re-checks every hour inside the pregame window (see
+        # src/league_schedule.py::wnba_should_fetch_props) would re-spend
+        # 8 credits/event on the SAME games every time it fires — an
+        # explicit event_id request (e.g. a manual re-check) always
+        # bypasses this and fetches fresh.
+        recent = _recently_captured_prop_event_ids(conn, [e["id"] for e in events])
+        skipped = [e for e in events if e["id"] in recent]
+        events = [e for e in events if e["id"] not in recent]
+        if skipped:
+            logger.info(
+                "WNBA props: skipping %d event(s) already captured within the last hour",
+                len(skipped),
+            )
 
     roster_client = ESPNRosterClient()
     event_odds_responses = []
     for event in events:
+        allowed, reason = credit_budget_check(conn, PROPS_COST_PER_EVENT)
+        if not allowed:
+            logger.warning(
+                "WNBA props fetch stopped at %d/%d events — credit budget: %s",
+                len(event_odds_responses), len(events), reason,
+            )
+            break
         try:
-            event_odds, _ = client.get_event_odds(
+            event_odds, from_cache = client.get_event_odds(
                 event["id"], sport_key=ODDS_API_SPORT_KEY, markets=PROP_MARKET_KEYS,
             )
         except Exception:
             continue
+        record_client_quota(conn, client, endpoint="event_odds", job_type="props_scan",
+                             cache_hit=from_cache)
         event_odds_responses.append(event_odds)
 
     parsed = parse_wnba_player_props(event_odds_responses, conn=conn, roster_client=roster_client)

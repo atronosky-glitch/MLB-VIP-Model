@@ -379,6 +379,170 @@ class TestRunScanWNBAPlayerProps:
             assert opp["raw_line"] == 14.5
 
 
+class TestRunScanFetchPropsFlag:
+    """fetch_and_parse_props existed but was never actually called from
+    run_scan — a scheduled WNBA props job would have cost real credits
+    and produced nothing. fetch_props=True is the fix; these tests prove
+    the merge actually reaches run_scan's opportunities, not just that
+    fetch_and_parse_props works in isolation (already covered above)."""
+
+    def test_fetch_props_false_never_calls_props_fetch(self):
+        from src import player_prop_scanner as scanner
+        from src.sports import wnba as wnba_mod
+
+        games_rows = [
+            _prop_row(side="over", price=-115, sportsbook="fanduel"),
+        ]
+        events = [{"id": "evt-1", "status": {"startsAt": "2099-01-01T00:00:00Z"}}]
+        with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
+             mock.patch.object(scanner, "create_run", return_value="run-1"), \
+             mock.patch.object(scanner, "save_player_prop_batch"), \
+             mock.patch.object(wnba_mod, "fetch_and_parse",
+                                return_value=([], [], events, False)), \
+             mock.patch.object(wnba_mod, "fetch_and_parse_props") as mock_props:
+            scanner.run_scan(mode="all", market="all", market_form="all",
+                              league="WNBA", fetch_props=False)
+        mock_props.assert_not_called()
+
+    def test_fetch_props_true_merges_props_into_opportunities(self):
+        from src import player_prop_scanner as scanner
+        from src.sports import wnba as wnba_mod
+
+        prop_rows = [
+            _prop_row(side="over", price=-115, sportsbook="fanduel", mapping_confidence="HIGH"),
+            _prop_row(side="under", price=-105, sportsbook="fanduel", mapping_confidence="HIGH"),
+            _prop_row(side="over", price=-120, sportsbook="draftkings", mapping_confidence="HIGH"),
+            _prop_row(side="under", price=-100, sportsbook="draftkings", mapping_confidence="HIGH"),
+        ]
+        events = [{"id": "evt-1", "status": {"startsAt": "2099-01-01T00:00:00Z"}}]
+        with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
+             mock.patch.object(scanner, "create_run", return_value="run-1"), \
+             mock.patch.object(scanner, "save_player_prop_batch"), \
+             mock.patch.object(wnba_mod, "fetch_and_parse",
+                                return_value=([], [], events, False)), \
+             mock.patch.object(wnba_mod, "fetch_and_parse_props",
+                                return_value=(prop_rows, [])) as mock_props:
+            result = scanner.run_scan(mode="all", market="all", market_form="all",
+                                       league="WNBA", fetch_props=True)
+
+        mock_props.assert_called_once()
+        props = [o for o in result["opportunities"] if o["market_type"] == "player_points_ou"]
+        assert props, "player-prop opportunity must reach run_scan's output when fetch_props=True"
+
+    def test_props_fetch_failure_does_not_break_game_market_scan(self):
+        """A player-prop fetch exception must never take down the whole
+        scan — game markets are the primary, more reliable data source."""
+        from src import player_prop_scanner as scanner
+        from src.sports import wnba as wnba_mod
+
+        events = [{"id": "evt-1", "status": {"startsAt": "2099-01-01T00:00:00Z"}}]
+        with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
+             mock.patch.object(scanner, "create_run", return_value="run-1"), \
+             mock.patch.object(scanner, "save_player_prop_batch"), \
+             mock.patch.object(wnba_mod, "fetch_and_parse",
+                                return_value=([], [], events, False)), \
+             mock.patch.object(wnba_mod, "fetch_and_parse_props",
+                                side_effect=RuntimeError("boom")):
+            result = scanner.run_scan(mode="all", market="all", market_form="all",
+                                       league="WNBA", fetch_props=True)
+        assert result is not None  # did not raise
+
+
+class TestFetchAndParsePropsIntelligentPrioritization:
+    """fetch_and_parse_props must not re-spend credits on events it just
+    fetched, and must stop mid-loop (not partway through a wasted call)
+    once the credit budget check says no."""
+
+    def test_skips_events_already_captured_within_the_hour(self, tmp_path):
+        from database.db_manager import init_db, get_connection
+        from src.sports import wnba as wnba_mod
+
+        db_path = tmp_path / "props_dedup.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+        from datetime import datetime, timezone
+        conn.execute(
+            """INSERT INTO player_prop_odds
+               (event_id, odd_id, sportsbook, player_id, market_type,
+                market_group_key, side, price, available, validation_status, captured_at)
+               VALUES ('evt-already-fetched', 'x', 'fanduel', 'p1', 'player_points_ou',
+                       'g1', 'over', -110, 1, 'VALID', ?)""",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.commit()
+
+        events = [{"id": "evt-already-fetched"}, {"id": "evt-fresh"}]
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = (events, False)
+        fake_client.get_event_odds.return_value = ({"id": "evt-fresh", "bookmakers": []}, False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client), \
+             mock.patch("src.player_identity.ESPNRosterClient"), \
+             mock.patch("src.wnba_odds_parser.parse_wnba_player_props",
+                        return_value=mock.MagicMock(odds_rows=[], audit_rows=[])):
+            wnba_mod.fetch_and_parse_props(conn)
+
+        # Only the NOT-recently-captured event should have been fetched.
+        fake_client.get_event_odds.assert_called_once()
+        called_event_id = fake_client.get_event_odds.call_args[0][0]
+        assert called_event_id == "evt-fresh"
+
+    def test_explicit_event_id_bypasses_dedup(self, tmp_path):
+        """A manual/targeted re-check must always fetch fresh, even if
+        that exact event was captured moments ago."""
+        from database.db_manager import init_db, get_connection
+        from src.sports import wnba as wnba_mod
+
+        db_path = tmp_path / "props_dedup2.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+        conn.execute(
+            """INSERT INTO player_prop_odds
+               (event_id, odd_id, sportsbook, player_id, market_type,
+                market_group_key, side, price, available, validation_status, captured_at)
+               VALUES ('evt-target', 'x', 'fanduel', 'p1', 'player_points_ou',
+                       'g1', 'over', -110, 1, 'VALID', datetime('now'))""",
+        )
+        conn.commit()
+
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = ([{"id": "evt-target"}], False)
+        fake_client.get_event_odds.return_value = ({"id": "evt-target", "bookmakers": []}, False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client), \
+             mock.patch("src.player_identity.ESPNRosterClient"), \
+             mock.patch("src.wnba_odds_parser.parse_wnba_player_props",
+                        return_value=mock.MagicMock(odds_rows=[], audit_rows=[])):
+            wnba_mod.fetch_and_parse_props(conn, event_id="evt-target")
+
+        fake_client.get_event_odds.assert_called_once()
+
+    def test_stops_when_credit_budget_exhausted_mid_loop(self, tmp_path):
+        from database.db_manager import init_db, get_connection
+        from src.odds_api_credits import record_credit_usage
+        from src.sports import wnba as wnba_mod
+
+        db_path = tmp_path / "props_budget.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+        record_credit_usage(conn, endpoint="odds", requests_remaining=5)  # below reserve
+
+        events = [{"id": "evt-1"}, {"id": "evt-2"}]
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = (events, False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client), \
+             mock.patch("src.player_identity.ESPNRosterClient"), \
+             mock.patch("src.wnba_odds_parser.parse_wnba_player_props",
+                        return_value=mock.MagicMock(odds_rows=[], audit_rows=[])):
+            wnba_mod.fetch_and_parse_props(conn)
+
+        fake_client.get_event_odds.assert_not_called()
+
+
 class TestParseWNBAPlayerProps:
     def test_resolved_player_produces_approved_rows(self, tmp_path):
         from database.db_manager import init_db, get_connection

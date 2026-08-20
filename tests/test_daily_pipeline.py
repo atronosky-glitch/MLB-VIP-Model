@@ -679,6 +679,56 @@ class TestParseStatus:
     def test_empty_string(self):
         assert _parse_status("") == "scheduled"
 
+    # ── Real SportsGameOdds status shape (verified live 2026-08-20 —
+    # boolean flags, NO "state" key at all, for both MLB and NFL). The
+    # dict_state test above covers a hypothetical/legacy shape that isn't
+    # what the live API actually returns; these cover the real one.
+
+    def test_real_shape_upcoming_game(self):
+        status = {
+            "started": False, "completed": False, "cancelled": False,
+            "ended": False, "live": False, "finalized": False,
+        }
+        assert _parse_status(status) == "scheduled"
+
+    def test_real_shape_live_game(self):
+        status = {
+            "started": True, "completed": False, "cancelled": False,
+            "ended": False, "live": True, "finalized": False,
+        }
+        assert _parse_status(status) == "live"
+
+    def test_real_shape_started_but_not_flagged_live(self):
+        """Some real responses show started=True with live=False in a
+        brief pre-live window — must still count as "not scheduled"."""
+        status = {"started": True, "completed": False, "cancelled": False,
+                   "ended": False, "live": False, "finalized": False}
+        assert _parse_status(status) == "live"
+
+    def test_real_shape_completed_game(self):
+        status = {
+            "started": True, "completed": True, "cancelled": False,
+            "ended": True, "live": False, "finalized": True,
+            "displayLong": "Final",
+        }
+        assert _parse_status(status) == "completed"
+
+    def test_real_shape_cancelled_game(self):
+        status = {
+            "started": False, "completed": False, "cancelled": True,
+            "ended": False, "live": False, "finalized": False,
+        }
+        assert _parse_status(status) == "cancelled"
+
+    def test_real_shape_cancelled_takes_priority_over_other_flags(self):
+        """A cancelled game might still carry started=True from before it
+        was called off — cancelled must win, not "live" or "completed"."""
+        status = {
+            "started": True, "completed": False, "cancelled": True,
+            "ended": False, "live": True, "finalized": False,
+        }
+        assert _parse_status(status) == "cancelled"
+
 
 # ── Full pipeline (dry run) ──────────────────────────────────────
 
@@ -868,6 +918,140 @@ class TestReportGeneration:
         assert (output_dir / "recommendations.json").exists()
         assert (output_dir / "run_summary.json").exists()
         assert (output_dir / "pipeline_report.txt").exists()
+
+
+class TestStageFreezeNonSportsGameOddsProvider:
+    """A league on its own odds provider (WNBA) never gets a `games` table
+    row from _stage_ingest (that only runs for the SportsGameOdds path —
+    see _stage_fetch_events's early-SKIP branch). Found live 2026-08-20:
+    without a fallback to the opportunity's own away_team/home_team/
+    start_time, this left `matchup` permanently blank on the website AND
+    silently disabled the live/already-started safety check for that
+    league (event_status/start_time both empty -> _is_game_skippable
+    never skips anything, regardless of whether the game already
+    started)."""
+
+    def test_matchup_falls_back_to_opportunity_fields_when_games_table_empty(
+        self, tmp_path, sample_opps,
+    ):
+        from database.db_manager import init_db, get_connection
+
+        db_path = tmp_path / "freeze_nogameTable.db"
+        init_db(str(db_path))
+        # Deliberately do NOT insert into `games` — this is the WNBA case.
+
+        # sample_opps' fixed start_time is fixed at authoring time and can
+        # drift into the past as the suite ages — force it safely into the
+        # future so this test exercises "matchup fallback for an upcoming
+        # game", not an unrelated (correct!) already-started skip.
+        future_opps = [{**opp, "start_time": "2099-01-01T19:00:00Z"} for opp in sample_opps]
+
+        config = PipelineConfig(dry_run=False, output_dir=str(tmp_path / "output"), league="WNBA")
+        state = PipelineState()
+        state.scan_run_id = "run-freeze-nogt"
+        state.scan_result = {"opportunities": future_opps, "yn_opportunities": []}
+
+        with patch("src.daily_pipeline.get_connection",
+                   lambda *a, **kw: get_connection(str(db_path))):
+            assert _stage_freeze(config, state) is True
+
+        conn = get_connection(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT matchup, event_start_time FROM historical_recommendations "
+                "WHERE scan_run_id = 'run-freeze-nogt'"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert rows, "expected recommendations to be saved"
+        for row in rows:
+            assert row["matchup"], "matchup must not be blank when the opportunity carries team names"
+            assert "NYY" in row["matchup"] and "BOS" in row["matchup"]
+
+    def test_already_started_game_is_skipped_via_opportunity_start_time_fallback(
+        self, tmp_path,
+    ):
+        """The safety-critical half of the same bug: with no `games` row,
+        start_time must still come from the opportunity so an
+        already-started game is correctly excluded, not silently scanned."""
+        from database.db_manager import init_db, get_connection
+
+        db_path = tmp_path / "freeze_started.db"
+        init_db(str(db_path))
+
+        past_opp = {
+            "event_id": "EVT_STARTED", "away_team": "SEA", "home_team": "LVA",
+            "start_time": "2020-01-01T00:00:00Z",  # unambiguously in the past
+            "player_id": "PLAYER_777", "player_name": "Test Player",
+            "market_type": "game_moneyline", "line": None, "side": "AWAY",
+            "sportsbook": "fanduel", "american_odds": -110, "decimal_odds": 1.909,
+            "n_consensus_books": 5, "fair_prob": 0.52, "ev_pct": 3.0,
+            "market_quality": "VALID", "rec_eligible": True,
+            "bet_status": "POSITIVE_EDGE", "validation_status": "VALID", "is_alt_line": 0,
+        }
+
+        config = PipelineConfig(dry_run=False, output_dir=str(tmp_path / "output"), league="WNBA")
+        state = PipelineState()
+        state.scan_run_id = "run-freeze-started"
+        state.scan_result = {"opportunities": [past_opp], "yn_opportunities": []}
+
+        with patch("src.daily_pipeline.get_connection",
+                   lambda *a, **kw: get_connection(str(db_path))):
+            assert _stage_freeze(config, state) is True
+
+        conn = get_connection(str(db_path))
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) AS c FROM historical_recommendations WHERE scan_run_id = 'run-freeze-started'"
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+
+        assert count == 0, "an already-started game must be skipped, not turned into a recommendation"
+        assert state.n_games_skipped == 1
+
+
+class TestStageIngestLeagueTagging:
+    def test_game_record_uses_configured_league_not_hardcoded_mlb(self, tmp_path):
+        """Found live 2026-08-20: _stage_ingest hardcoded 'league': 'MLB'
+        into every games-table row and raw-response snapshot, regardless
+        of config.league — meaning an NFL run's games would be silently
+        mislabeled MLB in the database."""
+        from database.db_manager import init_db, get_connection
+
+        db_path = tmp_path / "ingest_league.db"
+        init_db(str(db_path))
+
+        config = PipelineConfig(dry_run=False, league="NFL")
+        state = PipelineState()
+        state.scan_result = {
+            "_raw_events": [{
+                "eventID": "NFL_EVT_1",
+                "teams": {
+                    "home": {"names": {"long": "Buffalo Bills"}},
+                    "away": {"names": {"long": "Kansas City Chiefs"}},
+                },
+                "status": {"startsAt": "2099-01-01T18:00:00Z"},
+                "sportID": "FOOTBALL", "leagueID": "NFL",
+                "odds": {},
+            }],
+        }
+
+        with patch("src.daily_pipeline.get_connection",
+                   lambda *a, **kw: get_connection(str(db_path))):
+            assert _stage_ingest(config, state) is True
+
+        conn = get_connection(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT league FROM games WHERE event_id = 'NFL_EVT_1'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None
+        assert row["league"] == "NFL"
 
 
 class TestStageFreezeConfidence:
