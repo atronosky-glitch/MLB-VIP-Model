@@ -6,6 +6,8 @@ import sqlite3
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 
 class _FakeCursor:
     rowcount = 0
@@ -73,6 +75,106 @@ def test_init_db_creates_complete_schema_and_preserves_sqlite_data(tmp_path):
     }
     assert "recommendation_lifecycle_events" in tables
     assert {row[0] for row in conn.execute("SELECT event_id FROM games")} == {"keep-me"}
+    conn.close()
+
+
+def test_scheduled_jobs_running_lock_unique_index_blocks_concurrent_insert(tmp_path):
+    """The partial unique index must make worker.py's job-lock race impossible.
+
+    src/worker.py::_acquire_lock does a check-then-insert with no database
+    constraint; two concurrent callers could previously both insert a
+    'running' worker-lock row for the same job_type. This proves the second
+    conflicting insert now fails at the database layer.
+    """
+    import database.db_manager as dbm
+    import sqlite3
+
+    db_path = tmp_path / "lock.db"
+    dbm.init_db(str(db_path))
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO scheduled_jobs (job_id, job_type, status, metadata) "
+        "VALUES ('lock-a', 'pregame-pipeline', 'running', 'worker-lock')"
+    )
+    conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO scheduled_jobs (job_id, job_type, status, metadata) "
+            "VALUES ('lock-b', 'pregame-pipeline', 'running', 'worker-lock')"
+        )
+    conn.close()
+
+
+def test_scheduled_jobs_running_lock_index_allows_different_job_types(tmp_path):
+    import database.db_manager as dbm
+    import sqlite3
+
+    db_path = tmp_path / "lock2.db"
+    dbm.init_db(str(db_path))
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO scheduled_jobs (job_id, job_type, status, metadata) "
+        "VALUES ('lock-a', 'pregame-pipeline', 'running', 'worker-lock')"
+    )
+    conn.execute(
+        "INSERT INTO scheduled_jobs (job_id, job_type, status, metadata) "
+        "VALUES ('lock-b', 'exec_job123', 'running', 'worker-lock')"
+    )
+    conn.commit()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'running'"
+    ).fetchone()[0]
+    assert count == 2
+    conn.close()
+
+
+def test_dedupe_running_worker_locks_resolves_preexisting_duplicates(tmp_path):
+    """A database created before this constraint existed may already hold
+    duplicate running worker-locks (the exact bug the index fixes going
+    forward). The migration must clean those up rather than fail to start.
+    """
+    import database.db_manager as dbm
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    dbm.init_db(str(db_path))
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    # Simulate a pre-migration database: no unique index yet.
+    conn.execute("DROP INDEX idx_sj_running_lock")
+    conn.execute(
+        "INSERT INTO scheduled_jobs (job_id, job_type, status, metadata, started_at) "
+        "VALUES ('old-lock', 'pregame-pipeline', 'running', 'worker-lock', '2026-01-01T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO scheduled_jobs (job_id, job_type, status, metadata, started_at) "
+        "VALUES ('new-lock', 'pregame-pipeline', 'running', 'worker-lock', '2026-06-01T00:00:00Z')"
+    )
+    conn.commit()
+
+    dbm._dedupe_running_worker_locks(conn)
+    conn.commit()
+
+    running = conn.execute(
+        "SELECT job_id FROM scheduled_jobs WHERE status = 'running' AND job_type = 'pregame-pipeline'"
+    ).fetchall()
+    assert [r["job_id"] for r in running] == ["new-lock"]
+
+    completed = conn.execute(
+        "SELECT job_id, error_message FROM scheduled_jobs WHERE job_id = 'old-lock'"
+    ).fetchone()
+    assert completed["error_message"] == "Deduplicated duplicate worker-lock during migration"
+
+    # The index can now be recreated without failing on residual duplicates.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sj_running_lock "
+        "ON scheduled_jobs(job_type) "
+        "WHERE status = 'running' AND metadata = 'worker-lock'"
+    )
     conn.close()
 
 

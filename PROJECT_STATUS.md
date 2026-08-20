@@ -2,6 +2,18 @@
 
 ## Completed
 
+- **WNBA player props + identity; shared automatic settlement; line-movement-aware CLV; confidence scoring wired in; multi-sport pick-lifecycle website (2026-08-20)** — Built out a 5-priority mandate on top of the prior session's WNBA game-market work. **Player identity**: `src/player_identity.py` (new) resolves WNBA player-prop names against ESPN's free roster API, scoped to the two teams in the game, with HIGH/MEDIUM/LOW/UNRESOLVED confidence; only HIGH/MEDIUM reach a recommendation. Enabled the 8 WNBA player-prop markets confirmed live (points/rebounds/assists/threes/PRA/pts+reb/pts+ast/reb+ast). **Settlement**: `src/game_settlement.py` (new) is sport-agnostic moneyline/spread/total grading shared by MLB/NFL/WNBA, working only from each recommendation's own stored side/line/raw_line; `src/wnba_results.py` (new) settles WNBA game and player-prop markets from ESPN; postponed/cancelled/suspended games now persist as VOID instead of staying stuck forever, with a void-shortcut so player props for a voided game settle immediately. Added `NEEDS_REVIEW` as a first-class settlement status. **CLV**: `classify_line_movement()` reports favorable/unfavorable direction (from each market's real win condition) when the line moved and price CLV can't be computed at the same line; `calculate_clv()` tries an exact-line closing-price lookup first, restricted to the same capture batch so it can't false-match the bet's own stale original quote (a real bug caught and fixed before any test ran against it). Added `pct_beating_close` to `performance_summary()`. **Confidence scoring**: `compute_confidence()` existed as unused code — now wired into `daily_pipeline._stage_freeze`, persisted as `confidence_score`/`confidence_grade` on every recommendation. **Website** (`src/customer_view.py`): extended from MLB-only to MLB/NFL/WNBA, added filter bars (sport/sportsbook/market/confidence/EV, default no-op so losing picks are never hidden), fair-odds/confidence/market-quality/closing-line/CLV fields on picks, and a real Performance Dashboard with breakdowns by sport/market/sportsbook/confidence-grade/EV-bucket. Smoke-tested via Streamlit's `AppTest` harness against a seeded multi-sport DB (zero exceptions; no browser tool available in this environment). Full suite: **1643 passed, 0 failed** (was 1568). See `docs/SESSION_HANDOFF.md` for the full account, including the two bugs self-caught mid-session.
+
+- **WNBA game-market odds — real, live, working (2026-08-19)** — Operator provided a free The Odds API key (`THE_ODDS_API_KEY`, added to `.env`, never logged/printed/committed). Built `src/odds_api_client.py` (a second odds-provider client, separate from `SportsGameOddsClient`, optional at import time so MLB/NFL are unaffected without a WNBA key configured) and `src/wnba_odds_parser.py` (transforms The Odds API's fundamentally different response shape — no oddID grammar, nested bookmaker→market→outcome objects — into the exact same generic odds-row schema the rest of the platform already uses, so the existing analysis/qualification engine needed zero changes). `src/sports/wnba.py` now has a real 3-market registry (moneyline/spread/total) and `AVAILABLE = True`; player props are confirmed live and working but deliberately not registered yet (no stable player ID from this provider — needs an identity-resolution design). Extended `player_prop_scanner.run_scan()` and `daily_pipeline.py` with a pluggable-provider dispatch (`ODDS_PROVIDER` on each league adapter) so a league can declare a different data source entirely, not just a different market registry. Verified end-to-end against real live data: 5 games, 9 bookmakers, 210 approved odds rows, 25 ranked opportunities with real EV values, flowing through the unmodified LOO consensus / EV / market-quality / qualification pipeline. 16 new tests, all deterministic (no live API calls in the suite). Full suite: **1568 passed, 0 failed**. See `docs/MARKET_CAPABILITY.md` and `CHANGELOG.md` for full detail, including the exact credit-cost math for sustained scanning.
+
+- **Data provider cost research; production_canary.py multi-league (2026-08-19)** — Applied the operator's cost policy (free/low-cost preferred, but data quality matters more; never auto-subscribe) to the WNBA data-access question. Confirmed via SportsGameOdds's own pricing page that no tier (free through $299/mo Pro) includes WNBA. Confirmed ESPN's free public API covers WNBA settlement. Identified The Odds API's free tier as a likely zero-cost source for WNBA game-level odds (not yet hands-on verified — needs the operator's own free API key). Presented the $30/mo paid-tier option in full detail as a fallback if player props need it; nothing subscribed to. Separately, made `production_canary.py` multi-league (`--league` flag, registry resolved via `src.sports.get_league`) — the one piece of the multi-league work explicitly deferred in the entry below. Full suite: **1552 passed, 0 failed**.
+
+- **Multi-league architecture; NFL added; WNBA blocked on data access (2026-08-19)** — Evolved the platform from MLB-only to a reusable multi-league architecture per operator directive. Audited the pipeline first and found the core engine (odds parsing, EV math, market-quality scoring, pick qualification) was already sport-agnostic; the real MLB-only surface was narrow (market registry, MLB StatsAPI settlement, hardcoded `league="MLB"` call sites, no league/sport columns outside `games`). Added `src/sports/` (per-league adapter package: `base.py` generic `MarketConfig`/matching, `mlb.py`/`nfl.py`/`wnba.py` adapters, `get_league()`/`available_leagues()`/`market_capability_report()`). Built NFL support end-to-end from live-verified data: an 11-market registry (3 game markets + 8 player props, chosen by real observed liquidity via `GET /markets?leagueID=NFL`), and `src/nfl_results.py` (ESPN-based settlement, verified against a real completed game). Threaded `league`/`registry` through `player_prop_parser.py`, `player_prop_scanner.py` (also fixed a real bug: O/U-vs-YN grouping was hardcoded to MLB's registry, silently dropping every non-MLB opportunity), `daily_pipeline.py` (`--league` flag), and `src/worker.py` (settlement catch-up now dispatches per-league). Added a `league`/`sport` schema migration (`historical_recommendations`, `official_picks`, and 6 other tables) — additive, idempotent, tested against a simulated pre-migration database. Confirmed **WNBA is not available on the current SportsGameOdds account/plan** (absent from `/leagues`, direct fetch returns HTTP 400) — left genuinely unimplemented rather than guessed; needs an operator decision (plan upgrade or second provider). Improved player-name resolution for every league (MLB included) via the event-level `players` map, more reliable than the prior marketName-suffix heuristic. Dashboard got a minimal league-aware touch (picks query, run-button league selector); full customer-facing multi-league UI deferred. Full suite: **1549 passed, 0 failed** (+46 new tests, zero regressions). See `CHANGELOG.md` for the full narrative and what was deliberately deferred.
+
+- **Worker job-lock race condition fix (2026-08-19)** — `src/worker.py::_acquire_lock` was check-then-insert with no database constraint, so two concurrent callers (e.g. a manual dashboard job overlapping the persistent worker) could both acquire the same lock. Added a partial unique index (`idx_sj_running_lock`) in `database/db_manager.py::init_db`, guarded by a new `_dedupe_running_worker_locks` helper so the migration is safe against any pre-existing duplicate locks. No logic change needed in `_acquire_lock` — its existing exception handling already covers the new constraint violation. Full suite: **1503 passed, 0 failed**.
+
+- **Production canary/readiness API fix, backup safety, doc reconciliation (2026-08-19)** — Fixed a confirmed critical bug: `src/production_canary.py` and `src/live_readiness.py` were validating against `api.sportsdata.io` (wrong provider, wrong schema, wrong auth) instead of the real production SportsGameOdds v2 API, so live-readiness checks validated nothing real. Both now use `SportsGameOddsClient` and the verified real event/odds schema; database checks are now dialect-aware (PostgreSQL/SQLite). Also fixed a live `AttributeError` bug in `_validate_market_mappings` (called `.values()` on a `list`). Fixed a data-integrity risk: `src/worker.py::_run_backup` now skips the SQLite-only backup path under PostgreSQL instead of silently writing an empty file and reporting false success. Confirmed three previously-flagged dashboard/pipeline bugs were already fixed by earlier sessions (completion-flag field name, `capture_closing_prices` import, `run_data_quality_checks` reference) and reconciled `AI_CONTEXT.md` accordingly. Removed a stray empty `sk_test_12345678` directory. Full suite: **1500 passed, 0 failed**.
+
 - **Challenger shadow evaluation dashboard (2026-08-10)** — Added Brier/log-loss/expected-EV/realized-ROI/CLV comparison metrics to the private Adaptive Learning tab. Metrics remain sample-gated and advisory-only; production picks are unaffected. Full suite: **1492 passed, 0 failed**.
 
 - **Retrosheet challenger pitcher-start correction (2026-08-10)** — Fixed historical challenger features to estimate expected batters faced from prior starts only; relief appearances still contribute to strikeout-rate evidence but cannot inflate starter workload. The loader now evaluates starter games rather than relief outcomes. Full suite: **1490 passed, 0 failed**.
@@ -137,7 +149,7 @@
 
 ## Current test status
 
-Full suite: **1372 passing, 0 failing**. All Pinnacle tests pass (`tests/test_pinnacle_value_model.py` — 42 tests incl. 5 Phase 18B required cases + 14 Phase 18C diagnostics tests; `tests/test_phase15_official_picks.py` — 21 tests incl. 6 Pinnacle-gate tests; `tests/test_api_client.py` — 26 offline/mocked API-auth tests).
+Full suite: **1643 passing, 0 failing** (re-verified 2026-08-20 by direct run; this section's breakdown below is historical and undercounts the current total — see the dated entries above for what's been added since). All Pinnacle tests pass (`tests/test_pinnacle_value_model.py` — 42 tests incl. 5 Phase 18B required cases + 14 Phase 18C diagnostics tests; `tests/test_phase15_official_picks.py` — 21 tests incl. 6 Pinnacle-gate tests; `tests/test_api_client.py` — 26 offline/mocked API-auth tests).
 
 Breakdown:
 - `tests/test_stage1.py` — 7 tests
@@ -177,6 +189,18 @@ All tests are **deterministic** — none depend on live API responses or mutable
 
 ## Current supported markets
 
+**MLB is the only league with an active production pipeline.** NFL has a
+verified, tested market registry and settlement adapter (`src/sports/nfl.py`,
+`src/nfl_results.py`) but has not yet been run live in production. WNBA
+now has a verified, tested, live-working 3-market game registry
+(moneyline/spread/total via The Odds API, a different provider than
+MLB/NFL) **plus 8 live-verified player-prop markets** (points, rebounds,
+assists, threes, PRA, pts+reb, pts+ast, reb+ast) gated behind team-scoped
+player-identity resolution, and a working settlement adapter
+(`src/wnba_results.py`) for both — but still no production schedule. See
+`docs/MARKET_CAPABILITY.md` for the full per-league breakdown, including
+which markets exist in each provider's catalog but aren't registered yet.
+
 ### Active markets (8 high-signal keepers after Phase 17C rationalization)
 - MLB pitcher strikeouts Over/Under + Yes/No
 - MLB pitcher hits allowed Over/Under (O/U only)
@@ -196,15 +220,14 @@ All tests are **deterministic** — none depend on live API responses or mutable
 - Automated scheduling / snapshots
 - Google Sheets dashboard
 - Discord alerts
-- Website
 
 ## Known limitations
 
 - Team info not resolved for player props (enrichment would require a league roster lookup)
-- CLV tracking requires historical snapshots (not yet scheduled)
-- Results grading requires post-game settlement (not yet implemented)
 - Freshness check is non-functional for cached data: `captured_at` is set at parse time (always "now"), never from the API `observationTimestamp`. A cache hit always shows age ~0s and never triggers the stale-data warning
 - Alt lines are preserved but not scanned by default (only main lines appear in output)
+- WNBA has no production schedule yet — game-market and player-prop odds, identity resolution, and settlement are all built and tested, but nothing runs it on a cadence in production
+- NFL has a tested settlement adapter and market registry but has not yet been run live in production either
 
 ## Current stage
 

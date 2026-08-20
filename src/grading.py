@@ -42,11 +42,17 @@ SETTLEMENT_PUSH = "PUSH"
 SETTLEMENT_VOID = "VOID"
 SETTLEMENT_CANCELLED = "CANCELLED"
 SETTLEMENT_UNRESOLVED = "UNRESOLVED"
+# The game/stat data exists but grading it safely is uncertain (e.g. an
+# unrecognized status string, or a spread recommendation missing the
+# signed line it needs) — a human should look at it. Distinct from
+# UNRESOLVED, which just means "not final yet, check again later."
+SETTLEMENT_NEEDS_REVIEW = "NEEDS_REVIEW"
 
 # Valid settlement statuses
 VALID_SETTLEMENTS = frozenset({
     SETTLEMENT_WIN, SETTLEMENT_LOSS, SETTLEMENT_PUSH,
     SETTLEMENT_VOID, SETTLEMENT_CANCELLED, SETTLEMENT_UNRESOLVED,
+    SETTLEMENT_NEEDS_REVIEW,
 })
 
 # ── EV Buckets ────────────────────────────────────────────────────
@@ -180,21 +186,78 @@ def grade_yn(final_stat: float | None = None, side: str | None = None) -> str:
 # CLV Calculation
 # ==================================================================
 
+def classify_line_movement(
+    market_type: str, side: str | None, bet_line: float | None, closing_line: float | None,
+) -> str:
+    """Classify whether the line moved in the bettor's favor, independent
+    of price. "Capturing 5.5 before it moves to 6.5" has value on its own
+    — this makes that value visible instead of discarding it whenever a
+    line change makes simple price CLV unavailable.
+
+    Returns "favorable", "unfavorable", "neutral" (no movement), or
+    "unknown" (missing data or an unrecognized market shape — e.g.
+    moneyline has no line at all, so this is never called for it in
+    practice since bet_line is always None there).
+
+    Direction rules (both derived from each market's own win condition,
+    not asserted):
+    - Over/Under (side="OVER"/"UNDER", incl. every player prop and game
+      total): OVER is favorable when the line rose after the bet (a lower
+      number was easier to clear); UNDER is favorable when it fell.
+    - Spread (market_type == "game_spread_ou", uses the SIGNED raw_line —
+      pass raw_line as both bet_line/closing_line here, not the abs-valued
+      line): favorable whenever the line fell, regardless of side —
+      grade_spread's win condition is margin + raw_line > 0, so a higher
+      raw_line is strictly better for whichever side has it, independent
+      of favorite/underdog status.
+    """
+    if bet_line is None or closing_line is None:
+        return "unknown"
+    delta = closing_line - bet_line
+    if delta == 0:
+        return "neutral"
+    if market_type == "game_spread_ou":
+        return "favorable" if delta < 0 else "unfavorable"
+    side = (side or "").upper()
+    if side == "OVER":
+        return "favorable" if delta > 0 else "unfavorable"
+    if side == "UNDER":
+        return "favorable" if delta < 0 else "unfavorable"
+    return "unknown"
+
+
 def calculate_clv(
     bet_american: int,
     bet_line: float | None,
     closing_american: int | None,
     closing_line: float | None,
+    *,
+    market_type: str | None = None,
+    side: str | None = None,
+    raw_line: float | None = None,
+    closing_raw_line: float | None = None,
+    exact_line_closing_american: int | None = None,
 ) -> dict:
     """Calculate CLV metrics for a recommendation.
 
     Returns dict with:
         clv_probability: bet_implied_prob - closing_implied_prob
             Positive = favorable (closing odds are better than bet odds,
-            meaning closing implied probability is lower).
+            meaning closing implied probability is lower). Computed
+            whenever a closing price is available AT THE SAME LINE we
+            actually bet — either because the market's representative
+            line didn't move, or because *exact_line_closing_american*
+            shows a book still quoted our original line as an alt line
+            at close (the strictly correct comparison, not a fallback).
         clv_price_diff: closing_american - bet_american (signed, positive = line moved against us)
         clv_available: bool
         line_move_type: "same_line", "line_changed", "no_close", or None
+        line_movement_direction: "favorable"/"unfavorable"/"neutral"/"unknown"/None
+            — set only when line_move_type == "line_changed" and price CLV
+            genuinely isn't available at the same line; see
+            classify_line_movement(). Never fabricates a single blended
+            number out of price + line movement — the two are reported
+            separately so neither is silently discarded.
     """
     from .market_analysis import american_to_decimal, american_to_probability
 
@@ -203,15 +266,34 @@ def calculate_clv(
         "clv_price_diff": None,
         "clv_available": False,
         "line_move_type": None,
+        "line_movement_direction": None,
     }
 
-    if closing_american is None:
+    if closing_american is None and exact_line_closing_american is None:
         result["line_move_type"] = "no_close"
         return result
 
-    if bet_line is not None and closing_line is not None and bet_line != closing_line:
+    same_line = bet_line is None or closing_line is None or bet_line == closing_line
+    effective_closing_american = closing_american
+
+    if not same_line and exact_line_closing_american is not None:
+        # The market's representative line moved, but a book still quotes
+        # our exact original line as an alt line at close — use that for a
+        # genuinely correct, same-line price comparison instead of giving up.
+        same_line = True
+        effective_closing_american = exact_line_closing_american
+
+    if not same_line:
         result["line_move_type"] = "line_changed"
-        # Price CLV is not directly comparable when line changes
+        result["line_movement_direction"] = classify_line_movement(
+            market_type or "", side,
+            raw_line if market_type == "game_spread_ou" else bet_line,
+            closing_raw_line if market_type == "game_spread_ou" else closing_line,
+        )
+        return result
+
+    if effective_closing_american is None:
+        result["line_move_type"] = "no_close"
         return result
 
     result["line_move_type"] = "same_line"
@@ -219,9 +301,9 @@ def calculate_clv(
     # Probability CLV: bet_implied_prob - closing_implied_prob
     # Positive = favorable (closing odds are better / lower implied prob)
     bet_prob = american_to_probability(bet_american)
-    close_prob = american_to_probability(closing_american)
+    close_prob = american_to_probability(effective_closing_american)
     result["clv_probability"] = round(bet_prob - close_prob, 6)
-    result["clv_price_diff"] = closing_american - bet_american
+    result["clv_price_diff"] = effective_closing_american - bet_american
     result["clv_available"] = True
 
     return result
@@ -285,6 +367,24 @@ def performance_summary(
     clv_list = [r.get("clv_probability") for r in recs if r.get("clv_probability") is not None]
     avg_clv = sum(clv_list) / len(clv_list) if clv_list else None
 
+    # % beating the closing line — price CLV when available (clv_probability
+    # > 0), or line_movement_direction == "favorable" when the line moved
+    # and price CLV genuinely can't be computed at the same line (see
+    # classify_line_movement). Recs with no closing evidence at all are
+    # excluded from both numerator and denominator, not counted as losses.
+    beat_close_evidence = [
+        r for r in recs
+        if r.get("clv_probability") is not None or r.get("line_movement_direction") is not None
+    ]
+    beat_close_wins = sum(
+        1 for r in beat_close_evidence
+        if (r.get("clv_probability") is not None and r["clv_probability"] > 0)
+        or (r.get("clv_probability") is None and r.get("line_movement_direction") == "favorable")
+    )
+    pct_beating_close = (
+        round(beat_close_wins / len(beat_close_evidence), 4) if beat_close_evidence else None
+    )
+
     return {
         "total_recommendations": total,
         "settled": settled,
@@ -302,6 +402,7 @@ def performance_summary(
         "avg_ev_pct": round(avg_ev, 4),
         "avg_yn_advantage": round(avg_yn_adv, 4),
         "avg_clv_probability": round(avg_clv, 6) if avg_clv is not None else None,
+        "pct_beating_close": pct_beating_close,
     }
 
 

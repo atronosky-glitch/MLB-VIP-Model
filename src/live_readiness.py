@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from database.connection import get_database_url
 from database.db_manager import get_connection
 import time
 from dataclasses import dataclass, asdict
@@ -20,6 +21,13 @@ from src.production_config import load_config, ProductionConfig
 from src.shadow_mode import load_shadow_config
 
 logger = logging.getLogger(__name__)
+
+
+def _open_connection(db_path: str):
+    """Open PostgreSQL when DATABASE_URL is configured, otherwise SQLite."""
+    if get_database_url():
+        return get_connection()
+    return get_connection(db_path)
 
 # ── Exit codes ─────────────────────────────────────────────────────
 
@@ -157,39 +165,52 @@ def _check_api_credentials(config: ProductionConfig, *, skip_network: bool = Fal
 
 
 def _check_api_connectivity(config: ProductionConfig, *, skip_network: bool = False) -> ReadinessCheck:
+    """Verify the real production API (SportsGameOdds v2) is reachable.
+
+    Uses the same client as the daily pipeline. Note the client reads its
+    key from the ``SPORTSODDS_API_KEY`` environment variable directly
+    (not from ``config.api_key``), matching how it behaves in production.
+    """
     if skip_network:
         return ReadinessCheck(name="api_connectivity", status="skip",
                               message="Network checks skipped (--skip-network)")
     try:
-        import urllib.request
-        req = urllib.request.Request(
-            "https://api.sportsdata.io/health",
-            headers={"Authorization": f"Bearer {config.api_key}"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return ReadinessCheck(name="api_connectivity", status="pass",
-                                  message=f"API reachable (HTTP {resp.getcode()})")
+        from src.api_client import SportsGameOddsClient
+        client = SportsGameOddsClient(max_cache_age=0)
+        data, from_cache = client.get_leagues()
+        leagues = data.get("data", []) if isinstance(data, dict) else []
+        return ReadinessCheck(name="api_connectivity", status="pass",
+                              message=f"SportsGameOdds API reachable ({len(leagues)} leagues)")
     except Exception as e:
         return ReadinessCheck(name="api_connectivity", status="fail",
                               message=f"API unreachable: {e}")
 
 
 def _check_database(config: ProductionConfig) -> ReadinessCheck:
-    db_path = Path(config.database_path)
-    if not db_path.exists():
-        return ReadinessCheck(name="database", status="fail",
-                              message=f"Database not found: {db_path}")
+    db_url = get_database_url()
+    if not db_url:
+        db_path = Path(config.database_path)
+        if not db_path.exists():
+            return ReadinessCheck(name="database", status="fail",
+                                  message=f"Database not found: {db_path}")
     try:
-        conn = get_connection(str(db_path))
+        conn = _open_connection(config.database_path)
         try:
-            tables = {r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()}
+            if db_url:
+                cursor = conn.execute(
+                    "SELECT table_name AS name FROM information_schema.tables "
+                    "WHERE table_schema = 'public'"
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            tables = {row["name"] for row in cursor.fetchall()}
             required = {"games", "raw_responses", "odds", "historical_recommendations"}
             missing = required - tables
             if missing:
                 return ReadinessCheck(name="database", status="fail",
-                                      message=f"Missing tables: {', '.join(missing)}")
+                                      message=f"Missing tables: {', '.join(sorted(missing))}")
             return ReadinessCheck(name="database", status="pass",
                                   message=f"Database OK ({len(tables)} tables)")
         finally:
@@ -200,6 +221,18 @@ def _check_database(config: ProductionConfig) -> ReadinessCheck:
 
 
 def _check_database_writable(config: ProductionConfig) -> ReadinessCheck:
+    if get_database_url():
+        try:
+            conn = get_connection()
+            try:
+                conn.execute("SELECT 1")
+            finally:
+                conn.close()
+            return ReadinessCheck(name="database_writable", status="pass",
+                                  message="PostgreSQL connection OK")
+        except Exception as e:
+            return ReadinessCheck(name="database_writable", status="fail",
+                                  message=f"PostgreSQL connection failed: {e}")
     db_path = Path(config.database_path)
     if not db_path.exists():
         return ReadinessCheck(name="database_writable", status="fail",
@@ -367,17 +400,17 @@ def _check_sheets_config(config: ProductionConfig) -> ReadinessCheck:
 
 def _check_last_job_runs(config: ProductionConfig) -> ReadinessCheck:
     try:
-        conn = get_connection(config.database_path)
+        conn = _open_connection(config.database_path)
         try:
-            row = conn.execute("""
+            rows = conn.execute("""
                 SELECT job_type, status, completed_at
                 FROM job_runs
                 ORDER BY completed_at DESC LIMIT 3
             """).fetchall()
-            if not row:
+            if not rows:
                 return ReadinessCheck(name="last_jobs", status="warn",
                                       message="No job runs found in database")
-            recent = [f"{r[0]}({r[1]})" for r in row]
+            recent = [f"{r['job_type']}({r['status']})" for r in rows]
             return ReadinessCheck(name="last_jobs", status="pass",
                                   message=f"Recent jobs: {', '.join(recent)}")
         finally:

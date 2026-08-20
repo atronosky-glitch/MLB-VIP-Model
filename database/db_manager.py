@@ -118,6 +118,129 @@ def lifecycle_table_diagnostic(conn: DB) -> dict:
     }
 
 
+def create_player_identity_tables(conn: DB) -> None:
+    """Create the canonical player-identity tables (see src/player_identity.py).
+
+    A prop odds source that gives only a free-text player name (no stable
+    ID) is resolved once against a real roster, then cached here so
+    subsequent scans don't re-fetch rosters. Confidence is tracked
+    explicitly — only HIGH/MEDIUM mappings should feed a recommendation.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS player_identities (
+            canonical_player_id TEXT PRIMARY KEY,
+            league               TEXT NOT NULL,
+            display_name         TEXT NOT NULL,
+            normalized_name       TEXT NOT NULL,
+            team_id               TEXT,
+            team_name             TEXT,
+            created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pi_league_norm "
+        "ON player_identities(league, normalized_name)"
+    )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS player_identity_mappings (
+            mapping_id           TEXT PRIMARY KEY,
+            canonical_player_id  TEXT,
+            league                TEXT NOT NULL,
+            provider              TEXT NOT NULL,
+            provider_player_id    TEXT,
+            provider_name_raw     TEXT NOT NULL,
+            mapping_confidence    TEXT NOT NULL,
+            mapping_method        TEXT NOT NULL,
+            verified_at           TEXT,
+            created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pim_provider_raw "
+        "ON player_identity_mappings(league, provider, provider_name_raw)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pim_canonical "
+        "ON player_identity_mappings(canonical_player_id)"
+    )
+
+
+def get_cached_player_identity_mapping(
+    conn: DB, league: str, provider: str, provider_name_raw: str,
+) -> dict | None:
+    """Return a previously resolved identity mapping, or None if uncached."""
+    row = conn.execute(
+        "SELECT * FROM player_identity_mappings "
+        "WHERE league = ? AND provider = ? AND provider_name_raw = ?",
+        (league, provider, provider_name_raw),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def save_player_identity_mapping(
+    conn: DB,
+    *,
+    league: str,
+    provider: str,
+    provider_name_raw: str,
+    canonical_player_id: str | None,
+    display_name: str,
+    mapping_confidence: str,
+    mapping_method: str,
+    team_id: str = "",
+    team_name: str = "",
+) -> None:
+    """Persist a resolved (or explicitly unresolved) identity mapping.
+
+    Idempotent per (league, provider, provider_name_raw): a repeated
+    resolution updates the existing row rather than duplicating it.
+    ``canonical_player_id`` is None for an UNRESOLVED mapping — cached so
+    repeated scans don't keep re-attempting a roster fetch for a name
+    that's genuinely unmatched, while still never becoming a recommendation.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        if canonical_player_id:
+            conn.execute(
+                """INSERT INTO player_identities
+                   (canonical_player_id, league, display_name, normalized_name, team_id, team_name)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (canonical_player_id) DO UPDATE SET
+                       display_name = excluded.display_name,
+                       team_id = excluded.team_id,
+                       team_name = excluded.team_name,
+                       updated_at = datetime('now')""",
+                (canonical_player_id, league, display_name,
+                 _normalize_for_storage(display_name), team_id, team_name),
+            )
+        mapping_id = f"{league}:{provider}:{provider_name_raw}"
+        conn.execute(
+            """INSERT INTO player_identity_mappings
+               (mapping_id, canonical_player_id, league, provider, provider_name_raw,
+                mapping_confidence, mapping_method, verified_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (league, provider, provider_name_raw) DO UPDATE SET
+                   canonical_player_id = excluded.canonical_player_id,
+                   mapping_confidence = excluded.mapping_confidence,
+                   mapping_method = excluded.mapping_method,
+                   verified_at = excluded.verified_at,
+                   updated_at = datetime('now')""",
+            (mapping_id, canonical_player_id, league, provider, provider_name_raw,
+             mapping_confidence, mapping_method, now),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _normalize_for_storage(display_name: str) -> str:
+    from src.player_identity import normalize_name
+    return normalize_name(display_name)
+
+
 def create_recommendation_lifecycle_table(conn: DB) -> None:
     """Create the Phase 19A lifecycle table and indexes exactly once per init."""
     logger.info("LIFECYCLE DDL START table=recommendation_lifecycle_events")
@@ -206,6 +329,7 @@ _ODDS_MIGRATIONS = [
     ("mapping_confidence", "TEXT DEFAULT 'NONE'"),
     ("mapping_method", "TEXT DEFAULT ''"),
     ("validation_reason", "TEXT DEFAULT ''"),
+    ("league", "TEXT DEFAULT 'MLB'"),
 ]
 
 
@@ -272,6 +396,7 @@ def _create_audit_table(conn: DB) -> None:
 _PLAYER_PROP_MIGRATIONS = [
     ("team_id", "TEXT DEFAULT ''"),
     ("team_name", "TEXT DEFAULT ''"),
+    ("league", "TEXT DEFAULT 'MLB'"),
 ]
 
 
@@ -296,6 +421,42 @@ def _add_columns_if_missing(conn: DB, table_name: str, migrations: list[tuple[st
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}")
             logger.info("Added column '%s' to %s table", col_name, table_name)
             existing.add(col_name)
+
+
+def _dedupe_running_worker_locks(conn: DB) -> None:
+    """Resolve duplicate running worker-locks before the unique index is created.
+
+    ``src/worker.py::_acquire_lock`` historically did a check-then-insert
+    with no database-level constraint, so two concurrent callers could each
+    observe no existing lock and both insert a 'running' row for the same
+    ``job_type``. Creating ``idx_sj_running_lock`` (a partial unique index)
+    would fail against a database that already holds such duplicates, so
+    this keeps only the most recently started lock per job_type and marks
+    the rest completed. A no-op on any database that never raced.
+    """
+    rows = conn.execute(
+        "SELECT job_id, job_type, started_at FROM scheduled_jobs "
+        "WHERE status = 'running' AND metadata = 'worker-lock'"
+    ).fetchall()
+    by_type: dict[str, list] = {}
+    for row in rows:
+        by_type.setdefault(row["job_type"], []).append(row)
+
+    for job_type, locks in by_type.items():
+        if len(locks) <= 1:
+            continue
+        locks.sort(key=lambda r: r["started_at"] or "", reverse=True)
+        for stale in locks[1:]:
+            conn.execute(
+                "UPDATE scheduled_jobs SET status = 'completed', "
+                "error_message = 'Deduplicated duplicate worker-lock during migration' "
+                "WHERE job_id = ?",
+                (stale["job_id"],),
+            )
+            logger.warning(
+                "Deduplicated stale duplicate worker-lock job_id=%s job_type=%s",
+                stale["job_id"], job_type,
+            )
 
 
 def _safe_migrate_player_prop(conn) -> None:
@@ -668,6 +829,8 @@ def init_db(db_path: str | None = None) -> None:
     create_recommendation_lifecycle_table(conn)
     logger.info("Phase 19A lifecycle table creation phase completed")
 
+    create_player_identity_tables(conn)
+
     _safe_migrate_odds(conn)
     _create_audit_table(conn)
     _safe_migrate_player_prop(conn)
@@ -746,6 +909,28 @@ def init_db(db_path: str | None = None) -> None:
         ("challenger_version", "TEXT"),
     ])
 
+    # Multi-league support: every recommendation carries its league and
+    # sport explicitly rather than assuming MLB. Default 'MLB'/'baseball'
+    # preserves all existing rows' meaning exactly (this project was
+    # MLB-only until this migration).
+    _add_columns_if_missing(conn, "historical_recommendations", [
+        ("league", "TEXT DEFAULT 'MLB'"),
+        ("sport", "TEXT DEFAULT 'baseball'"),
+    ])
+
+    # Signed line for game-market spread settlement (grade_spread needs the
+    # favorite/underdog direction; "line" is intentionally abs-valued for
+    # O/U-style pairing/EV analysis — see src/game_settlement.py).
+    _add_columns_if_missing(conn, "historical_recommendations", [
+        ("raw_line", "REAL"),
+    ])
+
+    # Confidence grade (A-F, from src.confidence.compute_confidence) alongside
+    # the existing numeric confidence_score column, for display/filtering.
+    _add_columns_if_missing(conn, "historical_recommendations", [
+        ("confidence_grade", "TEXT"),
+    ])
+
     # Phase 16: Official picks frozen snapshot table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS official_picks (
@@ -788,6 +973,24 @@ def init_db(db_path: str | None = None) -> None:
 
     # Phase 17C: Variable staking - add risk_units to official_picks
     _add_columns_if_missing(conn, "official_picks", [("risk_units", "REAL")])
+
+    # Multi-league support: league/sport tags on every remaining table that
+    # carries per-event or per-recommendation data, so results, settlement,
+    # closing-line, and lifecycle records can be filtered/reported per
+    # league. Default 'MLB'/'baseball' preserves existing rows' meaning.
+    _add_columns_if_missing(conn, "official_picks", [
+        ("league", "TEXT DEFAULT 'MLB'"),
+        ("sport", "TEXT DEFAULT 'baseball'"),
+    ])
+    _add_columns_if_missing(conn, "event_results", [("league", "TEXT DEFAULT 'MLB'")])
+    # Line-movement-aware CLV: reported alongside price CLV when the line
+    # moved and a same-line price comparison isn't available — see
+    # src/grading.py::calculate_clv / classify_line_movement.
+    _add_columns_if_missing(conn, "closing_prices", [("line_movement_direction", "TEXT")])
+    _add_columns_if_missing(conn, "player_stat_results", [("league", "TEXT DEFAULT 'MLB'")])
+    _add_columns_if_missing(conn, "market_settlements", [("league", "TEXT DEFAULT 'MLB'")])
+    _add_columns_if_missing(conn, "closing_prices", [("league", "TEXT DEFAULT 'MLB'")])
+    _add_columns_if_missing(conn, "recommendation_lifecycle_events", [("league", "TEXT DEFAULT 'MLB'")])
 
     # Phase 16: Odds observations (append-only)
     conn.execute("""
@@ -838,6 +1041,15 @@ def init_db(db_path: str | None = None) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sj_scheduled ON scheduled_jobs(scheduled_at)"
+    )
+    # A pre-existing database (created before this constraint) could already
+    # hold duplicate running worker-locks from the old check-then-insert race;
+    # the unique index below would fail to create against such rows.
+    _dedupe_running_worker_locks(conn)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sj_running_lock "
+        "ON scheduled_jobs(job_type) "
+        "WHERE status = 'running' AND metadata = 'worker-lock'"
     )
 
     # ================================================================
@@ -1516,8 +1728,9 @@ def save_recommendation(conn: DB, rec: dict) -> str | None:
                 qualification_reasons, disqualification_reasons,
                 contributing_book_count, contributing_books,
                 applicable_edge_metric, applicable_edge_threshold,
-                model_score_threshold, qualification_rules_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                model_score_threshold, qualification_rules_version,
+                league, sport, raw_line, confidence_score, confidence_grade)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (fingerprint) DO NOTHING""",
             (rec_id, fingerprint,
              rec.get("scan_run_id"), rec.get("ingestion_run_id"),
@@ -1551,6 +1764,11 @@ def save_recommendation(conn: DB, rec: dict) -> str | None:
              rec.get("applicable_edge_threshold", 0.0),
              rec.get("model_score_threshold", 8.0),
              rec.get("qualification_rules_version", ""),
+             rec.get("league", "MLB"),
+             rec.get("sport", "baseball"),
+             rec.get("raw_line"),
+             rec.get("confidence_score"),
+             rec.get("confidence_grade"),
              ),
         )
         _persist_recommendation_evidence(conn, rec_id, rec)
@@ -1588,10 +1806,16 @@ def freeze_official_pick(
     try:
         cursor = conn.execute("""
             INSERT INTO official_picks (
-                recommendation_id, tier, official_rank, rules_version
-            ) VALUES (?, ?, ?, ?)
+                recommendation_id, tier, official_rank, rules_version,
+                league, sport
+            )
+            VALUES (
+                ?, ?, ?, ?,
+                COALESCE((SELECT league FROM historical_recommendations WHERE recommendation_id = ?), 'MLB'),
+                COALESCE((SELECT sport FROM historical_recommendations WHERE recommendation_id = ?), 'baseball')
+            )
             ON CONFLICT (recommendation_id) DO NOTHING
-        """, (recommendation_id, tier, official_rank, rules_version))
+        """, (recommendation_id, tier, official_rank, rules_version, recommendation_id, recommendation_id))
         conn.commit()
         return cursor.rowcount > 0
     except Exception:
@@ -1847,19 +2071,26 @@ def save_closing_price(
     clv_probability: float | None = None,
     clv_price_diff: int | None = None,
     clv_available: bool = False,
+    line_movement_direction: str | None = None,
 ) -> None:
-    """Store closing price and CLV for a recommendation."""
+    """Store closing price and CLV for a recommendation.
+
+    ``line_movement_direction`` ("favorable"/"unfavorable"/"neutral"/
+    "unknown") is set only when the line moved and price CLV isn't
+    available at the same line — see src/grading.py::calculate_clv. It's
+    reported alongside, never blended into, clv_probability.
+    """
     conn.execute(
         """INSERT INTO closing_prices
            (recommendation_id, closing_american, closing_decimal,
             closing_implied_prob, closing_line, closing_observed_at,
             closing_sportsbook, line_move_type, clv_probability,
-            clv_price_diff, clv_available)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            clv_price_diff, clv_available, line_movement_direction)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (recommendation_id, closing_american, closing_decimal,
          closing_implied_prob, closing_line, closing_observed_at,
          closing_sportsbook, line_move_type, clv_probability,
-         clv_price_diff, 1 if clv_available else 0),
+         clv_price_diff, 1 if clv_available else 0, line_movement_direction),
     )
     conn.commit()
 
@@ -1977,6 +2208,15 @@ def get_player_stat_result(
     return dict(row) if row else None
 
 
+def get_event_result(conn: DB, event_id: str) -> dict | None:
+    """Return an event's final result (scores/status) if it exists."""
+    cur = conn.execute(
+        "SELECT * FROM event_results WHERE event_id = ?", (event_id,),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
 # ==================================================================
 # Phase 9: Closing price capture and analytics helpers
 # ==================================================================
@@ -2048,6 +2288,7 @@ def capture_closing_prices(
         bet_american = rec.get("offered_american_odds")
 
         from src.market_analysis import american_to_probability, american_to_decimal
+        from src.grading import calculate_clv
 
         closing_american = closing.get("price")
         closing_decimal = closing.get("decimal_odds") or (
@@ -2057,24 +2298,43 @@ def capture_closing_prices(
             american_to_probability(closing_american) if closing_american else None
         )
 
-        # Determine line move type
-        line_move_type = "same_line"
-        if bet_line is not None and closing_line is not None and bet_line != closing_line:
-            line_move_type = "line_changed"
-        elif closing_american is None:
-            line_move_type = "no_close"
+        # If the market's representative line moved away from our bet's
+        # line, check whether any book still quotes our EXACT original
+        # line as an alt line at close — that's a genuinely correct
+        # same-line price comparison, not a fallback/approximation.
+        # Restricted to the SAME capture batch as the representative
+        # closing row (one scan run stamps all its rows with one
+        # captured_at): otherwise this would just re-find the bet's own
+        # original, long-stale snapshot at that line and wrongly treat
+        # a book that no longer offers it as if it still did.
+        exact_line_closing_american = None
+        closing_captured_at = closing.get("captured_at")
+        if (bet_line is not None and closing_line is not None
+                and bet_line != closing_line and closing_captured_at is not None):
+            exact_cur = conn.execute(
+                """SELECT price FROM player_prop_odds
+                   WHERE event_id = ? AND player_id = ? AND market_type = ?
+                      AND LOWER(side) = LOWER(?) AND available = 1 AND line = ?
+                      AND captured_at = ?
+                   ORDER BY captured_at DESC LIMIT 1""",
+                (rec.get("event_id"), rec.get("player_id"), rec.get("market_type"),
+                 rec.get("side", "").lower(), bet_line, closing_captured_at),
+            )
+            exact_row = exact_cur.fetchone()
+            if exact_row:
+                exact_line_closing_american = exact_row["price"]
 
-        # Calculate CLV
-        clv_prob = None
-        clv_price = None
-        clv_available = False
-
-        if (closing_american is not None and bet_american is not None
-                and line_move_type == "same_line"):
-            bet_prob = american_to_probability(bet_american)
-            clv_prob = round(bet_prob - closing_implied, 6)
-            clv_price = closing_american - bet_american
-            clv_available = True
+        clv_result = calculate_clv(
+            bet_american, bet_line, closing_american, closing_line,
+            market_type=rec.get("market_type"), side=rec.get("side"),
+            raw_line=rec.get("raw_line"), closing_raw_line=None,
+            exact_line_closing_american=exact_line_closing_american,
+        )
+        line_move_type = clv_result["line_move_type"] or "no_close"
+        clv_prob = clv_result["clv_probability"]
+        clv_price = clv_result["clv_price_diff"]
+        clv_available = clv_result["clv_available"]
+        line_movement_direction = clv_result["line_movement_direction"]
 
         if snapshot_kind == "final":
             save_closing_price(
@@ -2089,6 +2349,7 @@ def capture_closing_prices(
                 clv_probability=clv_prob,
                 clv_price_diff=clv_price,
                 clv_available=clv_available,
+                line_movement_direction=line_movement_direction,
             )
             captured += 1
 
@@ -2105,6 +2366,7 @@ def capture_closing_prices(
                 "line_move_type": line_move_type,
                 "clv_probability": clv_prob,
                 "clv_price_diff": clv_price,
+                "line_movement_direction": line_movement_direction,
             },
             line_move_type=line_move_type,
             closing_available=True,

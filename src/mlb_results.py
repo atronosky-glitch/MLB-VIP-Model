@@ -244,10 +244,27 @@ def ingest_results_for_recommendations(conn, recommendations: list[dict], client
                 stats["errors"] += 1
                 reasons["game_feed_error"] += 1
                 continue
-            status = ((feed.get("gameData") or {}).get("status") or {}).get("abstractGameState")
+            status_obj = ((feed.get("gameData") or {}).get("status") or {})
+            status = status_obj.get("abstractGameState")
             if status != "Final":
-                stats["unresolved"] += 1
-                reasons["game_not_final"] += 1
+                # MLB StatsAPI's detailedState is more granular than
+                # abstractGameState ("Postponed"/"Suspended"/"Cancelled" vs
+                # just "Preview"/"Live"/"Final") — same status object
+                # already being read above, not a new API surface. Persist
+                # a void game explicitly so its recommendations settle as
+                # VOID (src/game_settlement.py) instead of staying
+                # UNRESOLVED forever. Anything unrecognized stays
+                # unresolved rather than guessed.
+                detailed = (status_obj.get("detailedState") or "").upper()
+                if detailed in ("POSTPONED", "SUSPENDED", "CANCELLED", "CANCELED"):
+                    save_event_result(
+                        conn, event_id, final_status=detailed, result_source=RESULT_SOURCE,
+                    )
+                    stats["games_final"] += 1  # void is a terminal state too
+                    reasons["game_not_final"] += 0  # not counted as "not final yet"
+                else:
+                    stats["unresolved"] += 1
+                    reasons["game_not_final"] += 1
                 continue
             feeds[event_id] = feed
             stats["games_final"] += 1

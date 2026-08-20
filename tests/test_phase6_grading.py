@@ -36,6 +36,7 @@ from src.grading import (
     grade_ou,
     grade_yn,
     calculate_clv,
+    classify_line_movement,
     performance_summary,
     breakdown_by_field,
     assign_bucket,
@@ -125,6 +126,8 @@ def db():
             applicable_edge_threshold REAL DEFAULT 0.0,
             model_score_threshold REAL DEFAULT 8.0,
             qualification_rules_version TEXT DEFAULT '',
+            league TEXT DEFAULT 'MLB', sport TEXT DEFAULT 'baseball',
+            raw_line REAL, confidence_score REAL, confidence_grade TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_hr_fingerprint ON historical_recommendations(fingerprint);
@@ -168,7 +171,7 @@ def db():
             closing_line REAL, closing_observed_at TEXT,
             closing_sportsbook TEXT, line_move_type TEXT,
             clv_probability REAL, clv_price_diff INTEGER,
-            clv_available INTEGER DEFAULT 0,
+            clv_available INTEGER DEFAULT 0, line_movement_direction TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS manual_override_audit (
@@ -495,6 +498,71 @@ class TestCLV:
         assert result["line_move_type"] == "same_line"
         assert result["clv_probability"] < 0  # price shortened
 
+    def test_exact_line_closing_american_used_when_representative_line_moved(self):
+        # Representative market moved from 5.5 to 6.5, but a book still
+        # quoted our exact original 5.5 as an alt line at close: that's a
+        # genuinely correct same-line comparison, not "line_changed".
+        result = calculate_clv(
+            -110, 5.5, -110, 6.5,
+            exact_line_closing_american=-105,
+        )
+        assert result["clv_available"] is True
+        assert result["line_move_type"] == "same_line"
+        assert result["clv_price_diff"] == 5  # -105 - (-110)
+        assert result["line_movement_direction"] is None
+
+    def test_line_changed_without_exact_line_reports_direction_not_fabricated_price(self):
+        result = calculate_clv(
+            -110, 5.5, -105, 6.5,
+            market_type="player_points_ou", side="OVER",
+        )
+        assert result["clv_available"] is False
+        assert result["line_move_type"] == "line_changed"
+        # OVER 5.5 -> OVER 6.5: bettor locked in the easier (lower) number
+        # before it rose -> favorable CLV, even though price CLV can't be
+        # computed at mismatched lines.
+        assert result["line_movement_direction"] == "favorable"
+        assert result["clv_probability"] is None
+        assert result["clv_price_diff"] is None
+
+
+class TestClassifyLineMovement:
+    def test_missing_data_is_unknown(self):
+        assert classify_line_movement("player_points_ou", "OVER", None, 5.5) == "unknown"
+        assert classify_line_movement("player_points_ou", "OVER", 5.5, None) == "unknown"
+
+    def test_no_movement_is_neutral(self):
+        assert classify_line_movement("player_points_ou", "OVER", 5.5, 5.5) == "neutral"
+
+    def test_over_favorable_when_line_rises(self):
+        assert classify_line_movement("player_points_ou", "OVER", 5.5, 6.5) == "favorable"
+
+    def test_over_unfavorable_when_line_falls(self):
+        assert classify_line_movement("player_points_ou", "OVER", 5.5, 4.5) == "unfavorable"
+
+    def test_under_favorable_when_line_falls(self):
+        assert classify_line_movement("player_points_ou", "UNDER", 5.5, 4.5) == "favorable"
+
+    def test_under_unfavorable_when_line_rises(self):
+        assert classify_line_movement("player_points_ou", "UNDER", 5.5, 6.5) == "unfavorable"
+
+    def test_spread_favorable_when_signed_raw_line_falls(self):
+        # Favorite -3.5 tightening to -2.5 is UNFAVORABLE for the favorite
+        # (raw_line rose from -3.5 to -2.5), regardless of side label.
+        assert classify_line_movement("game_spread_ou", "home", -3.5, -2.5) == "unfavorable"
+        # Favorite -3.5 drifting to -4.5 is FAVORABLE (raw_line fell).
+        assert classify_line_movement("game_spread_ou", "home", -3.5, -4.5) == "favorable"
+
+    def test_spread_direction_independent_of_favorite_or_underdog(self):
+        # Underdog +3.5 drifting to +4.5: raw_line rose -> unfavorable for
+        # whichever side holds that raw_line, same rule as the favorite.
+        assert classify_line_movement("game_spread_ou", "away", 3.5, 4.5) == "unfavorable"
+        assert classify_line_movement("game_spread_ou", "away", 3.5, 2.5) == "favorable"
+
+    def test_unrecognized_side_is_unknown(self):
+        assert classify_line_movement("player_points_ou", "", 5.5, 6.5) == "unknown"
+        assert classify_line_movement("player_points_ou", None, 5.5, 6.5) == "unknown"
+
 
 # ==================================================================
 # 7. Buckets
@@ -678,6 +746,42 @@ class TestPerformanceSummary:
         s = performance_summary(recs)
         assert s["settled"] == 2  # WIN + PUSH
         assert s["win_rate"] == 0.5  # 1/2
+
+    def test_pct_beating_close_uses_price_clv_when_available(self):
+        recs = [
+            {"settlement_status": "WIN", "risk_units": 1.0, "profit_units": 0.9,
+             "clv_probability": 0.02},
+            {"settlement_status": "LOSS", "risk_units": 1.0, "profit_units": -1.0,
+             "clv_probability": -0.01},
+        ]
+        s = performance_summary(recs)
+        assert s["pct_beating_close"] == 0.5
+
+    def test_pct_beating_close_falls_back_to_line_movement_direction(self):
+        # No price CLV (line moved, no exact-line match) but the bettor
+        # still captured the more favorable original number.
+        recs = [
+            {"settlement_status": "WIN", "risk_units": 1.0, "profit_units": 0.9,
+             "clv_probability": None, "line_movement_direction": "favorable"},
+            {"settlement_status": "LOSS", "risk_units": 1.0, "profit_units": -1.0,
+             "clv_probability": None, "line_movement_direction": "unfavorable"},
+        ]
+        s = performance_summary(recs)
+        assert s["pct_beating_close"] == 0.5
+
+    def test_pct_beating_close_excludes_recs_with_no_closing_evidence(self):
+        recs = [
+            {"settlement_status": "WIN", "risk_units": 1.0, "profit_units": 0.9},
+            {"settlement_status": "LOSS", "risk_units": 1.0, "profit_units": -1.0,
+             "clv_probability": -0.01},
+        ]
+        s = performance_summary(recs)
+        assert s["pct_beating_close"] == 0.0  # only the 1 rec with evidence, and it lost
+
+    def test_pct_beating_close_none_when_no_evidence_at_all(self):
+        recs = [{"settlement_status": "WIN", "risk_units": 1.0, "profit_units": 0.9}]
+        s = performance_summary(recs)
+        assert s["pct_beating_close"] is None
 
     def test_pushes_excluded_from_risked(self):
         recs = [

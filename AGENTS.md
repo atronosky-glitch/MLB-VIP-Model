@@ -2,7 +2,7 @@
 
 ## Project purpose
 
-This project is an MLB sportsbook market-analysis platform that identifies:
+This project is a multi-league sportsbook market-analysis platform that identifies:
 
 - sportsbook pricing outliers
 - positive expected-value opportunities
@@ -11,6 +11,16 @@ This project is an MLB sportsbook market-analysis platform that identifies:
 - market disagreement
 
 It is not primarily a game-winner prediction model.
+
+MLB is the only league in active production. NFL and WNBA both have
+verified market registries and settlement adapters (`src/sports/nfl.py` +
+`src/nfl_results.py`; `src/sports/wnba.py` + `src/wnba_results.py`, the
+latter via a different data provider — The Odds API, not SportsGameOdds)
+but neither runs on a production schedule yet. See `AI_CONTEXT.md` →
+"Multi-League Architecture" and `docs/MARKET_CAPABILITY.md`.
+Adding a new league (or a new market to an existing one) always starts with
+verifying real, live API data — never guess from documentation or another
+league's pattern.
 
 ## Current architecture
 
@@ -57,12 +67,16 @@ SportsGameOdds API (v2)
   → src/control_panel.py       (Streamlit local UI — one-click run, recommendations, status, safety, market intelligence, adaptive learning tabs)
   → src/adaptive_learning.py   (adaptive learning engine — grade analysis, score calibration, learning recommendations, champion/challenger, versioning, safety)
   → src/worker.py              (background worker — persistent/one-shot/specific-job, heartbeat, scheduling, stale-job recovery)
+  → src/sports/                (per-league adapters — base.py generic MarketConfig/matching,
+                                 mlb.py/nfl.py/wnba.py; see AI_CONTEXT.md "Multi-League Architecture")
+  → src/nfl_results.py         (NFL settlement — ESPN public API, mirrors mlb_results.py)
   → main.py                    (CLI entry point)
-  → tests/                     (1389 tests, isolated in-memory DB)
+  → tests/                     (1549+ tests, isolated in-memory DB — see PROJECT_STATUS.md for current count)
 ```
 
 Phase 17B is complete — PostgreSQL migration for production (dual-mode with SQLite for local/tests).
-Future stages: alt-line scanning, website, multi-league support.
+Multi-league architecture is complete (2026-08-19) — NFL added, WNBA blocked on data-provider access.
+Future stages: alt-line scanning, website, running NFL live in production, WNBA data-access decision.
 
 ## Non-negotiable engineering rules
 

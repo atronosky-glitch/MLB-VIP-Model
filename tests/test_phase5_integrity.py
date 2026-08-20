@@ -263,7 +263,7 @@ def _run_scan_with_mocks(events: list[dict], odds_map: dict,
         mock_cls.return_value.get_events.return_value = ({"data": events}, False)
         mock_pfc.return_value.get_mlb_props.return_value = None
 
-        def _parse_side(event):
+        def _parse_side(event, registry=None):
             eid = event.get("eventID", "")
             return ParsedPlayerPropResult(
                 odds_rows=odds_map.get(eid, []), audit_rows=[],

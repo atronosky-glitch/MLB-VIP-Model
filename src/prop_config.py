@@ -10,7 +10,7 @@ look up markets from this registry rather than hard-coding market types.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from src.sports.base import MarketConfig, match_ou_market as _base_match_ou_market, match_yn_market as _base_match_yn_market
 
 # ── Market quality ────────────────────────────────────────────────
 
@@ -141,77 +141,20 @@ CONFIDENCE_WEIGHTS = {
 # Each supported player-prop market is described by a MarketConfig.
 # The parser and scanner look up markets from this registry.
 
-@dataclass(frozen=True)
-class MarketConfig:
-    """Configuration for a single player-prop market type."""
-    cli_name: str               # CLI identifier (e.g. "strikeouts")
-    odd_id_stat_prefix: str     # API oddID stat prefix (e.g. "pitching_strikeouts")
-    market_type_ou: str         # DB market_type for O/U (e.g. "pitching_strikeouts_ou")
-    market_type_yn: str | None  # DB market_type for YN, or None if no YN variant
-    display_name: str           # Human-readable name (e.g. "Pitcher Strikeouts")
-    short_label: str            # Scanner column label (e.g. "K")
-    period: str                 # Supported period (e.g. "game")
-    scanner_title: str = ""     # Scanner header (e.g. "MLB PITCHER STRIKEOUTS EDGE SCANNER")
-    allowed_sides_ou: tuple[str, ...] = ("over", "under")
-    allowed_sides_yn: tuple[str, ...] = ("yes", "no")
-    min_comparison_books_ou: int = 4   # O/U: need this many OTHER books
-    min_comparison_books_yn: int = 3   # YN: need this many OTHER books
-    supports_ou: bool = True
-    supports_yn: bool = True
-    game_level: bool = False                    # game-level market (not a player prop)
-    entity: tuple[str, ...] | None = None       # allowed statEntityID values; None = any
-    bet_type: str = "ou"                        # oddID betType segment ("ou", "ml", "sp")
-    internal_side_map: dict[str, str] | None = None  # row side -> group dict slot (e.g. AWAY->over)
-    group_sides: tuple[str, str] | None = None  # display side labels for the two group slots
-
-
-def _match_odd_id(
-    odd_id: str,
-    stat_prefix: str,
-    period: str,
-    bet_type: str,
-    allowed_sides: tuple[str, ...],
-    entity: tuple[str, ...] | None = None,
-) -> bool:
-    """Check if an odd_id matches a market pattern."""
-    parts = odd_id.rsplit("-", 4)
-    if len(parts) < 5:
-        return False
-    # Reconstruct the stat prefix from the odd_id
-    if len(parts) > 4:
-        stat_full = "-".join(parts[:-4])
-    else:
-        stat_full = parts[0]
-    if stat_full != stat_prefix:
-        return False
-    if parts[-3] != period:
-        return False
-    if parts[-2] != bet_type:
-        return False
-    if parts[-1] not in allowed_sides:
-        return False
-    if entity is not None and parts[-4] not in entity:
-        return False
-    return True
+# MarketConfig itself is sport-agnostic and now lives in src/sports/base.py
+# (imported above) since NFL/WNBA/future-league registries need the exact
+# same dataclass. Re-exported here unchanged so every existing
+# ``from src.prop_config import MarketConfig`` import keeps working.
 
 
 def match_ou_market(odd_id: str) -> MarketConfig | None:
-    """Return the MarketConfig if odd_id matches a registered O/U market."""
-    for cfg in MARKET_REGISTRY:
-        if cfg.supports_ou and _match_odd_id(
-            odd_id, cfg.odd_id_stat_prefix, cfg.period, cfg.bet_type,
-            cfg.allowed_sides_ou, cfg.entity,
-        ):
-            return cfg
-    return None
+    """Return the MarketConfig if odd_id matches a registered O/U market in MLB's registry."""
+    return _base_match_ou_market(MARKET_REGISTRY, odd_id)
 
 
 def match_yn_market(odd_id: str) -> MarketConfig | None:
-    """Return the MarketConfig if odd_id matches a registered YN market."""
-    for cfg in MARKET_REGISTRY:
-        if cfg.supports_yn and cfg.market_type_yn and _match_odd_id(odd_id, cfg.odd_id_stat_prefix, cfg.period, "yn", cfg.allowed_sides_yn):
-            return cfg
-    return None
+    """Return the MarketConfig if odd_id matches a registered YN market in MLB's registry."""
+    return _base_match_yn_market(MARKET_REGISTRY, odd_id)
 
 
 # ── Registry contents ──────────────────────────────────────────────

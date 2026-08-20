@@ -87,22 +87,31 @@ class ParsedPlayerPropResult:
 # Public entry point
 # ==================================================================
 
-def parse_player_props(event: dict) -> ParsedPlayerPropResult:
+def parse_player_props(event: dict, registry: list | None = None) -> ParsedPlayerPropResult:
     """Flatten one event's player-prop O/U and YN markets.
 
-    Uses the market registry from ``prop_config`` to detect which oddIDs
-    belong to supported markets.
+    Uses *registry* (a list of ``MarketConfig``) to detect which oddIDs
+    belong to supported markets. Defaults to MLB's registry
+    (``prop_config.MARKET_REGISTRY``) when omitted, so every existing
+    caller keeps its exact current behavior; pass another league's
+    registry (e.g. ``src.sports.nfl.MARKET_REGISTRY``) to parse that
+    league's markets instead.
 
     Returns a ``ParsedPlayerPropResult`` with separate ``odds_rows``
     (approved) and ``audit_rows`` (all attempted rows with reasons).
     """
-    from . import prop_config as cfg
+    from .sports.base import match_ou_market, match_yn_market
+
+    if registry is None:
+        from . import prop_config as cfg
+        registry = cfg.MARKET_REGISTRY
 
     event_id = event.get("eventID") or event.get("id")
     if not event_id:
         return ParsedPlayerPropResult()
 
     teams = _resolve_teams(event)
+    players_map = event.get("players", {}) or {}
     odds_map = event.get("odds", {}) or {}
     if not odds_map:
         return ParsedPlayerPropResult()
@@ -115,7 +124,7 @@ def parse_player_props(event: dict) -> ParsedPlayerPropResult:
             continue
 
         # ── Try O/U markets from registry ──
-        ou_match = cfg.match_ou_market(odd_id)
+        ou_match = match_ou_market(registry, odd_id)
         if ou_match is not None:
             _process_ou_market(
                 event_id=event_id,
@@ -126,11 +135,12 @@ def parse_player_props(event: dict) -> ParsedPlayerPropResult:
                 odds_rows=odds_rows,
                 audit_rows=audit_rows,
                 mc=ou_match,
+                players_map=players_map,
             )
             continue
 
         # ── Try YN markets from registry ──
-        yn_match = cfg.match_yn_market(odd_id)
+        yn_match = match_yn_market(registry, odd_id)
         if yn_match is not None:
             _process_yn_market(
                 event_id=event_id,
@@ -140,6 +150,7 @@ def parse_player_props(event: dict) -> ParsedPlayerPropResult:
                 market_type=yn_match.market_type_yn,
                 odds_rows=odds_rows,
                 audit_rows=audit_rows,
+                players_map=players_map,
             )
             continue
 
@@ -254,6 +265,7 @@ def _process_entry(
         "market_group_key": group_key or "",
         "side": side or side_raw or "",
         "line": line,
+        "raw_line": _resolve_raw_line(book_data),
         "price": price,
         "decimal_odds": decimal_odds,
         "is_alt_line": is_alt_line,
@@ -289,6 +301,7 @@ def _process_ou_market(
     odds_rows: list[dict],
     audit_rows: list[dict],
     mc=None,
+    players_map: dict | None = None,
 ) -> None:
     """Process one O/U odd_id (both main and alt lines).
 
@@ -304,9 +317,7 @@ def _process_ou_market(
         player_name = game_mc.display_name
     else:
         player_id = odd_data.get("playerID", "") or ""
-        player_names = (odd_data.get("playerNames", {}) or {})
-        player_name = (player_names.get("full", "") or player_names.get("short", "")
-                       or _extract_player_name_from_market(odd_data) or "")
+        player_name = _resolve_player_name(odd_data, player_id, players_map)
 
     side_raw = _extract_side(odd_id)
     side = _SIDE_MAP.get(side_raw, None)
@@ -383,12 +394,11 @@ def _process_yn_market(
     market_type: str,
     odds_rows: list[dict],
     audit_rows: list[dict],
+    players_map: dict | None = None,
 ) -> None:
     """Process one YN odd_id (no alt lines, line is always None)."""
     player_id = odd_data.get("playerID", "") or ""
-    player_names = (odd_data.get("playerNames", {}) or {})
-    player_name = (player_names.get("full", "") or player_names.get("short", "")
-                   or _extract_player_name_from_market(odd_data) or "")
+    player_name = _resolve_player_name(odd_data, player_id, players_map)
 
     side_raw = _extract_side(odd_id)
     side = _SIDE_MAP.get(side_raw, None)
@@ -621,6 +631,28 @@ def _resolve_line(book_data: dict) -> float | None:
         return None
 
 
+def _resolve_raw_line(book_data: dict) -> float | None:
+    """Signed counterpart to ``_resolve_line`` — same value, sign preserved.
+
+    ``_resolve_line`` abs-values a run-line spread so Over/Under-style
+    grouping can pair away/home at the same magnitude. That's correct for
+    EV analysis but loses the favorite/underdog direction needed for
+    settlement (see ``src/game_settlement.py::grade_spread``), so this
+    keeps the true signed value alongside it. For overUnder-based markets
+    (totals, player props) there's no sign to lose — this returns the
+    same value as ``_resolve_line``.
+    """
+    val = book_data.get("overUnder")
+    if val is None:
+        val = book_data.get("spread")
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def _parse_price(price_raw) -> int | None:
     """Parse American odds to int."""
     try:
@@ -701,11 +733,42 @@ def _build_yn_group_key(event_id: str, player_id: str, market_type: str = "pitch
     return f"{event_id}|{player_id}|{market_type}|game"
 
 
+def _resolve_player_name(odd_data: dict, player_id: str, players_map: dict | None) -> str:
+    """Resolve a player's display name, most-reliable source first.
+
+    1. ``event.players[playerID].name`` — a structured, sport-agnostic
+       identity field verified present on live SportsGameOdds events for
+       every league checked (MLB, NFL); the most reliable source since it
+       requires no text parsing.
+    2. ``odd_data.playerNames.full``/``.short`` — a structured per-odd
+       field, populated on some rows/leagues but not others (verified
+       absent for the NFL sample checked 2026-08-19).
+    3. ``_extract_player_name_from_market`` — last-resort suffix parsing
+       of ``marketName``, needed when neither structured source is
+       populated.
+    """
+    if players_map and player_id:
+        entry = players_map.get(player_id)
+        if isinstance(entry, dict):
+            name = (entry.get("name") or "").strip()
+            if name:
+                return name
+    player_names = (odd_data.get("playerNames", {}) or {})
+    return (player_names.get("full", "") or player_names.get("short", "")
+            or _extract_player_name_from_market(odd_data) or "")
+
+
 def _extract_player_name_from_market(odd_data: dict) -> str:
     """Extract player name from the marketName field.
 
     marketName is like "Jack Flaherty Strikeouts Over/Under".
     The player name is everything before "Strikeouts" (or similar suffix).
+
+    Last-resort fallback only — ``_resolve_player_name`` tries
+    ``event.players[playerID].name`` first, which is reliable and
+    sport-agnostic. This suffix list is MLB-specific and intentionally not
+    extended per league; a new league needing this fallback should extend
+    the list with its own verified suffixes rather than guess.
     """
     market_name = (odd_data.get("marketName", "") or "").strip()
     if not market_name:

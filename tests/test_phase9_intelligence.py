@@ -105,6 +105,7 @@ def db_conn():
             closing_observed_at TEXT, closing_sportsbook TEXT,
             line_move_type TEXT, clv_probability REAL,
             clv_price_diff INTEGER, clv_available INTEGER NOT NULL DEFAULT 0,
+            line_movement_direction TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_cp_rec ON closing_prices(recommendation_id);
@@ -255,6 +256,84 @@ class TestCLVCapture:
         ).fetchone()
         assert row is not None
         assert row["closing_american"] == -115
+
+    def test_exact_line_still_quoted_in_closing_batch_gives_same_line_clv(self, db_conn):
+        from database.db_manager import capture_closing_prices
+        # Representative line moved to 6.5 in the closing batch, but the
+        # SAME closing batch (same captured_at) still quotes our exact
+        # original 5.5 as an alt line -> genuinely correct same-line CLV.
+        db_conn.executemany(
+            """INSERT INTO player_prop_odds
+               (event_id, odd_id, sportsbook, player_id, player_name,
+                market_type, market_group_key, side, line, price,
+                decimal_odds, is_alt_line, available, validation_status,
+                captured_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("EVT001", "pitching_strikeouts-P1-game-ou-over-6.5", "draftkings",
+                 "PLAYER_1", "Test Player", "pitching_strikeouts_ou",
+                 "EVT001|PLAYER_1|pitching_strikeouts_ou|game",
+                 "over", 6.5, -110, 1.9091, 0, 1, "VALID", "2026-07-23T19:00:00"),
+                ("EVT001", "pitching_strikeouts-P1-game-ou-over-5.5", "draftkings",
+                 "PLAYER_1", "Test Player", "pitching_strikeouts_ou",
+                 "EVT001|PLAYER_1|pitching_strikeouts_ou|game",
+                 "over", 5.5, -105, 1.9524, 1, 1, "VALID", "2026-07-23T19:00:00"),
+            ],
+        )
+        db_conn.commit()
+
+        _insert_recommendation(db_conn, "REC001")  # bet line 5.5
+        rec = dict(db_conn.execute(
+            "SELECT * FROM historical_recommendations WHERE recommendation_id = 'REC001'"
+        ).fetchone())
+        captured = capture_closing_prices(db_conn, [rec])
+        assert captured == 1
+        row = db_conn.execute(
+            "SELECT * FROM closing_prices WHERE recommendation_id = 'REC001'"
+        ).fetchone()
+        assert row["line_move_type"] == "same_line"
+        assert row["clv_available"] == 1
+        assert row["clv_price_diff"] == 5  # -105 - (-110)
+        assert row["line_movement_direction"] is None
+
+    def test_stale_exact_line_from_earlier_batch_is_not_treated_as_still_quoted(self, db_conn):
+        from database.db_manager import capture_closing_prices
+        # An EARLIER batch quoted our exact 5.5 line, but the book stopped
+        # offering it by the time of the actual closing batch (6.5 only).
+        # Must NOT be picked up as "still quoted at close".
+        db_conn.executemany(
+            """INSERT INTO player_prop_odds
+               (event_id, odd_id, sportsbook, player_id, player_name,
+                market_type, market_group_key, side, line, price,
+                decimal_odds, is_alt_line, available, validation_status,
+                captured_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("EVT001", "pitching_strikeouts-P1-game-ou-over-5.5-early", "draftkings",
+                 "PLAYER_1", "Test Player", "pitching_strikeouts_ou",
+                 "EVT001|PLAYER_1|pitching_strikeouts_ou|game",
+                 "over", 5.5, -110, 1.9091, 0, 1, "VALID", "2026-07-23T13:00:00"),
+                ("EVT001", "pitching_strikeouts-P1-game-ou-over-6.5-close", "draftkings",
+                 "PLAYER_1", "Test Player", "pitching_strikeouts_ou",
+                 "EVT001|PLAYER_1|pitching_strikeouts_ou|game",
+                 "over", 6.5, -110, 1.9091, 0, 1, "VALID", "2026-07-23T19:00:00"),
+            ],
+        )
+        db_conn.commit()
+
+        _insert_recommendation(db_conn, "REC001")  # bet line 5.5
+        rec = dict(db_conn.execute(
+            "SELECT * FROM historical_recommendations WHERE recommendation_id = 'REC001'"
+        ).fetchone())
+        captured = capture_closing_prices(db_conn, [rec])
+        assert captured == 1
+        row = db_conn.execute(
+            "SELECT * FROM closing_prices WHERE recommendation_id = 'REC001'"
+        ).fetchone()
+        assert row["line_move_type"] == "line_changed"
+        assert row["clv_available"] == 0
+        # OVER 5.5 -> 6.5: bettor locked in the easier number -> favorable.
+        assert row["line_movement_direction"] == "favorable"
 
     def test_capture_skips_existing(self, db_conn):
         from database.db_manager import capture_closing_prices

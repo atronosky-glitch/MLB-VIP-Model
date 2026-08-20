@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import NamedTuple
 
 from . import prop_config as cfg
+from .sports.base import build_lookup_maps
 from .api_client import SportsGameOddsClient
 from .player_prop_parser import parse_player_props
 from .player_prop_analysis import analyze_prop_group, analyze_yn_group, is_pinnacle_book
@@ -180,7 +181,7 @@ class ResolvedMarkets(NamedTuple):
     market_configs: list[cfg.MarketConfig]
 
 
-def resolve_markets(market: str, form: str) -> ResolvedMarkets:
+def resolve_markets(market: str, form: str, registry: list | None = None) -> ResolvedMarkets:
     """Validate and resolve market + form into a list of MarketConfig objects.
 
     Parameters
@@ -190,6 +191,11 @@ def resolve_markets(market: str, form: str) -> ResolvedMarkets:
         ``"walks_allowed"``, ``"earned_runs"``) or ``"all"``.
     form : str
         ``"ou"``, ``"yn"``, or ``"all"``.
+    registry : list[MarketConfig] or None
+        Defaults to MLB's ``cfg.MARKET_REGISTRY`` when omitted, so every
+        existing caller keeps its exact current behavior. Pass another
+        league's registry (e.g. ``src.sports.nfl.MARKET_REGISTRY``) to
+        resolve markets for that league instead.
 
     Returns
     -------
@@ -200,7 +206,10 @@ def resolve_markets(market: str, form: str) -> ResolvedMarkets:
     SystemExit
         If market name is invalid or the combination is unsupported.
     """
-    valid_cli = [m.cli_name for m in cfg.MARKET_REGISTRY]
+    if registry is None:
+        registry = cfg.MARKET_REGISTRY
+    cli_map, _ou_map, _yn_map = build_lookup_maps(registry)
+    valid_cli = [m.cli_name for m in registry]
     valid_forms = ("ou", "yn", "all")
 
     if market not in valid_cli and market != "all":
@@ -213,9 +222,9 @@ def resolve_markets(market: str, form: str) -> ResolvedMarkets:
         sys.exit(1)
 
     if market == "all":
-        configs = list(cfg.MARKET_REGISTRY)
+        configs = list(registry)
     else:
-        mc = cfg.get_market_by_cli_name(market)
+        mc = cli_map.get(market)
         if mc is None:
             print(f"ERROR: Unknown market '{market}'", file=sys.stderr)
             sys.exit(1)
@@ -263,9 +272,13 @@ def _accepted_market_types(resolved: ResolvedMarkets) -> set[str]:
 # Core scan
 # ==================================================================
 
-def _group_side(side: str, market_type: str) -> str:
+def _group_side(side: str, market_type: str, registry: list | None = None) -> str:
     """Map registry-defined game sides into the generic two-sided slots."""
-    market = cfg.get_market_by_ou_type(market_type)
+    if registry is None:
+        market = cfg.get_market_by_ou_type(market_type)
+    else:
+        _cli_map, ou_map, _yn_map = build_lookup_maps(registry)
+        market = ou_map.get(market_type)
     mapping = getattr(market, "internal_side_map", None) if market else None
     return (mapping or {}).get(side, side)
 
@@ -280,6 +293,7 @@ def run_scan(
     player: str | None = None,
     game: str | None = None,
     event_id: str | None = None,
+    league: str = "MLB",
 ) -> dict:
     """Run the full generic scanner pipeline.
 
@@ -303,6 +317,10 @@ def run_scan(
     game : str or None
         Case-insensitive filter.  Only show rows from events matching
         this substring (team name or event ID).
+    league : str
+        League to scan (``"MLB"``, ``"NFL"``, ...). Defaults to ``"MLB"``
+        so every existing caller keeps its exact current behavior.
+        Resolves that league's market registry via ``src.sports.get_league``.
 
     Returns
     -------
@@ -312,7 +330,11 @@ def run_scan(
         age_seconds, stale_warning, research_only, scanner_title,
         n_approved_rows, n_excluded_rows.
     """
-    resolved = resolve_markets(market, market_form)
+    from .sports import get_league
+    league_mod = get_league(league)
+    registry = league_mod.get_market_registry()
+
+    resolved = resolve_markets(market, market_form, registry=registry)
     accepted_types = _accepted_market_types(resolved)
 
     scan_start = datetime.now(timezone.utc)
@@ -331,25 +353,32 @@ def run_scan(
     except Exception:
         logger.debug("Could not create run record (DB may be unavailable)")
 
-    client = SportsGameOddsClient(max_cache_age=cfg.LIVE_CACHE_TTL_SECONDS)
+    odds_provider = getattr(league_mod, "ODDS_PROVIDER", "sportsgameodds")
+    logger.info("Fetching %s events (provider=%s)...", league, odds_provider)
 
-    logger.info("Fetching MLB events...")
-    data, from_cache = client.get_events(
-        league="MLB", event_id=event_id,
-        odds_available=True, include_alt_lines=True,
-    )
+    if odds_provider == "sportsgameodds":
+        client = SportsGameOddsClient(max_cache_age=cfg.LIVE_CACHE_TTL_SECONDS)
+        data, from_cache = client.get_events(
+            league=league, event_id=event_id,
+            odds_available=True, include_alt_lines=True,
+        )
+        events = data.get("data", data.get("events", [])) or []
+
+        all_odds: list[dict] = []
+        all_audit: list[dict] = []
+        for event in events:
+            parsed = parse_player_props(event, registry=registry)
+            all_odds.extend(parsed.odds_rows)
+            all_audit.extend(parsed.audit_rows)
+    else:
+        # A league with its own odds provider (different wire format —
+        # e.g. WNBA via The Odds API) exposes fetch_and_parse() directly,
+        # already returning generic odds rows plus events normalized to a
+        # shape _build_event_map() already accepts.
+        all_odds, all_audit, events, from_cache = league_mod.fetch_and_parse(event_id=event_id)
+
     data_source = "CACHE" if from_cache else "LIVE API"
     fetch_time = datetime.now(timezone.utc)
-
-    events = data.get("data", data.get("events", [])) or []
-
-    # Parse all events
-    all_odds: list[dict] = []
-    all_audit: list[dict] = []
-    for event in events:
-        parsed = parse_player_props(event)
-        all_odds.extend(parsed.odds_rows)
-        all_audit.extend(parsed.audit_rows)
 
     # Preserve raw approved prop quotes and audit rows so later pregame/final
     # scans can calculate CLV from the exact historical market evidence.
@@ -409,6 +438,7 @@ def run_scan(
     excluded_count = 0
     approved_count = 0
     seen_books: set[str] = set()
+    _cli_map, _ou_type_map, _yn_type_map = build_lookup_maps(registry)
 
     for row in all_odds:
         if row["validation_status"] not in APPROVED_STATUSES:
@@ -423,7 +453,7 @@ def run_scan(
         key = row["market_group_key"]
         market_type = row["market_type"]
 
-        if cfg.get_market_by_yn_type(market_type) is not None:
+        if market_type in _yn_type_map:
             if key not in yn_groups:
                 yn_groups[key] = {"yes": {}, "player_id": row["player_id"],
                                   "player_name": row["player_name"],
@@ -439,7 +469,7 @@ def run_scan(
                     "decimal_odds": row["decimal_odds"],
                     "validation_status": row["validation_status"],
                 }
-        elif cfg.get_market_by_ou_type(market_type) is not None:
+        elif market_type in _ou_type_map:
             if key not in ou_groups:
                 ou_groups[key] = {"over": {}, "under": {}, "line": row["line"],
                                   "player_id": row["player_id"],
@@ -447,12 +477,30 @@ def run_scan(
                                   "event_id": row["event_id"],
                                    "market_type": market_type,
                                    "observation_times": [],
-                                   "display_sides": {}}
+                                   "display_sides": {},
+                                   # Signed line (favorite/underdog direction), one
+                                   # per internal slot — AWAY/HOME (or OVER/UNDER)
+                                   # have opposite signs on a spread, so this can't
+                                   # be a single group-level value like "line" is.
+                                   # Only spreads populate this; totals/player O/U
+                                   # props leave both None (no sign concept — see
+                                   # src/game_settlement.py).
+                                   "side_raw_line": {},
+                                   # Player-identity mapping confidence (HIGH/MEDIUM
+                                   # from src.player_identity — LOW/UNRESOLVED never
+                                   # reach here, already filtered at parse time).
+                                   # One player per group, so a single group-level
+                                   # value is correct, unlike the signed raw_line.
+                                   "mapping_confidence": row.get("mapping_confidence")}
             if row.get("observation_time"):
                 ou_groups[key]["observation_times"].append(row["observation_time"])
             source_side = row["side"]
-            side = _group_side(source_side, market_type)
+            side = _group_side(source_side, market_type, registry=registry)
             ou_groups[key]["display_sides"][side.lower()] = source_side
+            if row.get("raw_line") is not None:
+                ou_groups[key]["side_raw_line"][side.lower()] = row["raw_line"]
+            if row.get("mapping_confidence") is not None:
+                ou_groups[key]["mapping_confidence"] = row["mapping_confidence"]
             ou_groups[key][side.lower()][row["sportsbook"]] = {
                 "price": row["price"],
                 "decimal_odds": row["decimal_odds"],
@@ -548,6 +596,8 @@ def run_scan(
                 "player_name": gdata["player_name"],
                 "market_type": gdata["market_type"],
                 "line": gdata["line"],
+                "raw_line": gdata.get("side_raw_line", {}).get(book_entry["side"].lower()),
+                "mapping_confidence": gdata.get("mapping_confidence"),
                 "side": gdata.get("display_sides", {}).get(
                     book_entry["side"].lower(), book_entry["side"]
                 ),
@@ -1019,7 +1069,7 @@ VALID_MARKETS = [m.cli_name for m in cfg.MARKET_REGISTRY]
 def build_parser() -> argparse.ArgumentParser:
     """Build the generic scanner argument parser."""
     parser = argparse.ArgumentParser(
-        description="MLB Player Prop Edge Scanner",
+        description="Player Prop Edge Scanner",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--all", action="store_true",
@@ -1034,8 +1084,13 @@ def build_parser() -> argparse.ArgumentParser:
                         .replace("%", "%%"))
     parser.add_argument("--limit", type=int, default=25,
                         help="Max opportunities to display (default 25)")
-    parser.add_argument("--market", choices=VALID_MARKETS + ["all"], default="all",
-                        help=f"Market to scan (choices: {', '.join(VALID_MARKETS)}, all)")
+    parser.add_argument("--league", type=str, default="MLB",
+                        help="League to scan (MLB, NFL, ...). Default MLB. "
+                             "--market choices depend on this league's registry.")
+    parser.add_argument("--market", type=str, default="all",
+                        help=f"Market to scan. MLB choices: {', '.join(VALID_MARKETS)}, all "
+                             "(other leagues have their own registry — an invalid market name "
+                             "is rejected at scan time with the valid list for that league).")
     parser.add_argument("--market-form", choices=["ou", "yn", "all"], default="all",
                         help="Market form: ou (over/under), yn (yes/no), all (default)")
     parser.add_argument("--verbose", action="store_true",
@@ -1072,6 +1127,19 @@ def main(argv: list[str] | None = None) -> None:
             print(f"CONFIG ERROR: {err}", file=sys.stderr)
         sys.exit(1)
 
+    from .sports import get_league, supported_leagues
+    league = (args.league or "MLB").upper()
+    try:
+        league_mod = get_league(league)
+    except ValueError:
+        print(f"ERROR: Unknown league '{league}'. Supported: {', '.join(supported_leagues())}",
+              file=sys.stderr)
+        sys.exit(1)
+    if not getattr(league_mod, "AVAILABLE", False):
+        print(f"ERROR: {league} is not currently available: {league_mod.UNAVAILABLE_REASON}",
+              file=sys.stderr)
+        sys.exit(1)
+
     if args.all:
         mode = "all"
     elif args.positive_only:
@@ -1103,6 +1171,7 @@ def main(argv: list[str] | None = None) -> None:
         sportsbook=args.sportsbook,
         player=args.player,
         game=args.game,
+        league=league,
     )
 
     if args.verbose and (result["opportunities"] or result.get("yn_opportunities")):

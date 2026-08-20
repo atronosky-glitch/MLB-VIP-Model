@@ -1,4 +1,4 @@
-"""Read-only customer-facing MLB VIP product view.
+"""Read-only customer-facing VIP product view (MLB, NFL, WNBA).
 
 Public requests never query protected upcoming recommendation fields. The
 temporary entitlement adapter uses a server-side staging token so a future
@@ -16,11 +16,12 @@ import pandas as pd
 import streamlit as st
 
 from database.db_manager import get_connection, init_db, get_performance_baseline
+from src.grading import performance_summary, breakdown_by_field, assign_bucket, EV_BUCKETS
 
 logger = logging.getLogger(__name__)
 
 
-st.set_page_config(page_title="MLB VIP | Sharp Market Intelligence", page_icon="⚾", layout="wide")
+st.set_page_config(page_title="VIP | Sharp Market Intelligence", page_icon="🎯", layout="wide")
 
 st.markdown("""
 <style>
@@ -66,6 +67,27 @@ def _authorized_request() -> bool:
 
 def _market_label(value: str) -> str:
     return (value or "").replace("_ou", "").replace("_yn", "").replace("_", " ").title()
+
+
+_LEAGUE_EMOJI = {"MLB": "⚾", "NFL": "🏈", "WNBA": "🏀"}
+
+
+def _league_badge(pick: dict) -> str:
+    league = (pick.get("league") or "MLB").upper()
+    return f"{_LEAGUE_EMOJI.get(league, '')} {league}".strip()
+
+
+def _fair_odds_label(pick: dict) -> str:
+    fair = pick.get("fair_american_odds")
+    return f"{fair:+d}" if isinstance(fair, int) else ("—" if fair is None else f"{fair:+.0f}")
+
+
+def _confidence_label(pick: dict) -> str:
+    grade = pick.get("confidence_grade")
+    score = pick.get("confidence_score")
+    if grade and score is not None:
+        return f"{grade} ({score:.0f})"
+    return grade or "—"
 
 
 def _settled_status(row: dict) -> str:
@@ -116,8 +138,12 @@ def load_customer_data(authorized: bool) -> dict:
             SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
                    hr.sportsbook, hr.offered_american_odds, hr.ev_pct,
                    hr.model_score, hr.scan_timestamp, hr.event_start_time,
+                   hr.sport, hr.league, hr.fair_american_odds,
+                   hr.confidence_score, hr.confidence_grade, hr.market_quality,
                    ms.settlement_status, ms.final_stat_value,
-                   bu.profit_units, bu.risk_units, cp.clv_probability
+                   bu.profit_units, bu.risk_units,
+                   cp.clv_probability, cp.closing_american, cp.closing_line,
+                   cp.line_movement_direction
             FROM official_picks op
             JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
             JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
@@ -150,6 +176,8 @@ def load_customer_data(authorized: bool) -> dict:
                 SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
                        hr.sportsbook, hr.offered_american_odds, hr.ev_pct,
                        hr.model_score, hr.scan_timestamp, hr.event_start_time,
+                       hr.sport, hr.league, hr.fair_american_odds,
+                       hr.confidence_score, hr.confidence_grade, hr.market_quality,
                        op.outcome, op.official_rank
                 FROM official_picks op
                 JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
@@ -165,7 +193,9 @@ def load_customer_data(authorized: bool) -> dict:
             research = conn.execute("""
                 SELECT player_name, matchup, market_type, side, line, sportsbook,
                        offered_american_odds, ev_pct, yn_implied_prob_adv,
-                       model_score, event_start_time
+                       model_score, event_start_time, sport, league,
+                       fair_american_odds, confidence_score, confidence_grade,
+                       market_quality
                 FROM historical_recommendations
                 WHERE date(scan_timestamp) = date('now')
                   AND COALESCE(recommendation_tier, 'RESEARCH_ONLY') <> 'OFFICIAL_TRACKED'
@@ -180,6 +210,57 @@ def load_customer_data(authorized: bool) -> dict:
         }
     finally:
         conn.close()
+
+
+def _apply_filters(rows: list[dict], filters: dict) -> list[dict]:
+    """Filter a list of pick dicts by sport/sportsbook/market/EV/confidence/date."""
+    out = rows
+    if filters.get("sports"):
+        wanted = set(filters["sports"])
+        out = [r for r in out if (r.get("league") or "MLB").upper() in wanted]
+    if filters.get("sportsbooks"):
+        wanted = {b.lower() for b in filters["sportsbooks"]}
+        out = [r for r in out if (r.get("sportsbook") or "").lower() in wanted]
+    if filters.get("markets"):
+        wanted = set(filters["markets"])
+        out = [r for r in out if r.get("market_type") in wanted]
+    if filters.get("min_ev") is not None:
+        min_ev = filters["min_ev"]
+        out = [r for r in out if (r.get("ev_pct") is None or r["ev_pct"] >= min_ev)]
+    if filters.get("confidence_grades"):
+        wanted = set(filters["confidence_grades"])
+        out = [r for r in out if (r.get("confidence_grade") or "—") in wanted]
+    if filters.get("date_from"):
+        out = [r for r in out if (r.get("scan_timestamp") or "") >= filters["date_from"]]
+    if filters.get("date_to"):
+        out = [r for r in out if (r.get("scan_timestamp") or "") <= filters["date_to"]]
+    return out
+
+
+def render_pick_filters(rows: list[dict], key_prefix: str) -> dict:
+    """Render a filter bar over the given pool of picks and return selections."""
+    sports = sorted({(r.get("league") or "MLB").upper() for r in rows})
+    books = sorted({r.get("sportsbook") for r in rows if r.get("sportsbook")})
+    markets = sorted({r.get("market_type") for r in rows if r.get("market_type")})
+    grades = sorted({r.get("confidence_grade") for r in rows if r.get("confidence_grade")})
+
+    cols = st.columns(4)
+    with cols[0]:
+        f_sports = st.multiselect("Sport", sports, default=sports, key=f"{key_prefix}_sports")
+    with cols[1]:
+        f_books = st.multiselect("Sportsbook", books, key=f"{key_prefix}_books")
+    with cols[2]:
+        f_markets = st.multiselect("Market", markets, key=f"{key_prefix}_markets",
+                                    format_func=_market_label)
+    with cols[3]:
+        f_grades = st.multiselect("Confidence", grades, key=f"{key_prefix}_grades")
+    f_min_ev = st.slider("Minimum EV%", -5.0, 20.0, -5.0, 0.5, key=f"{key_prefix}_ev")
+
+    return {
+        "sports": f_sports, "sportsbooks": f_books, "markets": f_markets,
+        "confidence_grades": f_grades,
+        "min_ev": f_min_ev if f_min_ev > -5.0 else None,
+    }
 
 
 def performance_series(rows: list[dict], period: str = "ALL") -> pd.DataFrame:
@@ -217,11 +298,36 @@ def _render_full_pick(pick: dict, settled: bool = False) -> None:
     stake = f"Stake: {pick['risk_units']:.2f}u" if pick.get("risk_units") is not None else "Stake: —"
     result_label = status if status in {"WIN", "LOSS", "PUSH", "VOID", "CANCELLED"} else "OPEN"
     result_style = "result-win" if status == "WIN" else "result-loss" if status == "LOSS" else ""
+
+    detail_bits = [
+        f"Fair odds: {_fair_odds_label(pick)}",
+        f"Confidence: {_confidence_label(pick)}",
+    ]
+    if pick.get("market_quality"):
+        detail_bits.append(f"Market: {_market_label(pick['market_quality'])}")
+    detail_line = " · ".join(detail_bits)
+
+    closing_bits = []
+    if settled:
+        clv = pick.get("clv_probability")
+        if clv is not None:
+            closing_bits.append(f"CLV: {clv:+.2%}")
+        elif pick.get("line_movement_direction"):
+            closing_bits.append(f"Line moved: {pick['line_movement_direction']}")
+        if pick.get("closing_american") is not None:
+            closing_line = pick.get("closing_line")
+            close_txt = f"Closed {closing_line} {pick['closing_american']:+d}" if closing_line is not None \
+                else f"Closed {pick['closing_american']:+d}"
+            closing_bits.append(close_txt)
+    closing_line_html = f'<div class="pick-meta">{" · ".join(closing_bits)}</div>' if closing_bits else ""
+
     st.markdown(f"""
     <div class="pick {'settled' if settled else ''} {result_class}">
-      <div class="pick-title">{pick.get('player_name') or 'MLB Official Play'}</div>
-      <div class="pick-meta">{pick.get('matchup','')} · {_market_label(pick.get('market_type',''))} · {side_line}</div>
+      <div class="pick-title">{pick.get('player_name') or 'Official Play'}</div>
+      <div class="pick-meta">{_league_badge(pick)} · {pick.get('matchup','')} · {_market_label(pick.get('market_type',''))} · {side_line}</div>
       <div class="pick-meta">{pick.get('sportsbook','')} {pick.get('offered_american_odds','')} · <span class="edge">{edge_text}</span></div>
+      <div class="pick-meta">{detail_line}</div>
+      {closing_line_html}
       <div class="unit-line">{stake} · Result: <span class="{result_style}">{result_label}{final}{units}</span></div>
     </div>
     """, unsafe_allow_html=True)
@@ -230,7 +336,7 @@ def _render_full_pick(pick: dict, settled: bool = False) -> None:
 def _render_locked_pick(lock: dict) -> None:
     st.markdown(f"""
     <div class="pick locked">
-      <div class="pick-title">{lock.get('matchup') or 'MLB Game'}</div>
+      <div class="pick-title">{lock.get('matchup') or 'Game'}</div>
       <div class="pick-meta">{lock.get('event_start_time','')[:16]} · Official Model Play</div>
       <div class="lock-copy">VIP PICK AVAILABLE 🔒</div>
       <div class="pick-meta">Unlock the exact player and wager before first pitch.</div>
@@ -249,7 +355,7 @@ except Exception:
 today = datetime.now(timezone.utc).strftime("%B %d, %Y")
 st.markdown(f"""
 <div class="hero">
-  <div class="eyebrow">MLB VIP · Sharp Market Intelligence</div>
+  <div class="eyebrow">VIP · Sharp Market Intelligence · MLB · NFL · WNBA</div>
   <h1>Stop guessing.<br>Find the number.</h1>
   <p>Thousands of sportsbook prices are screened for fair value, market quality, and closing-line evidence. The model does not need a play every day.</p>
   <span class="pill">{today} · {'SUBSCRIBER VIEW' if authorized else 'PUBLIC VIEW'}</span>
@@ -267,10 +373,16 @@ if not authorized:
         st.success("No Official Plays Yet")
         st.caption("The model has not identified an opportunity meeting today's qualification standards.")
 else:
-    st.subheader("Today's Official Picks")
+    st.subheader("Today's Official Picks — Upcoming")
     if data["upcoming"]:
-        for pick in data["upcoming"]:
-            _render_full_pick(pick)
+        with st.expander("Filter upcoming picks", expanded=False):
+            up_filters = render_pick_filters(data["upcoming"], "upcoming")
+        filtered_upcoming = _apply_filters(data["upcoming"], up_filters)
+        if filtered_upcoming:
+            for pick in filtered_upcoming:
+                _render_full_pick(pick)
+        else:
+            st.caption("No upcoming picks match the current filters.")
     else:
         st.success("No Official Plays Yet")
         st.caption("The model has not identified an opportunity meeting today's qualification standards.")
@@ -280,13 +392,21 @@ else:
                 _render_full_pick(pick)
 
 st.divider()
-st.subheader("Verified Track Record")
-st.caption("Settled Official Picks only. Winners and losses are included equally; no results are manually selected.")
+st.subheader("Verified Track Record — Past Picks")
+st.caption("Settled Official Picks only. Winners and losses are included equally; no results are manually selected or hidden.")
 if data["settled"]:
-    for pick in data["settled"][:5]:
-        _render_full_pick(pick, settled=True)
+    with st.expander("Filter settled picks", expanded=False):
+        settled_filters = render_pick_filters(data["settled"], "settled")
+    filtered_settled = _apply_filters(data["settled"], settled_filters)
+
+    if filtered_settled:
+        for pick in filtered_settled[:10]:
+            _render_full_pick(pick, settled=True)
+    else:
+        st.caption("No settled picks match the current filters.")
+
     period = st.radio("Performance period", ["7D", "30D", "ALL"], horizontal=True, index=2)
-    series = performance_series(data["settled"], period)
+    series = performance_series(filtered_settled, period)
     if not series.empty:
         chart = series.rename(columns={
             "expected_cumulative": "Expected Units",
@@ -294,16 +414,45 @@ if data["settled"]:
         })
         st.caption("Expected Units use each pick's recorded EV and stake. Actual Units use canonical settled profit.")
         st.line_chart(chart, y_label="Cumulative units", height=300, use_container_width=True)
-        raw = pd.DataFrame(data["settled"])
-        profit = pd.to_numeric(raw["profit_units"], errors="coerce").fillna(0).sum()
-        risk = pd.to_numeric(raw["risk_units"], errors="coerce").fillna(0).sum()
-        wins = sum(_settled_status(r) == "WIN" for r in data["settled"])
-        losses = sum(_settled_status(r) == "LOSS" for r in data["settled"])
-        cols = st.columns(4)
-        cols[0].metric("Record", f"{wins}-{losses}")
-        cols[1].metric("Settled Picks", len(raw))
-        cols[2].metric("Units", f"{profit:+.2f}")
-        cols[3].metric("ROI", f"{profit / risk:.1%}" if risk else "-")
+
+    st.markdown("#### Performance Dashboard")
+    summary = performance_summary(filtered_settled)
+    cols = st.columns(6)
+    cols[0].metric("Record", f"{summary['wins']}-{summary['losses']}-{summary['pushes']}")
+    cols[1].metric("Settled Picks", summary["settled"])
+    cols[2].metric("Units", f"{summary['units_won']:+.2f}")
+    cols[3].metric("ROI", f"{summary['roi']:.1%}" if summary["units_risked"] else "—")
+    cols[4].metric("Avg CLV", f"{summary['avg_clv_probability']:+.2%}" if summary["avg_clv_probability"] is not None else "—")
+    cols[5].metric("Beat Close %", f"{summary['pct_beating_close']:.1%}" if summary["pct_beating_close"] is not None else "—")
+    st.caption(f"Average EV at recommendation: {summary['avg_ev_pct']:+.2f}%")
+
+    with st.expander("Performance breakdown by sport / market / sportsbook / confidence / EV"):
+        for field, label in [("sport", "Sport"), ("market_type", "Market"),
+                              ("sportsbook", "Sportsbook"), ("confidence_grade", "Confidence Grade")]:
+            groups = breakdown_by_field(filtered_settled, field)
+            if not groups:
+                continue
+            st.markdown(f"**By {label}**")
+            table = pd.DataFrame([
+                {label: key, "Record": f"{g['wins']}-{g['losses']}-{g['pushes']}",
+                 "Units": round(g["units_won"], 2), "ROI": f"{g['roi']:.1%}" if g["units_risked"] else "—",
+                 "Avg EV%": g["avg_ev_pct"], "Beat Close %":
+                     f"{g['pct_beating_close']:.1%}" if g["pct_beating_close"] is not None else "—"}
+                for key, g in sorted(groups.items())
+            ])
+            st.dataframe(table, hide_index=True, use_container_width=True)
+
+        ev_bucketed = [{**r, "_ev_bucket": assign_bucket(r.get("ev_pct") or 0.0, EV_BUCKETS)}
+                       for r in filtered_settled]
+        ev_groups = breakdown_by_field(ev_bucketed, "_ev_bucket")
+        if ev_groups:
+            st.markdown("**By EV Bucket**")
+            table = pd.DataFrame([
+                {"EV Bucket": key, "Record": f"{g['wins']}-{g['losses']}-{g['pushes']}",
+                 "Units": round(g["units_won"], 2), "ROI": f"{g['roi']:.1%}" if g["units_risked"] else "—"}
+                for key, g in sorted(ev_groups.items())
+            ])
+            st.dataframe(table, hide_index=True, use_container_width=True)
 else:
     st.info("BUILDING VERIFIED TRACK RECORD · Performance appears after official picks settle.")
 
@@ -315,4 +464,4 @@ for col, title, body in zip(features, ["Multi-book scan", "Fair value", "Sharp r
     with col:
         st.markdown(f'<div class="feature"><div class="feature-title">{title}</div><div class="section-note">{body}</div></div>', unsafe_allow_html=True)
 
-st.caption("MLB VIP does not guarantee profit, place bets, or present Research opportunities as Official Picks.")
+st.caption("This platform does not guarantee profit, place bets, or present Research opportunities as Official Picks.")

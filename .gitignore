@@ -38,6 +38,7 @@ venv/
 
 # Cache
 data/_api_cache/
+data/_odds_api_cache/
 data/_pinnacle_feed_cache.json
 
 # Output (generated)
@@ -46,3 +47,6 @@ output/*.json
 output/*.txt
 output/*.log
 output/launcher.log
+
+# Pipeline run markers
+database/.pipeline_completed

@@ -37,6 +37,15 @@ def _seed(conn, rec_id="auto-1"):
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS event_results (
+            event_id TEXT PRIMARY KEY, final_status TEXT DEFAULT 'UNRESOLVED',
+            away_score INTEGER, home_score INTEGER, result_source TEXT,
+            source_observed_at TEXT, result_detail TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
         INSERT INTO historical_recommendations (
             recommendation_id, event_id, player_id, player_name, market_type,
             market_form, line, side, sportsbook, offered_american_odds,
@@ -87,3 +96,23 @@ def test_automatic_grading_is_idempotent(db_conn):
     assert grade_available_recommendations(db_conn)["graded"] == 1
     assert grade_available_recommendations(db_conn)["graded"] == 0
     assert db_conn.execute("SELECT COUNT(*) FROM bet_units WHERE recommendation_id = 'auto-2'").fetchone()[0] == 1
+
+
+def test_voided_event_settles_player_prop_without_a_stat_fact(db_conn):
+    """A postponed/cancelled game never produces a player_stat_results row
+    — without checking event_results first, this recommendation would
+    stay UNRESOLVED forever. It must void immediately instead."""
+    _seed(db_conn, "auto-void-1")
+    db_conn.execute(
+        "INSERT INTO event_results (event_id, final_status) VALUES (?, ?)",
+        ("E-AUTO", "POSTPONED"),
+    )
+    db_conn.commit()
+
+    result = grade_available_recommendations(db_conn)
+    assert result["graded"] == 1
+    settlement = db_conn.execute(
+        "SELECT settlement_status FROM market_settlements WHERE recommendation_id = ?",
+        ("auto-void-1",),
+    ).fetchone()
+    assert settlement["settlement_status"] == "VOID"

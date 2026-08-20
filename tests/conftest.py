@@ -268,6 +268,9 @@ def db_conn():
             one_sided_market INTEGER DEFAULT 0,
             insufficient_books_failure INTEGER DEFAULT 0,
             market_quality_score REAL DEFAULT 0.0,
+            league                TEXT DEFAULT 'MLB',
+            sport                 TEXT DEFAULT 'baseball',
+            raw_line              REAL,
             created_at            TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS closing_prices (
@@ -311,6 +314,13 @@ def db_conn():
             graded_at             TEXT,
             FOREIGN KEY (recommendation_id) REFERENCES historical_recommendations(recommendation_id)
         );
+        CREATE TABLE IF NOT EXISTS event_results (
+            event_id TEXT PRIMARY KEY, final_status TEXT DEFAULT 'UNRESOLVED',
+            away_score INTEGER, home_score INTEGER, result_source TEXT,
+            source_observed_at TEXT, result_detail TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS official_picks (
             recommendation_id TEXT PRIMARY KEY,
             tier TEXT NOT NULL DEFAULT 'OFFICIAL_TRACKED',
@@ -322,7 +332,9 @@ def db_conn():
             profit_units REAL,
             risk_units REAL,
             final_stat_value REAL,
-            grader_version TEXT
+            grader_version TEXT,
+            league TEXT DEFAULT 'MLB',
+            sport TEXT DEFAULT 'baseball'
         );
         CREATE TABLE IF NOT EXISTS pick_observations (
             observation_id TEXT PRIMARY KEY,

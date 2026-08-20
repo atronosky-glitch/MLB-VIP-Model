@@ -355,7 +355,7 @@ def _load_recs(db_path: str, filter_mode: str = "latest") -> list[dict[str, Any]
         conn = _open_dashboard_connection(db_path)
         try:
             cols = (
-                "recommendation_id, event_id, player_name, market_type, "
+                "recommendation_id, event_id, league, sport, player_name, market_type, "
                 "market_form, period, line, side, sportsbook, "
                 "offered_american_odds, offered_decimal_odds, "
                 "ev_pct, yn_implied_prob_adv, yn_reference_prob, "
@@ -602,7 +602,7 @@ if "last_run_steps" not in st.session_state:
 # Pipeline runner (background thread)
 # ==================================================================
 
-def _run_pipeline_background(output_dir: str, result_container: dict) -> None:
+def _run_pipeline_background(output_dir: str, result_container: dict, league: str = "MLB") -> None:
     """Run the pipeline in a background thread, capturing output."""
     try:
         result_container["status"] = "running"
@@ -611,7 +611,8 @@ def _run_pipeline_background(output_dir: str, result_container: dict) -> None:
         result_container["output"] = ""
         result_container["error"] = ""
 
-        cmd = [sys.executable, "-m", "src.daily_pipeline", "--output-dir", output_dir]
+        cmd = [sys.executable, "-m", "src.daily_pipeline", "--output-dir", output_dir,
+               "--league", league]
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -1610,9 +1611,13 @@ with tabs[6]:
         st.info("⏳ Pipeline is running... please wait.")
         can_run = False
 
+    from src.sports import available_leagues
+    run_leagues = available_leagues()
+    run_league = st.selectbox("League", run_leagues, index=0, key="run_league_select") if len(run_leagues) > 1 else "MLB"
+
     btn_col1, btn_col2, btn_col3 = st.columns([3, 1, 1])
     with btn_col1:
-        run_clicked = st.button("▶️  RUN TODAY'S MLB MODEL", type="primary", disabled=not can_run, use_container_width=True)
+        run_clicked = st.button(f"▶️  RUN TODAY'S {run_league} MODEL", type="primary", disabled=not can_run, use_container_width=True)
     with btn_col2:
         if st.session_state.run_active:
             st.button("⏹ Stop", disabled=True, use_container_width=True)
@@ -1626,7 +1631,9 @@ with tabs[6]:
         st.session_state.run_result = None
         result: dict[str, Any] = {"status": "running", "steps": [], "exit_code": None, "output": "", "error": ""}
         st.session_state.run_result = result
-        thread = threading.Thread(target=_run_pipeline_background, args=(output_dir_val, result), daemon=True)
+        thread = threading.Thread(
+            target=_run_pipeline_background, args=(output_dir_val, result, run_league), daemon=True,
+        )
         thread.start()
         thread.join(timeout=600)
         st.session_state.run_active = False

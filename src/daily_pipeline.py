@@ -145,6 +145,9 @@ class PipelineConfig:
     # Morning scans are observations, not closing snapshots. Final CLV is
     # captured only by an explicitly scheduled final-close run.
     lifecycle_snapshot_kind: str = "morning"
+    # League to run this pipeline for (e.g. "MLB", "NFL"). Defaults to MLB
+    # so every existing caller keeps its exact current behavior.
+    league: str = "MLB"
 
 
 @dataclass
@@ -153,6 +156,7 @@ class PipelineState:
     pipeline_run_id: str = ""
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     version: str = "1.0.0"
+    sport: str = "baseball"
     config_summary: dict = field(default_factory=dict)
     execution_mode: str = "cache"
     n_events: int = 0
@@ -312,9 +316,27 @@ def _stage_create_run(config: PipelineConfig, state: PipelineState) -> bool:
 # ==================================================================
 
 def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
-    """Fetch MLB events from API or cache. Returns True on success."""
+    """Fetch events from API or cache. Returns True on success."""
     print("[3/9] Fetching events")
     t0 = time.monotonic()
+
+    from src.sports import get_league
+    odds_provider = getattr(get_league(config.league), "ODDS_PROVIDER", "sportsgameodds")
+    if odds_provider != "sportsgameodds":
+        # This league's game-level raw odds ingest (games/odds tables) via
+        # SportsGameOdds doesn't apply — it uses a different provider (see
+        # src/sports/<league>.py). Stage 4 (_stage_ingest) already no-ops
+        # cleanly on an empty event list. The real fetch+parse for this
+        # league happens inside _stage_scan -> run_scan(), which has its
+        # own provider-aware path (player_prop_scanner.py).
+        state.data_source = "N/A (non-SportsGameOdds provider)"
+        state.n_events = 0
+        state.n_books = 0
+        state.scan_result["_raw_events"] = []
+        print(f"  SKIP — {config.league} uses odds_provider={odds_provider!r}, "
+              f"not SportsGameOdds; raw games/odds ingest doesn't apply here")
+        state.stage_timings["fetch_events"] = round(time.monotonic() - t0, 3)
+        return True
 
     try:
         # Live runs must never analyze a previous day's slate, so bound the
@@ -322,7 +344,7 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
         max_cache_age = cfg.LIVE_CACHE_TTL_SECONDS if config.live else 3600.0
         client = SportsGameOddsClient(max_cache_age=max_cache_age)
         data, from_cache = client.get_events(
-            league="MLB", event_id=config.event_id,
+            league=config.league, event_id=config.event_id,
             odds_available=True, include_alt_lines=True,
         )
         state.data_source = "CACHE" if from_cache else "LIVE API"
@@ -530,6 +552,7 @@ def _stage_scan(config: PipelineConfig, state: PipelineState) -> bool:
             market_form=config.market_form,
             limit=25,
             event_id=config.event_id,
+            league=config.league,
         )
 
         state.scan_result = scan_result
@@ -657,6 +680,7 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     "market_form": "yn" if is_yn else "ou",
                     "period": "game",
                     "line": opp.get("line"),
+                    "raw_line": opp.get("raw_line"),
                     "side": opp["side"],
                     "sportsbook": opp["sportsbook"],
                     "offered_american_odds": opp["american_odds"],
@@ -697,6 +721,17 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     "model_version": state.version,
                     "matchup": matchup,
                     "event_status": event_status,
+                    "league": config.league,
+                    "sport": state.sport,
+                    # Markets that resolve player identity via
+                    # src.player_identity (currently WNBA props) supply their
+                    # own HIGH/MEDIUM mapping confidence here (LOW/UNRESOLVED
+                    # never reach this stage — filtered at parse time).
+                    # Markets with provider-stable IDs and no ambiguous
+                    # string-matching (MLB/NFL today) have nothing to default
+                    # from — "HIGH" reflects that identity isn't in question
+                    # there, not an unearned score.
+                    "mapping_confidence": opp.get("mapping_confidence", "HIGH"),
                 }
 
                 # Compute implied probability if not set
@@ -733,6 +768,19 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                         "reliable_ev_version": None,
                         "reliable_ev_checked": True,
                     })
+
+                # Confidence score/grade — a player prop can never become an
+                # official recommendation on an uncertain identity mapping,
+                # so mapping_confidence (when this is a mapped player prop)
+                # feeds directly into the same score shown to users.
+                try:
+                    from src.confidence import compute_confidence
+                    confidence = compute_confidence(rec)
+                    rec["confidence_score"] = confidence["confidence_score"]
+                    rec["confidence_grade"] = confidence["grade"]
+                except Exception:
+                    rec["confidence_score"] = None
+                    rec["confidence_grade"] = None
 
                 # Compute Model Score
                 if config.challenger_shadow and rec.get("market_type") == "pitching_strikeouts_ou":
@@ -1227,7 +1275,18 @@ def _write_completion_flag(config: PipelineConfig, state: PipelineState) -> None
 
 def run_pipeline(config: PipelineConfig) -> int:
     """Execute the full pipeline. Returns exit code."""
-    state = PipelineState()
+    from src.sports import get_league, supported_leagues
+    try:
+        league_mod = get_league(config.league)
+    except ValueError:
+        print(f"ERROR: Unknown league '{config.league}'. Supported: {', '.join(supported_leagues())}",
+              file=sys.stderr)
+        return EXIT_CONFIG_FAILURE
+    if not getattr(league_mod, "AVAILABLE", False):
+        print(f"ERROR: {config.league} is not currently available: {league_mod.UNAVAILABLE_REASON}",
+              file=sys.stderr)
+        return EXIT_CONFIG_FAILURE
+    state = PipelineState(sport=league_mod.SPORT)
 
     try:
         # Stage 1: Validate
@@ -1354,6 +1413,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Exit nonzero if data is stale")
     parser.add_argument("--debug", action="store_true",
                         help="Enable debug logging")
+    parser.add_argument("--league", default="MLB",
+                        help="League to run this pipeline for (MLB, NFL, ...). Default MLB.")
 
     return parser
 
@@ -1386,6 +1447,7 @@ def main(argv: list[str] | None = None) -> int:
         as_json=args.as_json,
         as_csv=args.as_csv,
         debug=args.debug,
+        league=(args.league or "MLB").upper(),
     )
 
     if config.debug:

@@ -93,3 +93,35 @@ def test_ingestion_reports_unsupported_market_reason(db_conn):
         client=FakeClient(),
     )
     assert result["unresolved_reasons"]["unsupported_or_research_market"] == 1
+
+
+def test_ingestion_persists_postponed_game_as_void_status(db_conn):
+    """A postponed game must not stay UNRESOLVED forever — its status
+    should be persisted (detailedState) so src/game_settlement.py can
+    void it, instead of the recommendation waiting forever."""
+    db_conn.execute("""CREATE TABLE IF NOT EXISTS event_results (
+        event_id TEXT PRIMARY KEY, final_status TEXT, away_score INTEGER,
+        home_score INTEGER, result_source TEXT, source_observed_at TEXT,
+        result_detail TEXT, updated_at TEXT DEFAULT (datetime('now'))
+    )""")
+    db_conn.commit()
+
+    class PostponedClient(FakeClient):
+        def fetch_game_feed(self, game_pk):
+            return {"gameData": {"status": {
+                "abstractGameState": "Preview", "detailedState": "Postponed",
+            }}}
+
+    result = ingest_results_for_recommendations(
+        db_conn,
+        [{"event_id": "E-POSTPONED", "player_id": "P-AUTO",
+          "player_name": "Test Pitcher", "market_type": "pitching_strikeouts",
+          "event_start_time": "2026-08-06T19:00:00Z",
+          "matchup": "Away Team @ Home Team"}],
+        client=PostponedClient(),
+    )
+    assert result["unresolved_reasons"]["game_not_final"] == 0
+    row = db_conn.execute(
+        "SELECT final_status FROM event_results WHERE event_id = ?", ("E-POSTPONED",),
+    ).fetchone()
+    assert row["final_status"] == "POSTPONED"

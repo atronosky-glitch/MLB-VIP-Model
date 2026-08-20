@@ -40,7 +40,7 @@ sys.path.insert(0, str(_ROOT))
 from src.production_config import load_config
 from src.structured_logging import setup_logging
 from database.db_manager import get_connection
-from database.connection import DB, get_connection_dialect_name
+from database.connection import DB, get_connection_dialect_name, get_database_url
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +74,16 @@ def _now_local() -> datetime:
 def _acquire_lock(conn: DB, job_type: str) -> str | None:
     """Attempt to acquire a distributed lock for a job type.
 
-    Checks for an existing running lock of the same type before inserting.
+    The SELECT below is a fast-path only — under real concurrency two
+    callers can both pass it before either inserts. Correctness comes from
+    the partial unique index ``idx_sj_running_lock`` on
+    ``scheduled_jobs(job_type) WHERE status='running' AND metadata='worker-lock'``
+    (see ``database/db_manager.py::init_db``): a second concurrent INSERT
+    for the same job_type violates that constraint and raises, which the
+    ``except Exception`` below already turns into "lock not acquired".
     Returns the lock job_id or None if already locked.
     """
-    # Check for existing running lock of this type
+    # Fast-path check for an existing running lock of this type
     existing = conn.execute(
         "SELECT 1 FROM scheduled_jobs "
         "WHERE job_type = ? AND status = 'running' AND metadata = 'worker-lock'",
@@ -220,11 +226,21 @@ def _maintenance_cleanup(conn: DB) -> int:
 # ── Job execution ─────────────────────────────────────────────────
 
 
-def _run_morning_scan(config) -> dict:
-    """Execute the full morning pipeline."""
+def _run_morning_scan(config, league: str = "MLB") -> dict:
+    """Execute the full morning pipeline for *league*.
+
+    Defaults to MLB, matching current production scheduling (one worker
+    service per league, e.g. ``mlb-vip-worker``). A future multi-league
+    scheduler can call this per league with its own cadence — NFL runs
+    weekly, not daily, so that is a scheduling-policy decision left for
+    when a second league is actually put into production, not a data
+    engine gap.
+    """
     from src.daily_pipeline import run_pipeline, PipelineConfig
     pipeline_config = PipelineConfig(
-        output_dir=config.output_dir, live=True, challenger_shadow=True,
+        output_dir=config.output_dir, live=True,
+        challenger_shadow=(league == "MLB"),  # challenger models are MLB-only research tools
+        league=league,
     )
     exit_code = run_pipeline(pipeline_config)
     return {"status": "success" if exit_code == 0 else "failed", "exit_code": exit_code}
@@ -248,7 +264,7 @@ def _run_pregame_checks(conn: DB, config) -> dict:
     return {"status": "success", "jobs_scheduled": count}
 
 
-def _run_pregame_scan(conn: DB, config, event_id: str | None = None) -> dict:
+def _run_pregame_scan(conn: DB, config, event_id: str | None = None, league: str = "MLB") -> dict:
     """Run a scheduled pregame pipeline so it records a scan_run."""
     from src.daily_pipeline import run_pipeline, PipelineConfig
 
@@ -267,7 +283,8 @@ def _run_pregame_scan(conn: DB, config, event_id: str | None = None) -> dict:
             actionable_only=True,
             lifecycle_snapshot_kind="pregame",
             event_id=event_id,
-            challenger_shadow=True,
+            challenger_shadow=(league == "MLB"),  # challenger models are MLB-only research tools
+            league=league,
         ))
         result = {
             "status": "success" if exit_code in (0, 1) else "failed",
@@ -296,22 +313,58 @@ def _run_grading(conn: DB, config) -> dict:
 
 
 def _run_catchup_grading(conn: DB) -> dict:
-    """Fetch authoritative MLB results, then grade unresolved recommendations."""
+    """Fetch authoritative results per league, then grade unresolved recommendations.
+
+    Every league's ``ingest_results_for_recommendations`` shares the same
+    interface (``src/sports/<league>.py::get_settlement_module()``), so
+    unresolved recommendations are grouped by their ``league`` column and
+    each group is routed to its own verified results source (MLB StatsAPI,
+    ESPN NFL, ...). A league with no settlement module (e.g. WNBA, not yet
+    available) is skipped rather than guessed.
+    """
     from database.db_manager import get_unsettled_recommendations
-    from src.automatic_grading import grade_available_recommendations
-    from src.mlb_results import ingest_results_for_recommendations
+    from src.automatic_grading import grade_available_recommendations, grade_available_game_recommendations
+    from src.sports import get_league
 
     unresolved = get_unsettled_recommendations(conn)
-    result_facts = ingest_results_for_recommendations(conn, unresolved)
+    by_league: dict[str, list] = {}
+    for rec in unresolved:
+        by_league.setdefault(rec.get("league") or "MLB", []).append(rec)
+
+    results_by_league: dict[str, dict] = {}
+    for league, recs in by_league.items():
+        try:
+            settlement_module = get_league(league).get_settlement_module()
+        except ValueError:
+            settlement_module = None
+        if settlement_module is None:
+            results_by_league[league] = {"skipped": True, "recommendations": len(recs)}
+            continue
+        results_by_league[league] = settlement_module.ingest_results_for_recommendations(conn, recs)
+
     result = grade_available_recommendations(conn)
-    combined = {"results": result_facts, "grading": result}
-    if result.get("graded") or result_facts.get("facts_saved"):
+    game_result = grade_available_game_recommendations(conn)
+    combined = {"results": results_by_league, "grading": result, "game_grading": game_result}
+    total_facts_saved = sum(r.get("facts_saved", 0) for r in results_by_league.values())
+    if result.get("graded") or game_result.get("graded") or total_facts_saved:
         logger.info("Automatic grading catch-up: %s", combined)
     return combined
 
 
 def _run_backup(config) -> dict:
-    """Create a database backup."""
+    """Create a database backup.
+
+    ``backup_database`` uses the SQLite online-backup API and only makes
+    sense for the local SQLite database. Production runs PostgreSQL
+    (``DATABASE_URL`` set), which Render backs up externally — calling
+    the SQLite backup path there would silently create an empty file at
+    ``config.database_path`` (a stale SQLite default, not the real
+    production data) and report false success.
+    """
+    if get_database_url():
+        logger.info("Skipping SQLite backup: PostgreSQL backups are managed externally")
+        return {"status": "skipped", "reason": "postgresql_managed_externally"}
+
     from src.backup_database import backup_database
     backup_dir = os.environ.get("MLB_BACKUP_DIR", "backups")
     backup_path = backup_database(
@@ -621,9 +674,12 @@ def run_worker_persistent(config) -> None:
             # Daily backup at 3:30 AM ET
             if _is_backup_time(now_local) and last_backup_minute != now_local.minute:
                 try:
-                    _run_backup(config)
+                    backup_result = _run_backup(config)
                     last_backup_minute = now_local.minute
-                    logger.info("Daily backup completed")
+                    if backup_result.get("status") == "skipped":
+                        logger.info("Daily backup skipped: %s", backup_result.get("reason"))
+                    else:
+                        logger.info("Daily backup completed")
                 except Exception as e:
                     logger.error("Backup failed: %s", e)
 

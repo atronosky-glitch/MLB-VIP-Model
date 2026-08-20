@@ -170,7 +170,7 @@ def db():
             closing_line REAL, closing_observed_at TEXT,
             closing_sportsbook TEXT, line_move_type TEXT,
             clv_probability REAL, clv_price_diff INTEGER,
-            clv_available INTEGER DEFAULT 0,
+            clv_available INTEGER DEFAULT 0, line_movement_direction TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS manual_override_audit (
@@ -868,6 +868,90 @@ class TestReportGeneration:
         assert (output_dir / "recommendations.json").exists()
         assert (output_dir / "run_summary.json").exists()
         assert (output_dir / "pipeline_report.txt").exists()
+
+
+class TestStageFreezeConfidence:
+    """A player prop can never become an official recommendation on an
+    uncertain identity mapping (Priority 1 of this session's mandate) —
+    confidence_score/confidence_grade must actually be computed and
+    persisted by _stage_freeze, not just exist as unused DB columns."""
+
+    def test_confidence_score_and_grade_persisted(self, tmp_path, sample_opps):
+        from database.db_manager import init_db, get_connection
+
+        db_path = tmp_path / "freeze.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+        conn.execute(
+            """INSERT INTO games (event_id, away_team, home_team, start_time, status)
+               VALUES ('EVT_001', 'NYY', 'BOS', '2099-01-01T19:00:00Z', 'scheduled')"""
+        )
+        conn.commit()
+        conn.close()
+
+        config = PipelineConfig(dry_run=False, output_dir=str(tmp_path / "output"))
+        state = PipelineState()
+        state.scan_run_id = "run-freeze-1"
+        state.scan_result = {"opportunities": sample_opps, "yn_opportunities": []}
+
+        with patch("src.daily_pipeline.get_connection",
+                   lambda *a, **kw: get_connection(str(db_path))):
+            assert _stage_freeze(config, state) is True
+
+        conn = get_connection(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT confidence_score, confidence_grade "
+                "FROM historical_recommendations WHERE scan_run_id = 'run-freeze-1'"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert rows, "expected recommendations to be saved"
+        for row in rows:
+            assert row["confidence_score"] is not None
+            assert 0.0 <= row["confidence_score"] <= 100.0
+            assert row["confidence_grade"] in {"A", "B", "C", "D", "F"}
+
+    def test_mapping_confidence_defaults_to_high_for_markets_without_identity_resolution(
+        self, tmp_path, sample_opps,
+    ):
+        """MLB/NFL props carry provider-stable IDs with no ambiguous
+        string-matching involved, so the confidence component that exists
+        to catch uncertain player-identity mapping (WNBA today) must not
+        silently penalize sports that never populate mapping_confidence."""
+        from database.db_manager import init_db, get_connection
+
+        db_path = tmp_path / "freeze2.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+        conn.execute(
+            """INSERT INTO games (event_id, away_team, home_team, start_time, status)
+               VALUES ('EVT_001', 'NYY', 'BOS', '2099-01-01T19:00:00Z', 'scheduled')"""
+        )
+        conn.commit()
+        conn.close()
+
+        assert "mapping_confidence" not in sample_opps[0]
+
+        config = PipelineConfig(dry_run=False, output_dir=str(tmp_path / "output"))
+        state = PipelineState()
+        state.scan_run_id = "run-freeze-2"
+        state.scan_result = {"opportunities": sample_opps, "yn_opportunities": []}
+
+        with patch("src.daily_pipeline.get_connection",
+                   lambda *a, **kw: get_connection(str(db_path))):
+            assert _stage_freeze(config, state) is True
+
+        conn = get_connection(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT confidence_score FROM historical_recommendations "
+                "WHERE scan_run_id = 'run-freeze-2' LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["confidence_score"] is not None
 
 
 # ── Pipeline summary ──────────────────────────────────────────────

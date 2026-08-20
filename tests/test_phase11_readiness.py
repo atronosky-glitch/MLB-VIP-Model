@@ -12,6 +12,33 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+# A single real (field-for-field verified against a cached SportsGameOdds v2
+# response) event, used by the production-canary tests below instead of a
+# fabricated schema.
+REALISTIC_EVENT = {
+    "eventID": "evt123",
+    "leagueID": "MLB",
+    "status": {"started": False, "ended": False},
+    "teams": {
+        "home": {"teamID": "NYY", "statEntityID": "home", "names": {"long": "New York Yankees"}},
+        "away": {"teamID": "BOS", "statEntityID": "away", "names": {"long": "Boston Red Sox"}},
+    },
+    "odds": {
+        "points-away-game-ml-away": {
+            "oddID": "points-away-game-ml-away",
+            "marketName": "Moneyline",
+            "statEntityID": "away",
+            "periodID": "game",
+            "betTypeID": "ml",
+            "sideID": "away",
+            "byBookmaker": {
+                "draftkings": {"odds": "+165", "lastUpdatedAt": "2026-08-01T19:14:04Z", "available": True},
+                "fanduel": {"odds": "+190", "lastUpdatedAt": "2026-08-01T19:14:15Z", "available": True},
+            },
+        },
+    },
+}
+
 
 # ───────────────────────────────────────────────────────────────────
 # Live Readiness
@@ -204,27 +231,106 @@ class TestProductionCanary:
 
     def test_validate_api_schemas_valid(self):
         from src.production_canary import _validate_api_schemas
-        events = [{"EventId": 1, "HomeTeam": "A", "AwayTeam": "B", "Period": "Game", "PregameOdds": []}]
+        events = [REALISTIC_EVENT]
         issues = _validate_api_schemas(events)
         assert len(issues) == 0
 
+    def test_validate_api_schemas_missing_fields(self):
+        from src.production_canary import _validate_api_schemas
+        issues = _validate_api_schemas([{"eventID": "evt1"}])
+        assert len(issues) == 1
+        assert "missing fields" in issues[0]
+
     def test_extract_sportsbooks(self):
         from src.production_canary import _extract_sportsbooks
-        events = [{"PregameOdds": [{"Sportsbook": "DraftKings"}, {"Sportsbook": "FanDuel"}]}]
-        books = _extract_sportsbooks(events)
-        assert "DraftKings" in books
-        assert "FanDuel" in books
+        books = _extract_sportsbooks([REALISTIC_EVENT])
+        assert "draftkings" in books
+        assert "fanduel" in books
 
     def test_extract_markets(self):
         from src.production_canary import _extract_markets
-        events = [{"EventId": 1, "PregameOdds": [{"Sportsbook": "DK", "Market": "strikeouts"}]}]
-        markets = _extract_markets(events)
+        markets = _extract_markets([REALISTIC_EVENT])
         assert len(markets) == 1
-        assert markets[0]["market"] == "strikeouts"
+        assert markets[0]["odd_id"] == "points-away-game-ml-away"
+        assert markets[0]["market_name"] == "Moneyline"
+        assert "draftkings" in markets[0]["sportsbooks"]
+
+    def test_validate_mappings_ok(self):
+        from src.production_canary import _validate_mappings
+        issues = _validate_mappings([REALISTIC_EVENT])
+        assert issues == []
+
+    def test_validate_mappings_missing_team_id(self):
+        from src.production_canary import _validate_mappings
+        event = {"teams": {
+            "home": {"statEntityID": "home"},
+            "away": {"teamID": "BOS", "statEntityID": "away"},
+        }}
+        issues = _validate_mappings([event])
+        assert len(issues) == 1
+        assert "missing team IDs" in issues[0]
+
+    def test_validate_market_mappings_recognized_prop(self):
+        from src.production_canary import _validate_market_mappings
+        markets = [{
+            "odd_id": "pitching_strikeouts-PLAYER123-game-ou-over",
+            "stat_entity_id": "PLAYER123",
+        }]
+        issues = _validate_market_mappings(markets)
+        assert issues == []
+
+    def test_validate_market_mappings_game_level_skipped(self):
+        from src.production_canary import _validate_market_mappings
+        markets = [{"odd_id": "points-away-game-ml-away", "stat_entity_id": "away"}]
+        issues = _validate_market_mappings(markets)
+        assert issues == []
+
+    def test_validate_market_mappings_stale_registry_warns(self):
+        from src.production_canary import _validate_market_mappings
+        markets = [{
+            "odd_id": "unknown_stat-PLAYER123-game-ou-over",
+            "stat_entity_id": "PLAYER123",
+        }]
+        issues = _validate_market_mappings(markets)
+        assert len(issues) == 1
+        assert "matched no registered pattern" in issues[0]
+
+    def test_validate_market_mappings_respects_league_argument(self):
+        """A real NFL oddID must match against NFL's registry, not MLB's."""
+        from src.production_canary import _validate_market_mappings
+        markets = [{
+            "odd_id": "passing_yards-JARED_GOFF_1_NFL-game-ou-over",
+            "stat_entity_id": "JARED_GOFF_1_NFL",
+        }]
+        assert _validate_market_mappings(markets, league="NFL") == []
+        # The same real oddID does not exist in MLB's registry — proves the
+        # league argument is actually being used, not silently ignored.
+        mlb_issues = _validate_market_mappings(markets, league="MLB")
+        assert len(mlb_issues) == 1
+
+    def test_run_canary_rejects_unavailable_league(self, monkeypatch):
+        """No real league is currently unavailable (WNBA became available
+        2026-08-19), so this simulates one to prove the rejection path
+        still works rather than deleting the test."""
+        from src.production_canary import run_canary
+        from src.production_config import ProductionConfig
+        from src.sports import wnba as wnba_mod
+        monkeypatch.setattr(wnba_mod, "AVAILABLE", False)
+        monkeypatch.setattr(wnba_mod, "UNAVAILABLE_REASON", "simulated for test")
+        result = run_canary(ProductionConfig(api_key="test-key-12345"), league="WNBA")
+        assert result.status == "failed"
+        assert any("not currently available" in e for e in result.errors)
+
+    def test_run_canary_rejects_unknown_league(self):
+        from src.production_canary import run_canary
+        from src.production_config import ProductionConfig
+        result = run_canary(ProductionConfig(api_key="test-key-12345"), league="NHL")
+        assert result.status == "failed"
+        assert any("Unknown league" in e for e in result.errors)
 
     def test_dry_analysis(self):
         from src.production_canary import _dry_analysis
-        result = _dry_analysis([{"EventId": 1}])
+        result = _dry_analysis([{"eventID": "evt1"}])
         assert result["events_analyzed"] == 1
         assert result["consensus_computed"] is False
 

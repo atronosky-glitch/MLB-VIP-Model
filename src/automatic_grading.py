@@ -12,12 +12,14 @@ import logging
 from database.db_manager import (
     DB,
     get_unsettled_recommendations,
+    get_event_result,
     get_player_stat_result,
     record_grading_completed,
     save_bet_units,
     settle_recommendation,
 )
 from src.grading import GRADER_VERSION, SETTLEMENT_UNRESOLVED, grade_ou
+from src.game_settlement import GAME_MARKET_TYPES, classify_event_status, grade_game_recommendation
 from src.tracker import compute_variable_stake
 
 logger = logging.getLogger(__name__)
@@ -33,9 +35,35 @@ def grade_available_recommendations(conn: DB, event_id: str | None = None) -> di
     recommendations = get_unsettled_recommendations(conn)
     if event_id:
         recommendations = [r for r in recommendations if r.get("event_id") == event_id]
+    # Game-level markets (moneyline/spread/total) have no player_stat_results
+    # row by design (player_id="GAME") — they're graded by
+    # grade_available_game_recommendations() below, from event_results scores.
+    recommendations = [r for r in recommendations if r.get("market_type") not in GAME_MARKET_TYPES]
 
     result = {"examined": len(recommendations), "graded": 0, "unresolved": 0, "errors": 0}
     for rec in recommendations:
+        # A postponed/cancelled/suspended game never produces a player
+        # stat fact — without this check, that recommendation would stay
+        # UNRESOLVED forever. Void it immediately once the event itself is
+        # known to be void, regardless of whether a stat exists.
+        event_result = get_event_result(conn, rec.get("event_id"))
+        if event_result and classify_event_status(event_result.get("final_status")) == "void":
+            try:
+                if settle_recommendation(
+                    conn, rec["recommendation_id"], "VOID",
+                    settlement_reason=f"game status: {event_result.get('final_status')}",
+                    grader_version=GRADER_VERSION,
+                ):
+                    save_bet_units(conn, rec["recommendation_id"], "VOID", rec["offered_american_odds"])
+                    record_grading_completed(conn, rec, "VOID", grader_version=GRADER_VERSION)
+                    result["graded"] += 1
+                else:
+                    result["errors"] += 1
+            except Exception:
+                logger.exception("Void settlement failed recommendation=%s", rec.get("recommendation_id"))
+                result["errors"] += 1
+            continue
+
         stat = get_player_stat_result(
             conn, rec.get("event_id"), rec.get("player_id"), rec.get("market_type")
         )
@@ -81,5 +109,60 @@ def grade_available_recommendations(conn: DB, event_id: str | None = None) -> di
             result["graded"] += 1
         except Exception:
             logger.exception("Automatic grading failed recommendation=%s", rec.get("recommendation_id"))
+            result["errors"] += 1
+    return result
+
+
+def grade_available_game_recommendations(conn: DB, event_id: str | None = None) -> dict:
+    """Grade unsettled game-level recommendations (moneyline/spread/total)
+    from verified stored ``event_results`` (final scores).
+
+    Shared across every league — see ``src/game_settlement.py``. Idempotent
+    the same way ``grade_available_recommendations`` is: ``settle_recommendation``
+    skips anything already settled, so repeated calls are always safe.
+    NEEDS_REVIEW results are settled too (so they show up in the same
+    place as WIN/LOSS/PUSH/VOID) rather than left permanently pending —
+    a human can still act on a NEEDS_REVIEW row via manual override.
+    """
+    recommendations = get_unsettled_recommendations(conn)
+    if event_id:
+        recommendations = [r for r in recommendations if r.get("event_id") == event_id]
+    recommendations = [r for r in recommendations if r.get("market_type") in GAME_MARKET_TYPES]
+
+    result = {"examined": len(recommendations), "graded": 0, "unresolved": 0,
+              "needs_review": 0, "errors": 0}
+    for rec in recommendations:
+        event_result = get_event_result(conn, rec.get("event_id"))
+        status, detail = grade_game_recommendation(rec, event_result)
+        if status == SETTLEMENT_UNRESOLVED:
+            result["unresolved"] += 1
+            continue
+
+        try:
+            if not settle_recommendation(
+                conn,
+                rec["recommendation_id"],
+                status,
+                final_stat_value=None,
+                settlement_reason=detail.get("reason", ""),
+                grader_version=GRADER_VERSION,
+            ):
+                result["errors"] += 1
+                continue
+            stake = compute_variable_stake(
+                rec.get("ev_pct"), rec.get("offered_decimal_odds"), rec.get("model_score")
+            )
+            save_bet_units(
+                conn, rec["recommendation_id"], status,
+                rec["offered_american_odds"], risk_units=stake,
+            )
+            record_grading_completed(
+                conn, rec, status, final_stat_value=None, grader_version=GRADER_VERSION,
+            )
+            result["graded"] += 1
+            if status == "NEEDS_REVIEW":
+                result["needs_review"] += 1
+        except Exception:
+            logger.exception("Automatic game grading failed recommendation=%s", rec.get("recommendation_id"))
             result["errors"] += 1
     return result

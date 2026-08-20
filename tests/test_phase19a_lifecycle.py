@@ -156,7 +156,7 @@ def test_clv_formula_and_closing_lifecycle_snapshot():
             closing_decimal REAL, closing_implied_prob REAL, closing_line REAL,
             closing_observed_at TEXT, closing_sportsbook TEXT,
             line_move_type TEXT, clv_probability REAL, clv_price_diff INTEGER,
-            clv_available INTEGER
+            clv_available INTEGER, line_movement_direction TEXT
         );
         """
     )
@@ -225,7 +225,7 @@ def test_missing_closing_data_is_audited_without_fabricating_clv():
             closing_decimal REAL, closing_implied_prob REAL, closing_line REAL,
             closing_observed_at TEXT, closing_sportsbook TEXT,
             line_move_type TEXT, clv_probability REAL, clv_price_diff INTEGER,
-            clv_available INTEGER
+            clv_available INTEGER, line_movement_direction TEXT
         );
         """
     )

@@ -8,7 +8,7 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import src.worker as worker
 from src.automation import (
@@ -31,6 +31,72 @@ def _job_types(conn) -> list[tuple[str, str]]:
         "SELECT job_type, status FROM scheduled_jobs"
     ).fetchall()
     return [(r["job_type"], r["status"]) for r in rows]
+
+
+class TestCatchupGradingLeagueDispatch:
+    """_run_catchup_grading must route unresolved recs to the right
+    per-league settlement module, and skip leagues with none (WNBA)."""
+
+    def test_dispatches_by_league_and_skips_unavailable(self, monkeypatch):
+        recs = [
+            {"recommendation_id": "r-mlb", "league": "MLB"},
+            {"recommendation_id": "r-nfl-1", "league": "NFL"},
+            {"recommendation_id": "r-nfl-2", "league": "NFL"},
+            {"recommendation_id": "r-legacy"},  # no league column populated yet
+            {"recommendation_id": "r-wnba", "league": "WNBA"},
+        ]
+        calls = []
+
+        def fake_mlb_ingest(conn, recommendations, client=None):
+            calls.append(("MLB", [r["recommendation_id"] for r in recommendations]))
+            return {"facts_saved": 1}
+
+        def fake_nfl_ingest(conn, recommendations, client=None):
+            calls.append(("NFL", [r["recommendation_id"] for r in recommendations]))
+            return {"facts_saved": 2}
+
+        def fake_wnba_ingest(conn, recommendations, client=None):
+            calls.append(("WNBA", [r["recommendation_id"] for r in recommendations]))
+            return {"facts_saved": 3}
+
+        with patch("database.db_manager.get_unsettled_recommendations", return_value=recs), \
+             patch("src.automatic_grading.grade_available_recommendations", return_value={"graded": 0}), \
+             patch("src.automatic_grading.grade_available_game_recommendations", return_value={"graded": 0}), \
+             patch("src.mlb_results.ingest_results_for_recommendations", side_effect=fake_mlb_ingest), \
+             patch("src.nfl_results.ingest_results_for_recommendations", side_effect=fake_nfl_ingest), \
+             patch("src.wnba_results.ingest_results_for_recommendations", side_effect=fake_wnba_ingest):
+            result = worker._run_catchup_grading(conn=MagicMock())
+
+        dispatched = dict(calls)
+        assert set(dispatched["MLB"]) == {"r-mlb", "r-legacy"}  # legacy rows default to MLB
+        assert set(dispatched["NFL"]) == {"r-nfl-1", "r-nfl-2"}
+        assert set(dispatched["WNBA"]) == {"r-wnba"}
+        assert result["results"]["MLB"]["facts_saved"] == 1
+        assert result["results"]["NFL"]["facts_saved"] == 2
+        assert result["results"]["WNBA"]["facts_saved"] == 3
+
+
+class TestBackupSkipsUnderPostgres:
+    """PostgreSQL production must never run the SQLite-only backup path."""
+
+    def test_run_backup_skips_when_database_url_set(self, monkeypatch):
+        monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host/db")
+        with patch("src.backup_database.backup_database") as mock_backup:
+            result = worker._run_backup(config=object())
+        assert result == {"status": "skipped", "reason": "postgresql_managed_externally"}
+        mock_backup.assert_not_called()
+
+    def test_run_backup_runs_sqlite_backup_without_database_url(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        fake_config = type("Cfg", (), {
+            "database_path": str(tmp_path / "db.sqlite"),
+            "backup_retention_count": 7,
+            "backup_compression": False,
+        })()
+        with patch("src.backup_database.backup_database", return_value=tmp_path / "backup.db") as mock_backup:
+            result = worker._run_backup(fake_config)
+        mock_backup.assert_called_once()
+        assert result["status"] == "success"
 
 
 class TestPregameJobTypeConsistency:
