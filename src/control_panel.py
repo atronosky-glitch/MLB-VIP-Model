@@ -40,45 +40,46 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Force the near-black navy background even if the host applies a
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,700&family=JetBrains+Mono:wght@500;700;800&display=swap');
+    /* Force the near-black warm background even if the host applies a
        light base theme (e.g. Render CLI flags). */
     .stApp {
-        background: #080B12;
+        background: #0d0b07;
     }
     [data-testid="stHeader"] {
         background: transparent;
     }
     [data-testid="stSidebar"] {
-        background: #0B1120;
+        background: #110d07;
     }
     [data-testid="stSidebar"] * {
-        color: #F6F8FC;
+        color: #f5f1e6;
     }
     [data-testid="stAppViewContainer"] {
-        background: radial-gradient(1000px 500px at 70% -10%, #1B2440 0%, transparent 60%), #080B12;
-        color: #F6F8FC;
+        background: radial-gradient(1000px 500px at 70% -10%, #2b220e 0%, transparent 60%), #0d0b07;
+        color: #f5f1e6;
     }
     [data-testid="stMarkdownContainer"] p,
     [data-testid="stMarkdownContainer"] li {
-        color: #F6F8FC;
+        color: #f5f1e6;
     }
 
     /* Metric / KPI cards read like glass panels with a lime value. */
     [data-testid="stMetric"] {
-        background: linear-gradient(145deg, rgba(23, 31, 46, .95), rgba(13, 18, 28, .95));
+        background: linear-gradient(145deg, rgba(35, 30, 18, .95), rgba(18, 15, 10, .95));
         border: 1px solid rgba(255, 255, 255, .08);
         border-radius: 14px;
         padding: 16px 18px;
     }
     [data-testid="stMetricValue"] {
-        color: #F6F8FC;
+        color: #f5f1e6;
         font-family: 'JetBrains Mono', monospace;
         font-weight: 800;
         letter-spacing: -0.03em;
         font-variant-numeric: tabular-nums;
     }
     [data-testid="stMetricLabel"] {
-        color: #8E9AAE;
+        color: #9a9488;
         text-transform: uppercase;
         letter-spacing: 0.09em;
         font-size: 0.72rem;
@@ -105,13 +106,13 @@ st.markdown(
         text-transform: uppercase;
         font-size: 0.78rem;
         letter-spacing: 0.04em;
-        color: #8E9AAE;
+        color: #9a9488;
     }
     button[data-baseweb="tab"][aria-selected="true"] {
-        color: #B9FF45 !important;
+        color: #e8b923 !important;
     }
     div[data-baseweb="tab-highlight"] {
-        background-color: #B9FF45 !important;
+        background-color: #e8b923 !important;
         height: 3px !important;
     }
 
@@ -172,16 +173,16 @@ def _theme_chart(chart, height: int = 320):
             padding={"left": 8, "right": 8, "top": 8, "bottom": 4},
             view={"stroke": "transparent"},
             axis={
-                "labelColor": "#8E9AAE",
+                "labelColor": "#9a9488",
                 "tickColor": "transparent",
                 "gridColor": "rgba(255,255,255,0.06)",
-                "titleColor": "#8E9AAE",
+                "titleColor": "#9a9488",
                 "domainColor": "rgba(255,255,255,0.14)",
                 "titleFontWeight": 700,
                 "labelFontSize": 11,
                 "titleFontSize": 12,
             },
-            legend={"labelColor": "#8E9AAE", "titleColor": "#8E9AAE", "orient": "top"},
+            legend={"labelColor": "#9a9488", "titleColor": "#9a9488", "orient": "top"},
         )
         .properties(height=height)
     )
@@ -246,15 +247,16 @@ def _format_pick_side_line(rec: dict) -> str:
 
 # ── Shared "betting-slip stub" card renderer ────────────────────────
 # Left-edge color encodes tier/outcome; the headline number's color
-# encodes direction (lime = positive/win, red = negative/loss).
+# encodes direction (green = positive/win, red = negative/loss). Gold is
+# reserved for brand/tier accents, not outcome, to match customer_view.py.
 _TIER_STUB = {
-    "OFFICIAL_TRACKED": ("#B9FF45", "VIP OFFICIAL"),
+    "OFFICIAL_TRACKED": ("#e8b923", "VIP OFFICIAL"),
     "DISCOVERY_TRACKED": ("#A995FF", "DISCOVERY"),
 }
 _OUTCOME_STUB = {
-    "win": ("#B9FF45", "WIN"),
-    "loss": ("#FF3D58", "LOSS"),
-    "push": ("#8E9AAE", "PUSH"),
+    "win": ("#3ddc84", "WIN"),
+    "loss": ("#ff5468", "LOSS"),
+    "push": ("#9a9488", "PUSH"),
     "pending": ("#FFC75F", "PENDING"),
 }
 
@@ -274,7 +276,7 @@ def _render_pick_stub_card(
     st.markdown(
         f"""
         <div style="
-            background: linear-gradient(145deg, rgba(23, 31, 46, .95), rgba(13, 18, 28, .95));
+            background: linear-gradient(145deg, rgba(35, 30, 18, .95), rgba(18, 15, 10, .95));
             border: 1px solid rgba(255, 255, 255, .08);
             border-left: 4px solid {stub_hex};
             border-radius: 14px;
@@ -292,12 +294,12 @@ def _render_pick_stub_card(
                 font-weight: 800;
                 font-size: 1.02rem;
                 margin-top: 4px;
-                color: #F6F8FC;
+                color: #f5f1e6;
             ">{title}</div>
-            <div style="color:#8E9AAE; font-size:0.82rem; margin-top:2px;">{subtitle}</div>
+            <div style="color:#9a9488; font-size:0.82rem; margin-top:2px;">{subtitle}</div>
             <div style="
                 font-family: 'JetBrains Mono', monospace;
-                color:#8E9AAE;
+                color:#9a9488;
                 font-size:0.8rem;
                 margin-top:6px;
             ">{detail}</div>
@@ -307,7 +309,7 @@ def _render_pick_stub_card(
                 font-size:0.95rem;
                 color:{headline_hex};
                 margin-top:8px;
-            ">{headline} <span style="color:#8E9AAE; font-weight:500; font-size:0.78rem;">{tail}</span></div>
+            ">{headline} <span style="color:#9a9488; font-weight:500; font-size:0.78rem;">{tail}</span></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -691,8 +693,8 @@ if st.session_state.last_run_time is None:
 
 # ── Top bar ────────────────────────────────────────────────────────
 is_shadow = bool(shadow and shadow.shadow_mode)
-_pill_bg = "rgba(255,199,95,.14)" if is_shadow else "rgba(185,255,69,.08)"
-_pill_col = "#FFC75F" if is_shadow else "#B9FF45"
+_pill_bg = "rgba(255,199,95,.14)" if is_shadow else "rgba(232,185,35,.08)"
+_pill_col = "#FFC75F" if is_shadow else "#e8b923"
 _pill_txt = "SHADOW MODE" if is_shadow else "MODEL LIVE"
 st.markdown(
     f"""
@@ -700,10 +702,10 @@ st.markdown(
         border-bottom:1px solid rgba(255,255,255,.08);padding:6px 0 14px;">
         <div style="display:flex;align-items:center;gap:11px;font-weight:800;letter-spacing:.02em;">
             <span style="display:grid;place-items:center;width:36px;height:36px;border-radius:10px;
-                background:linear-gradient(135deg,#B9FF45,#48D8FF);color:#0A1017;font-size:19px;">⚾</span>
+                background:linear-gradient(135deg,#e8b923,#c9861f);color:#12100a;font-size:19px;">⚾</span>
             <span style="line-height:1.05;">
                 <span style="display:block;font-size:15px;">MLB VIP MODEL</span>
-                <small style="display:block;color:#8E9AAE;font-size:10px;letter-spacing:.12em;font-weight:700;">SHARP MARKET INTELLIGENCE</small>
+                <small style="display:block;color:#9a9488;font-size:10px;letter-spacing:.12em;font-weight:700;">SHARP MARKET INTELLIGENCE</small>
             </span>
         </div>
         <div style="border:1px solid {_pill_col}40;background:{_pill_bg};color:{_pill_col};
@@ -721,11 +723,13 @@ st.markdown(
     f"""
     <div style="padding:40px 0 24px;display:flex;align-items:end;justify-content:space-between;gap:25px;flex-wrap:wrap;">
         <div>
-            <div style="color:#B9FF45;font-weight:800;font-size:12px;letter-spacing:.13em;text-transform:uppercase;">
+            <div style="color:#e8b923;font-weight:800;font-size:12px;letter-spacing:.13em;text-transform:uppercase;">
                 {datetime.now(timezone.utc).strftime('%B %d, %Y')} · MLB Slate
             </div>
-            <h1 style="margin:8px 0 10px;font-size:clamp(30px,4.5vw,54px);line-height:1;letter-spacing:-.055em;">Find the price. <em style="color:#B9FF45;font-style:normal;">Beat the market.</em></h1>
-            <p style="margin:0;color:#8E9AAE;max-width:570px;font-size:16px;">Pinnacle-first player props, checked against the market and delivered with complete transparency.</p>
+            <h1 style="margin:8px 0 10px;font-family:'Playfair Display',serif;font-style:italic;
+                font-weight:700;font-size:clamp(30px,4.5vw,54px);line-height:1.08;letter-spacing:-.01em;">
+                Find the price. <em style="color:#e8b923;font-style:italic;">Beat the market.</em></h1>
+            <p style="margin:0;color:#9a9488;max-width:570px;font-size:16px;">Pinnacle-first player props, checked against the market and delivered with complete transparency.</p>
         </div>
     </div>
     """,
@@ -828,7 +832,7 @@ with tabs[0]:
         for i, r in enumerate(top):
             is_yn = (r.get("market_form") or "").lower() == "yn" or str(r.get("market_type", "")).endswith("_yn")
             edge = (r.get("yn_implied_prob_adv") if is_yn else r.get("ev_pct")) or 0.0
-            edge_hex = "#17C964" if edge > 0 else ("#F31260" if edge < 0 else "#7A8CAB")
+            edge_hex = "#3ddc84" if edge > 0 else ("#ff5468" if edge < 0 else "#9a9488")
             tier = r.get("tier") or r.get("recommendation_tier")
             stub_hex, stub_label = _TIER_STUB.get(tier, ("#F5A623", "VIP OFFICIAL"))
             with top_cols[i]:
@@ -1307,12 +1311,12 @@ with tabs[4]:
                 df_pnl["Date"] = pd.to_datetime(df_pnl["Date"])
 
                 current_total = df_pnl["Cumulative"].iloc[-1]
-                accent = "#B9FF45" if current_total >= 0 else "#FF3D58"
+                accent = "#3ddc84" if current_total >= 0 else "#ff5468"
                 st.markdown(f"""
-                <div style="background:linear-gradient(145deg, rgba(23,31,46,.95), rgba(13,18,28,.95));
+                <div style="background:linear-gradient(145deg, rgba(35,30,18,.95), rgba(18,15,10,.95));
                             border:1px solid rgba(255,255,255,.08); border-radius:14px;
                             padding:18px 22px; margin-bottom:10px;">
-                  <div style="color:#8E9AAE; text-transform:uppercase; letter-spacing:.09em;
+                  <div style="color:#9a9488; text-transform:uppercase; letter-spacing:.09em;
                               font-size:.72rem; font-weight:800;">
                     Cumulative Result &mdash; All Settled Official Picks
                   </div>
@@ -1325,11 +1329,11 @@ with tabs[4]:
 
                 st.subheader("Cumulative Profit / Loss")
                 base = alt.Chart(df_pnl)
-                area = base.mark_area(color="#B9FF45", opacity=0.14).encode(
+                area = base.mark_area(color="#3ddc84", opacity=0.14).encode(
                     x=alt.X("Date:T", title="", axis=alt.Axis(format="%b %d")),
                     y=alt.Y("Cumulative:Q", title="Cumulative PnL (u)"),
                 )
-                line = base.mark_line(stroke="#B9FF45", strokeWidth=2.5).encode(
+                line = base.mark_line(stroke="#3ddc84", strokeWidth=2.5).encode(
                     x=alt.X("Date:T", title="", axis=alt.Axis(format="%b %d")),
                     y=alt.Y("Cumulative:Q", title="Cumulative PnL (u)"),
                 )
@@ -1365,7 +1369,7 @@ with tabs[4]:
                     "Profit (u)": [r["profit_units"] or 0 for r in ev_rows],
                 })
                 df_ev["Sign"] = df_ev["Profit (u)"].apply(
-                    lambda p: "#B9FF45" if p >= 0 else "#FF3D58"
+                    lambda p: "#3ddc84" if p >= 0 else "#ff5468"
                 )
                 st.subheader("EV% vs Profit")
                 scatter = alt.Chart(df_ev).mark_circle(size=70, opacity=0.9).encode(

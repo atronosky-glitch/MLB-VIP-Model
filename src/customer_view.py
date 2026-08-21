@@ -26,37 +26,41 @@ st.set_page_config(page_title="VIP | Sharp Market Intelligence", page_icon="🎯
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
-:root { --ink:#e8eef7; --muted:#9aa9bc; --line:#263448; --panel:#111b2b; --mint:#9ef0c7; --blue:#83aaff; --gold:#f2c66d; }
-.stApp { background: radial-gradient(circle at 85% 0%, #172b4a 0, #08111f 38%, #060c16 100%); color:var(--ink); }
-[data-testid="stHeader"] { background:rgba(6,12,22,.75); }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap');
+:root {
+  --ink:#f5f1e6; --muted:#9a9488; --line:#2c2a22; --panel:#141310;
+  --gold:#e8b923; --gold-soft:#caa23a; --win:#3ddc84; --loss:#ff5468; --ref:#b3a687;
+}
+.stApp { background: radial-gradient(circle at 85% 0%, #211b0c 0, #0d0b07 38%, #080705 100%); color:var(--ink); }
+[data-testid="stHeader"] { background:rgba(8,7,5,.75); }
 h1,h2,h3 { font-family:'Space Grotesk',sans-serif !important; letter-spacing:-.045em; color:var(--ink) !important; }
 p,div,span,button { font-family:'DM Sans',sans-serif; }
 .hero { padding:2.3rem 0 1.5rem; }
-.eyebrow { color:var(--mint); font-weight:700; letter-spacing:.16em; font-size:.7rem; text-transform:uppercase; }
-.hero h1 { font-size:clamp(2.8rem,7vw,6.4rem); line-height:.9; margin:.55rem 0 1.1rem; }
+.eyebrow { color:var(--gold); font-weight:700; letter-spacing:.16em; font-size:.7rem; text-transform:uppercase; }
+.hero h1 { font-family:'Playfair Display',serif !important; font-style:italic; font-weight:700 !important; font-size:clamp(2.6rem,6.4vw,5.6rem); line-height:1.08; margin:.55rem 0 1.1rem; letter-spacing:-.01em !important; }
+.hero h1 em { color:var(--gold); font-style:italic; }
 .hero p { color:var(--muted); font-size:1.05rem; max-width:680px; line-height:1.65; }
-.pill { display:inline-block; padding:.42rem .72rem; border:1px solid #31506b; border-radius:999px; color:var(--mint); font-size:.72rem; font-weight:700; letter-spacing:.08em; }
-.pick { background:linear-gradient(135deg,#13233a,#0e1828); border:1px solid var(--line); border-radius:20px; padding:1.15rem 1.25rem; margin:.65rem 0; box-shadow:0 16px 38px rgba(0,0,0,.18); }
-.pick.settled { border-color:#2d6e57; }
-.pick.win { background:linear-gradient(135deg,#102d26,#0d1d1b); border-color:#2f9e72; }
-.pick.loss { background:linear-gradient(135deg,#321b25,#20131a); border-color:#d45b6b; }
-.pick.push, .pick.void { background:linear-gradient(135deg,#252a35,#171b24); border-color:#667085; }
-.pick.locked { background:linear-gradient(135deg,#192238,#101827); border-color:#3b4e6e; }
-.pick.research { background:#171b26; border-color:#5d4e2c; }
+.pill { display:inline-block; padding:.42rem .72rem; border:1px solid var(--gold-soft); border-radius:999px; color:var(--gold); font-size:.72rem; font-weight:700; letter-spacing:.08em; }
+.pick { background:linear-gradient(135deg,#1c1810,#120f0a); border:1px solid var(--line); border-radius:20px; padding:1.15rem 1.25rem; margin:.65rem 0; box-shadow:0 16px 38px rgba(0,0,0,.3); }
+.pick.settled { border-color:#3a3320; }
+.pick.win { background:linear-gradient(135deg,#122a1c,#0d1d15); border-color:#2f9e72; }
+.pick.loss { background:linear-gradient(135deg,#2c151c,#1c1013); border-color:#c94b5c; }
+.pick.push, .pick.void { background:linear-gradient(135deg,#221f19,#161410); border-color:#5c5646; }
+.pick.locked { background:linear-gradient(135deg,#221c10,#15120b); border-color:#5c4c22; }
+.pick.research { background:#18150e; border-color:#5d4e2c; }
 .pick-title { font-family:'Space Grotesk'; font-size:1.18rem; font-weight:700; color:var(--ink); }
 .pick-meta { color:var(--muted); font-size:.88rem; margin-top:.4rem; }
-.edge { color:var(--mint); font-weight:700; }
-.result-win { color:#72efb2; font-weight:800; letter-spacing:.04em; }
-.result-loss { color:#ff8c9a; font-weight:800; letter-spacing:.04em; }
-.unit-line { color:#e8eef7; font-family:'Space Grotesk'; font-size:1rem; font-weight:700; margin-top:.55rem; }
+.edge { color:var(--gold); font-weight:700; }
+.result-win { color:var(--win); font-weight:800; letter-spacing:.04em; }
+.result-loss { color:var(--loss); font-weight:800; letter-spacing:.04em; }
+.unit-line { color:var(--ink); font-family:'Space Grotesk'; font-size:1rem; font-weight:700; margin-top:.55rem; }
 .gold { color:var(--gold); font-weight:700; }
 .section-note { color:var(--muted); font-size:.9rem; line-height:1.5; }
-.lock-copy { color:#c6d1e1; font-family:'Space Grotesk'; font-weight:600; letter-spacing:.02em; }
-.feature { background:rgba(17,27,43,.72); border:1px solid var(--line); border-radius:16px; padding:1rem; min-height:120px; }
-.feature-title { color:var(--mint); font-weight:700; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase; }
-.results-panel { background:linear-gradient(135deg,#101d30,#0a1526); border:1px solid var(--line); border-radius:20px; padding:1.4rem 1.5rem 1.1rem; margin:.8rem 0 1.2rem; }
-.results-eyebrow { color:var(--mint); font-weight:700; letter-spacing:.14em; font-size:.68rem; text-transform:uppercase; }
+.lock-copy { color:#e2dbc8; font-family:'Space Grotesk'; font-weight:600; letter-spacing:.02em; }
+.feature { background:rgba(23,21,16,.72); border:1px solid var(--line); border-radius:16px; padding:1rem; min-height:120px; }
+.feature-title { color:var(--gold); font-weight:700; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase; }
+.results-panel { background:linear-gradient(135deg,#191509,#100d07); border:1px solid var(--line); border-radius:20px; padding:1.4rem 1.5rem 1.1rem; margin:.8rem 0 1.2rem; }
+.results-eyebrow { color:var(--gold); font-weight:700; letter-spacing:.14em; font-size:.68rem; text-transform:uppercase; }
 .results-number { font-family:'Space Grotesk',sans-serif; font-size:3rem; font-weight:700; line-height:1.05; margin:.3rem 0 .2rem; }
 .results-caption { color:var(--muted); font-size:.85rem; max-width:520px; line-height:1.5; }
 </style>
@@ -364,7 +368,7 @@ today = datetime.now(timezone.utc).strftime("%B %d, %Y")
 st.markdown(f"""
 <div class="hero">
   <div class="eyebrow">VIP · Sharp Market Intelligence · MLB · NFL · WNBA</div>
-  <h1>Stop guessing.<br>Find the number.</h1>
+  <h1>Stop guessing.<br><em>Find the number.</em></h1>
   <p>Thousands of sportsbook prices are screened for fair value, market quality, and closing-line evidence. The model does not need a play every day.</p>
   <span class="pill">{today} · {'SUBSCRIBER VIEW' if authorized else 'PUBLIC VIEW'}</span>
 </div>
@@ -424,7 +428,7 @@ if data["settled"]:
 
         period_units = chart_df["Actual Units"].iloc[-1]
         positive = period_units >= 0
-        line_color = "#9ef0c7" if positive else "#ff8c9a"
+        line_color = "#3ddc84" if positive else "#ff5468"
 
         st.markdown(f"""
         <div class="results-panel">
@@ -440,13 +444,13 @@ if data["settled"]:
             color=line_color, opacity=0.16, interpolate="monotone",
         ).encode(
             x=alt.X("Date:T", title=None,
-                    axis=alt.Axis(grid=False, labelColor="#9aa9bc", tickColor="#263448", domainColor="#263448")),
+                    axis=alt.Axis(grid=False, labelColor="#9a9488", tickColor="#2c2a22", domainColor="#2c2a22")),
             y=alt.Y("Actual Units:Q", title="Cumulative units",
-                    axis=alt.Axis(grid=True, gridColor="#182338", labelColor="#9aa9bc", titleColor="#9aa9bc")),
+                    axis=alt.Axis(grid=True, gridColor="#211d14", labelColor="#9a9488", titleColor="#9a9488")),
             tooltip=[alt.Tooltip("Date:T", title="Date"), alt.Tooltip("Actual Units:Q", format="+.2f")],
         )
         expected_line = alt.Chart(chart_df).mark_line(
-            color="#83aaff", strokeDash=[4, 3], strokeWidth=1.6, interpolate="monotone", opacity=0.85,
+            color="#b3a687", strokeDash=[4, 3], strokeWidth=1.6, interpolate="monotone", opacity=0.85,
         ).encode(
             x="Date:T",
             y="Expected Units:Q",
