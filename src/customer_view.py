@@ -60,6 +60,15 @@ p,div,span,button { font-family:'DM Sans',sans-serif; }
 .feature { background:rgba(23,21,16,.72); border:1px solid var(--line); border-radius:16px; padding:1rem; min-height:120px; }
 .feature-title { color:var(--gold); font-weight:700; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase; }
 .results-panel { background:linear-gradient(135deg,#191509,#100d07); border:1px solid var(--line); border-radius:20px; padding:1.4rem 1.5rem 1.1rem; margin:.8rem 0 1.2rem; }
+.hero-checklist { margin:.9rem 0 1.4rem; }
+.check-item { color:var(--ink); font-size:.98rem; margin:.45rem 0; display:flex; align-items:center; gap:.6rem; }
+.check-mark { display:inline-flex; align-items:center; justify-content:center; width:1.3rem; height:1.3rem; border-radius:50%; border:1px solid var(--gold-soft); color:var(--gold); font-size:.72rem; font-weight:800; flex:none; }
+.hero-cta { margin:.3rem 0 1.4rem; display:flex; gap:.75rem; flex-wrap:wrap; }
+.btn-primary { background:var(--gold); color:#151006; font-weight:800; padding:.72rem 1.35rem; border-radius:10px; text-decoration:none; font-size:.92rem; display:inline-block; }
+.btn-secondary { background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:700; padding:.68rem 1.3rem; border-radius:10px; text-decoration:none; font-size:.92rem; display:inline-block; }
+.footer-band { border-top:1px solid var(--line); padding:1.6rem 0 .4rem; margin-top:.6rem; }
+.footer-label { color:var(--muted); font-size:.7rem; letter-spacing:.14em; text-transform:uppercase; font-weight:700; }
+.footer-books { color:var(--ink); font-size:.95rem; margin-top:.5rem; letter-spacing:.01em; opacity:.85; }
 .results-eyebrow { color:var(--gold); font-weight:700; letter-spacing:.14em; font-size:.68rem; text-transform:uppercase; }
 .results-number { font-family:'Space Grotesk',sans-serif; font-size:3rem; font-weight:700; line-height:1.05; margin:.3rem 0 .2rem; }
 .results-caption { color:var(--muted); font-size:.85rem; max-width:520px; line-height:1.5; }
@@ -370,8 +379,18 @@ st.markdown(f"""
   <div class="eyebrow">VIP · Sharp Market Intelligence · MLB · NFL · WNBA</div>
   <h1>Stop guessing.<br><em>Find the number.</em></h1>
   <p>Thousands of sportsbook prices are screened for fair value, market quality, and closing-line evidence. The model does not need a play every day.</p>
+  <div class="hero-checklist">
+    <div class="check-item"><span class="check-mark">&#10003;</span> Every price checked against Pinnacle and the wider market</div>
+    <div class="check-item"><span class="check-mark">&#10003;</span> Closing-line value tracked on every settled pick</div>
+    <div class="check-item"><span class="check-mark">&#10003;</span> Wins and losses shown equally &mdash; nothing hidden</div>
+  </div>
+  <div class="hero-cta">
+    <a href="#today-picks" class="btn-primary">View Today's Picks &rarr;</a>
+    <a href="#track-record" class="btn-secondary">See the Track Record</a>
+  </div>
   <span class="pill">{today} · {'SUBSCRIBER VIEW' if authorized else 'PUBLIC VIEW'}</span>
 </div>
+<div id="today-picks"></div>
 """, unsafe_allow_html=True)
 
 if not authorized:
@@ -404,18 +423,13 @@ else:
                 _render_full_pick(pick)
 
 st.divider()
+st.markdown('<div id="track-record"></div>', unsafe_allow_html=True)
 st.subheader("Verified Track Record — Past Picks")
 st.caption("Settled Official Picks only. Winners and losses are included equally; no results are manually selected or hidden.")
 if data["settled"]:
     with st.expander("Filter settled picks", expanded=False):
         settled_filters = render_pick_filters(data["settled"], "settled")
     filtered_settled = _apply_filters(data["settled"], settled_filters)
-
-    if filtered_settled:
-        for pick in filtered_settled[:10]:
-            _render_full_pick(pick, settled=True)
-    else:
-        st.caption("No settled picks match the current filters.")
 
     summary = performance_summary(filtered_settled)
     period = st.radio("Performance period", ["7D", "30D", "ALL"], horizontal=True, index=2)
@@ -465,6 +479,13 @@ if data["settled"]:
             width="stretch",
         )
 
+    if filtered_settled:
+        with st.expander(f"View all {len(filtered_settled)} settled picks", expanded=False):
+            for pick in filtered_settled[:10]:
+                _render_full_pick(pick, settled=True)
+    else:
+        st.caption("No settled picks match the current filters.")
+
     st.markdown("#### Performance Dashboard")
     cols = st.columns(6)
     cols[0].metric("Record", f"{summary['wins']}-{summary['losses']}-{summary['pushes']}")
@@ -512,5 +533,20 @@ for col, title, body in zip(features, ["Multi-book scan", "Fair value", "Sharp r
 ]):
     with col:
         st.markdown(f'<div class="feature"><div class="feature-title">{title}</div><div class="section-note">{body}</div></div>', unsafe_allow_html=True)
+
+_books_seen = sorted({
+    (r.get("sportsbook") or "").strip()
+    for pool in (data["settled"], data["upcoming"], data["research"])
+    for r in pool
+    if r.get("sportsbook")
+})
+_books_line = " &nbsp;·&nbsp; ".join(_books_seen) if _books_seen else "Books populate once the model has scanned live odds."
+
+st.markdown(f"""
+<div class="footer-band">
+  <div class="footer-label">Leagues Covered &middot; Books Scanned &middot; Updated Automatically</div>
+  <div class="footer-books">MLB &nbsp;·&nbsp; NFL &nbsp;·&nbsp; WNBA &nbsp;&mdash;&nbsp; {_books_line}</div>
+</div>
+""", unsafe_allow_html=True)
 
 st.caption("This platform does not guarantee profit, place bets, or present Research opportunities as Official Picks.")
