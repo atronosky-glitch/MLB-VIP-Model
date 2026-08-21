@@ -719,12 +719,32 @@ st.markdown(
 )
 
 # ── Hero ───────────────────────────────────────────────────────────
+# The slate label reflects whichever leagues actually have official
+# picks today, rather than a hardcoded "MLB Slate" that would keep
+# claiming MLB-only even after NFL/WNBA start producing real picks.
+try:
+    _conn_slate = _open_dashboard_connection(db_path)
+    try:
+        _slate_leagues = [
+            r["league"] or "MLB"
+            for r in _conn_slate.execute(
+                """SELECT DISTINCT hr.league FROM official_picks op
+                   JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
+                   WHERE date(op.selected_at) = date('now') AND op.pick_status = 'ACTIVE'"""
+            ).fetchall()
+        ]
+    finally:
+        _conn_slate.close()
+except Exception:
+    _slate_leagues = []
+_slate_label = " · ".join(sorted(_slate_leagues)) + " Slate" if _slate_leagues else "Slate"
+
 st.markdown(
     f"""
     <div style="padding:40px 0 24px;display:flex;align-items:end;justify-content:space-between;gap:25px;flex-wrap:wrap;">
         <div>
             <div style="color:#e8b923;font-weight:800;font-size:12px;letter-spacing:.13em;text-transform:uppercase;">
-                {datetime.now(timezone.utc).strftime('%B %d, %Y')} · MLB Slate
+                {datetime.now(timezone.utc).strftime('%B %d, %Y')} · {_slate_label}
             </div>
             <h1 style="margin:8px 0 10px;font-family:'Playfair Display',serif;font-style:italic;
                 font-weight:700;font-size:clamp(30px,4.5vw,54px);line-height:1.08;letter-spacing:-.01em;">
@@ -837,7 +857,7 @@ with tabs[0]:
             stub_hex, stub_label = _TIER_STUB.get(tier, ("#F5A623", "VIP OFFICIAL"))
             with top_cols[i]:
                 _render_pick_stub_card(
-                    rank=f"#{i + 1}",
+                    rank=f"#{i + 1} · {r.get('league') or 'MLB'}",
                     stub_hex=stub_hex,
                     stub_label=stub_label,
                     title=r.get("player_name", ""),
@@ -866,6 +886,7 @@ with tabs[0]:
                 )
             board_rows.append({
                 "Date": (p.get("selected_at") or p.get("event_start_time") or "")[:16],
+                "League": p.get("league") or "MLB",
                 "Matchup": p.get("matchup", ""),
                 "Pick": pick_label,
                 "Odds": p.get("offered_american_odds"),
@@ -877,6 +898,7 @@ with tabs[0]:
             pd.DataFrame(board_rows),
             column_config={
                 "Date": st.column_config.TextColumn("Date"),
+                "League": st.column_config.TextColumn("League"),
                 "Matchup": st.column_config.TextColumn("Matchup"),
                 "Pick": st.column_config.TextColumn("Pick"),
                 "Odds": st.column_config.TextColumn("Odds"),
@@ -939,7 +961,7 @@ with tabs[1]:
                     "Price Adv (pp)": pa_d,
                     "Model Score": round(op["model_score"], 1) if op.get("model_score") is not None else "N/A",
                     "Outcome": outcome,
-                    "Profit (u)": profit if profit is not None else "",
+                    "Profit (u)": profit,
                     "Frozen At": (op.get("selected_at") or "")[:16],
                 })
 

@@ -149,7 +149,8 @@ def get_official_picks(
                hr.offered_decimal_odds, hr.ev_pct, hr.yn_implied_prob_adv,
                hr.n_consensus_books, hr.market_quality, hr.freshness_status,
                hr.rec_status, hr.matchup, hr.event_status, hr.event_start_time,
-               hr.model_score, hr.score_explanation, hr.fingerprint
+               hr.model_score, hr.score_explanation, hr.fingerprint,
+               hr.league, hr.sport
         FROM official_picks op
         JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
         {where_clause}
