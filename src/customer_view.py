@@ -35,7 +35,15 @@ st.markdown("""
 [data-testid="stHeader"] { background:rgba(8,7,5,.75); }
 h1,h2,h3 { font-family:'Space Grotesk',sans-serif !important; letter-spacing:-.045em; color:var(--ink) !important; }
 p,div,span,button { font-family:'DM Sans',sans-serif; }
-.hero { padding:2.3rem 0 1.5rem; }
+.topnav { display:flex; align-items:center; justify-content:space-between; padding:1.1rem 0; border-bottom:1px solid var(--line); flex-wrap:wrap; gap:.9rem; }
+.topnav-brand { display:flex; align-items:center; gap:.65rem; }
+.topnav-mark { display:inline-flex; align-items:center; justify-content:center; width:2.1rem; height:2.1rem; border-radius:8px; background:linear-gradient(135deg,var(--gold),#c9861f); color:#151006; font-weight:800; font-family:'Space Grotesk'; font-size:.85rem; }
+.topnav-word { color:var(--ink); font-weight:700; font-size:.95rem; letter-spacing:-.01em; }
+.topnav-links { display:flex; gap:1.7rem; }
+.topnav-links a { color:var(--muted); font-weight:700; font-size:.85rem; text-decoration:none; letter-spacing:.01em; }
+.hero { position:relative; padding:3rem 0 1.8rem; overflow:hidden; }
+.hero-watermark { position:absolute; right:-3rem; top:-3.5rem; font-size:24rem; font-weight:800; font-family:'Space Grotesk',sans-serif; color:var(--gold); opacity:.045; line-height:1; z-index:0; pointer-events:none; user-select:none; }
+.hero > *:not(.hero-watermark) { position:relative; z-index:1; }
 .eyebrow { color:var(--gold); font-weight:700; letter-spacing:.16em; font-size:.7rem; text-transform:uppercase; }
 .hero h1 { font-family:'Playfair Display',serif !important; font-style:italic; font-weight:700 !important; font-size:clamp(2.6rem,6.4vw,5.6rem); line-height:1.08; margin:.55rem 0 1.1rem; letter-spacing:-.01em !important; }
 .hero h1 em { color:var(--gold); font-style:italic; }
@@ -375,7 +383,18 @@ except Exception:
 
 today = datetime.now(timezone.utc).strftime("%B %d, %Y")
 st.markdown(f"""
+<div class="topnav">
+  <div class="topnav-brand">
+    <span class="topnav-mark">VIP</span>
+    <span class="topnav-word">Sharp Market Intelligence</span>
+  </div>
+  <div class="topnav-links">
+    <a href="#today-picks">Today's Picks</a>
+    <a href="#track-record">Track Record</a>
+  </div>
+</div>
 <div class="hero">
+  <div class="hero-watermark">VIP</div>
   <div class="eyebrow">VIP · Sharp Market Intelligence · MLB · NFL · WNBA</div>
   <h1>Stop guessing.<br><em>Find the number.</em></h1>
   <p>Thousands of sportsbook prices are screened for fair value, market quality, and closing-line evidence. The model does not need a play every day.</p>
