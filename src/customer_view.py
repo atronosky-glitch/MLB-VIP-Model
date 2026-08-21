@@ -12,6 +12,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -54,6 +55,10 @@ p,div,span,button { font-family:'DM Sans',sans-serif; }
 .lock-copy { color:#c6d1e1; font-family:'Space Grotesk'; font-weight:600; letter-spacing:.02em; }
 .feature { background:rgba(17,27,43,.72); border:1px solid var(--line); border-radius:16px; padding:1rem; min-height:120px; }
 .feature-title { color:var(--mint); font-weight:700; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase; }
+.results-panel { background:linear-gradient(135deg,#101d30,#0a1526); border:1px solid var(--line); border-radius:20px; padding:1.4rem 1.5rem 1.1rem; margin:.8rem 0 1.2rem; }
+.results-eyebrow { color:var(--mint); font-weight:700; letter-spacing:.14em; font-size:.68rem; text-transform:uppercase; }
+.results-number { font-family:'Space Grotesk',sans-serif; font-size:3rem; font-weight:700; line-height:1.05; margin:.3rem 0 .2rem; }
+.results-caption { color:var(--muted); font-size:.85rem; max-width:520px; line-height:1.5; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -408,18 +413,55 @@ if data["settled"]:
     else:
         st.caption("No settled picks match the current filters.")
 
+    summary = performance_summary(filtered_settled)
     period = st.radio("Performance period", ["7D", "30D", "ALL"], horizontal=True, index=2)
     series = performance_series(filtered_settled, period)
     if not series.empty:
-        chart = series.rename(columns={
+        chart_df = series.rename(columns={
             "expected_cumulative": "Expected Units",
             "actual_cumulative": "Actual Units",
-        })
-        st.caption("Expected Units use each pick's recorded EV and stake. Actual Units use canonical settled profit.")
-        st.line_chart(chart, y_label="Cumulative units", height=300, use_container_width=True)
+        }).reset_index().rename(columns={"posted": "Date"})
+
+        period_units = chart_df["Actual Units"].iloc[-1]
+        positive = period_units >= 0
+        line_color = "#9ef0c7" if positive else "#ff8c9a"
+
+        st.markdown(f"""
+        <div class="results-panel">
+          <div class="results-eyebrow">Real Results — {period}</div>
+          <div class="results-number" style="color:{line_color};">{period_units:+.2f}u</div>
+          <div class="results-caption">Cumulative result if every Official Pick were followed at its recorded stake.
+          Every settled pick counts — wins and losses included equally, nothing hidden or cherry-picked.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        area = alt.Chart(chart_df).mark_area(
+            line={"color": line_color, "strokeWidth": 2.5},
+            color=line_color, opacity=0.16, interpolate="monotone",
+        ).encode(
+            x=alt.X("Date:T", title=None,
+                    axis=alt.Axis(grid=False, labelColor="#9aa9bc", tickColor="#263448", domainColor="#263448")),
+            y=alt.Y("Actual Units:Q", title="Cumulative units",
+                    axis=alt.Axis(grid=True, gridColor="#182338", labelColor="#9aa9bc", titleColor="#9aa9bc")),
+            tooltip=[alt.Tooltip("Date:T", title="Date"), alt.Tooltip("Actual Units:Q", format="+.2f")],
+        )
+        expected_line = alt.Chart(chart_df).mark_line(
+            color="#83aaff", strokeDash=[4, 3], strokeWidth=1.6, interpolate="monotone", opacity=0.85,
+        ).encode(
+            x="Date:T",
+            y="Expected Units:Q",
+            tooltip=[alt.Tooltip("Date:T", title="Date"),
+                     alt.Tooltip("Expected Units:Q", format="+.2f", title="Expected Units")],
+        )
+        st.caption("Solid area: actual settled profit. Dashed line: expected units from each pick's recorded EV and stake.")
+        st.altair_chart(
+            (area + expected_line).properties(height=300)
+            .configure_view(strokeWidth=0)
+            .configure(background="transparent"),
+            width="stretch",
+        )
 
     st.markdown("#### Performance Dashboard")
-    summary = performance_summary(filtered_settled)
     cols = st.columns(6)
     cols[0].metric("Record", f"{summary['wins']}-{summary['losses']}-{summary['pushes']}")
     cols[1].metric("Settled Picks", summary["settled"])

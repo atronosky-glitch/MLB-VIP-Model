@@ -1305,6 +1305,24 @@ with tabs[4]:
                 })
                 df_pnl["Cumulative"] = df_pnl["Profit"].cumsum()
                 df_pnl["Date"] = pd.to_datetime(df_pnl["Date"])
+
+                current_total = df_pnl["Cumulative"].iloc[-1]
+                accent = "#B9FF45" if current_total >= 0 else "#FF3D58"
+                st.markdown(f"""
+                <div style="background:linear-gradient(145deg, rgba(23,31,46,.95), rgba(13,18,28,.95));
+                            border:1px solid rgba(255,255,255,.08); border-radius:14px;
+                            padding:18px 22px; margin-bottom:10px;">
+                  <div style="color:#8E9AAE; text-transform:uppercase; letter-spacing:.09em;
+                              font-size:.72rem; font-weight:800;">
+                    Cumulative Result &mdash; All Settled Official Picks
+                  </div>
+                  <div style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:2.6rem;
+                              letter-spacing:-.03em; color:{accent}; margin-top:4px;">
+                    {current_total:+.2f}u
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
                 st.subheader("Cumulative Profit / Loss")
                 base = alt.Chart(df_pnl)
                 area = base.mark_area(color="#B9FF45", opacity=0.14).encode(
