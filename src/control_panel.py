@@ -2445,33 +2445,41 @@ with tabs[8]:
 
             st.divider()
             st.markdown("##### Recent Job Activity")
-            # LIKE patterns are bound parameters, not inline SQL text: a
-            # literal '%' in the query string makes psycopg2 (which always
-            # receives a params tuple, even an empty one) try to %-format
-            # against it and raise "tuple index out of range" - the real
-            # production error this caused. Binding the '%' inside the
-            # parameter value instead of the SQL text sidesteps that for
-            # both dialects.
-            job_rows = _conn_lh.execute(
-                "SELECT job_type, status, started_at, completed_at, error_message "
-                "FROM scheduled_jobs WHERE job_type LIKE ? OR job_type LIKE ? "
-                "OR job_type IN ('morning-run', 'pregame-check', 'grading') "
-                "ORDER BY created_at DESC LIMIT 20",
-                ("%-nfl", "wnba-%"),
-            ).fetchall()
-            if job_rows:
-                st.dataframe(
-                    pd.DataFrame([
-                        {"Job Type": r["job_type"], "Status": r["status"],
-                         "Started": (r["started_at"] or "")[:19],
-                         "Completed": (r["completed_at"] or "")[:19],
-                         "Error": (r["error_message"] or "")[:80]}
-                        for r in job_rows
-                    ]),
-                    hide_index=True, use_container_width=True,
-                )
-            else:
-                st.caption("No job activity recorded yet.")
+            # This section previously showed nothing at all (no table, no
+            # "no activity" caption, no error) with no way to tell why from
+            # the rendered page - wrapped in its own try/except so a future
+            # failure here shows its actual exception inline instead of
+            # requiring server log access to diagnose.
+            try:
+                # LIKE patterns are bound parameters, not inline SQL text: a
+                # literal '%' in the query string makes psycopg2 (which
+                # always receives a params tuple, even an empty one) try to
+                # %-format against it and raise "tuple index out of range" -
+                # a real production error this caused once already. Binding
+                # the '%' inside the parameter value instead of the SQL text
+                # sidesteps that for both dialects.
+                job_rows = _conn_lh.execute(
+                    "SELECT job_type, status, started_at, completed_at, error_message "
+                    "FROM scheduled_jobs WHERE job_type LIKE ? OR job_type LIKE ? "
+                    "OR job_type IN ('morning-run', 'pregame-check', 'grading') "
+                    "ORDER BY created_at DESC LIMIT 20",
+                    ("%-nfl", "wnba-%"),
+                ).fetchall()
+                if job_rows:
+                    st.dataframe(
+                        pd.DataFrame([
+                            {"Job Type": r["job_type"], "Status": r["status"],
+                             "Started": (r["started_at"] or "")[:19],
+                             "Completed": (r["completed_at"] or "")[:19],
+                             "Error": (r["error_message"] or "")[:80]}
+                            for r in job_rows
+                        ]),
+                        hide_index=True, use_container_width=True,
+                    )
+                else:
+                    st.caption("No job activity recorded yet.")
+            except Exception as job_exc:
+                st.error(f"Recent Job Activity unavailable: {job_exc}")
         finally:
             _conn_lh.close()
     except Exception as e:

@@ -20,6 +20,17 @@ services:
         sync: false
       - key: PINNAPI_API_KEY
         sync: false
+      # WNBA odds provider (The Odds API) — needed here too, not just on
+      # the worker. The Multi-League Health tab's "Upcoming Games
+      # Discovered" section calls the same live schedule-discovery
+      # function the worker uses, but it runs inside this dashboard
+      # process, so it needs its own copy of this key. Without it, that
+      # section's WNBA column silently falls back to "0 games" (the
+      # discovery call raises OddsAPIKeyError, caught and swallowed) —
+      # no crash, easy to miss. Must be set manually in the Render
+      # dashboard, same value as mlb-vip-worker's.
+      - key: THE_ODDS_API_KEY
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: mlb-postgres
