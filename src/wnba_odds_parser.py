@@ -29,13 +29,14 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from .player_prop_parser import _build_game_group_key, _build_group_key, _SIDE_MAP
+from .player_prop_parser import _build_group_key, _SIDE_MAP
 from .player_identity import (
     CONFIDENCE_HIGH,
     CONFIDENCE_MEDIUM,
     ESPNRosterClient,
     resolve_player_identity,
 )
+from .odds_api_game_parser import ParsedGameOddsResult, parse_game_odds
 
 logger = logging.getLogger(__name__)
 
@@ -75,151 +76,17 @@ class ParsedWNBAOddsResult:
     audit_rows: list[dict] = field(default_factory=list)
 
 
-def parse_wnba_game_odds(games: list[dict]) -> ParsedWNBAOddsResult:
-    """Flatten The Odds API's WNBA game-odds response (h2h/spreads/totals)."""
-    odds_rows: list[dict] = []
-    audit_rows: list[dict] = []
+def parse_wnba_game_odds(games: list[dict]) -> ParsedGameOddsResult:
+    """Flatten The Odds API's WNBA game-odds response (h2h/spreads/totals).
 
-    for game in games or []:
-        event_id = game.get("id", "")
-        home_team = game.get("home_team", "")
-        away_team = game.get("away_team", "")
-        if not event_id or not home_team or not away_team:
-            continue
-
-        for bookmaker in game.get("bookmakers") or []:
-            book_name = bookmaker.get("key", "")
-            book_last_update = bookmaker.get("last_update")
-
-            for market in bookmaker.get("markets") or []:
-                market_key = market.get("key", "")
-                market_type = _MARKET_TYPE.get(market_key)
-                if market_type is None:
-                    continue  # not a game market this parser handles yet
-
-                for outcome in market.get("outcomes") or []:
-                    row = _build_row(
-                        event_id=event_id, home_team=home_team, away_team=away_team,
-                        book_name=book_name, book_last_update=book_last_update,
-                        market_key=market_key, market_type=market_type, outcome=outcome,
-                    )
-                    audit_row = dict(row)
-                    audit_row["excluded"] = 1 if row["validation_status"] != "VALID" else 0
-                    audit_row["exclusion_reasons"] = row["validation_reason"] if audit_row["excluded"] else ""
-                    audit_rows.append(audit_row)
-                    if not audit_row["excluded"]:
-                        odds_rows.append(row)
-
-    return ParsedWNBAOddsResult(odds_rows=odds_rows, audit_rows=audit_rows)
-
-
-def _build_row(
-    *, event_id: str, home_team: str, away_team: str,
-    book_name: str, book_last_update: str | None,
-    market_key: str, market_type: str, outcome: dict,
-) -> dict:
-    captured_at = datetime.now(timezone.utc).isoformat()
-    observation_time = ""
-    if book_last_update:
-        try:
-            observation_time = datetime.fromisoformat(
-                book_last_update.replace("Z", "+00:00")
-            ).isoformat()
-        except (ValueError, TypeError):
-            observation_time = ""
-
-    issues: list[str] = []
-    if not book_name:
-        issues.append("Missing sportsbook")
-
-    price = outcome.get("price")
-    if not isinstance(price, (int, float)):
-        issues.append("Missing or invalid price")
-        price = None
-    else:
-        price = int(price)
-
-    name = outcome.get("name", "")
-    point = outcome.get("point")
-
-    raw_line: float | None = None
-    if market_key == "h2h":
-        side_raw, team_name = _side_for_team_name(name, home_team, away_team)
-        line = None
-    elif market_key == "spreads":
-        side_raw, team_name = _side_for_team_name(name, home_team, away_team)
-        # point is signed (favorite negative, underdog positive) — line is
-        # the abs-valued magnitude used for O/U-style pairing/EV analysis;
-        # raw_line preserves the sign for settlement (grade_spread needs
-        # the actual favorite/underdog direction, never guessed/reconstructed).
-        raw_line = float(point) if point is not None else None
-        line = abs(raw_line) if raw_line is not None else None
-        if line is None:
-            issues.append("Missing spread line")
-    elif market_key == "totals":
-        side_raw = "over" if name.lower() == "over" else "under" if name.lower() == "under" else None
-        team_name = ""
-        line = float(point) if point is not None else None
-        raw_line = line
-        if line is None:
-            issues.append("Missing total line")
-    else:
-        side_raw, team_name, line = None, "", None
-
-    if side_raw is None:
-        issues.append("Could not resolve side")
-    side = _SIDE_MAP.get(side_raw, side_raw or "")
-
-    decimal_odds = None
-    if price is not None:
-        try:
-            decimal_odds = round(1.0 + price / 100.0 if price > 0 else 1.0 + 100.0 / abs(price), 4)
-        except (ZeroDivisionError, ValueError):
-            issues.append("Invalid odds — could not compute decimal odds")
-
-    group_key = _build_game_group_key(event_id, market_type, line, is_alt_line=0)
-    if not group_key:
-        issues.append("Could not build market group key")
-
-    status = "VALID" if not issues else "NONE"
-
-    return {
-        "event_id": event_id,
-        "odd_id": f"{market_key}-{event_id}",
-        "sportsbook": book_name,
-        "player_id": "GAME",
-        "player_name": _DISPLAY_NAME.get(market_key, market_key),
-        "team_id": "GAME",
-        "team_name": team_name,
-        "market_type": market_type,
-        "market_group_key": group_key or "",
-        "side": side,
-        "line": line,
-        "raw_line": raw_line,
-        "price": price,
-        "decimal_odds": decimal_odds,
-        "is_alt_line": 0,
-        "available": 1,
-        "validation_status": status,
-        "mapping_confidence": "HIGH" if status == "VALID" else "NONE",
-        "mapping_method": "team name direct mapping",
-        "validation_reason": "; ".join(issues) if issues else "OK",
-        "captured_at": captured_at,
-        "observation_time": observation_time,
-    }
-
-
-def _side_for_team_name(name: str, home_team: str, away_team: str) -> tuple[str | None, str]:
-    """Map an outcome's team name to away/home, exact match only.
-
-    Never guesses via substring/fuzzy matching — an unrecognized name is
-    excluded (validation_status != VALID) rather than silently mapped.
+    Thin WNBA-specific wrapper around the sport-agnostic
+    ``src.odds_api_game_parser.parse_game_odds`` — the row-building logic
+    was never actually WNBA-specific, only the market-type naming was, so
+    it moved to a shared module rather than being duplicated for MLB
+    (which uses the exact same provider/wire shape, just baseball's
+    "run line" naming instead of a generic "spread").
     """
-    if name == home_team:
-        return "home", home_team
-    if name == away_team:
-        return "away", away_team
-    return None, ""
+    return parse_game_odds(games, market_type_map=_MARKET_TYPE, display_name_map=_DISPLAY_NAME)
 
 
 # ==================================================================

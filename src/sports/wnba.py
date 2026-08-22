@@ -221,10 +221,21 @@ def fetch_and_parse(
     """
     from src.odds_api_client import OddsAPIClient
     from src.wnba_odds_parser import parse_wnba_game_odds
+    from datetime import datetime, timedelta, timezone
 
     client = OddsAPIClient()
+    # Same -6h/+42h near-term window MLB/NFL's fallback paths use. Not
+    # currently a live problem for WNBA specifically — verified live
+    # 2026-08-22 an unbounded call here returns only ~24h of real games,
+    # unlike NFL's entire-season response — but relying on "WNBA books
+    # happen not to post lines far ahead" as an implicit safety net is
+    # fragile, so bounding it explicitly here too rather than only where
+    # it's already been caught breaking something.
+    now = datetime.now(timezone.utc)
     games, from_cache = client.get_odds(
         sport_key=ODDS_API_SPORT_KEY, regions="us", markets="h2h,spreads,totals",
+        commence_time_from=(now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        commence_time_to=(now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     if conn is not None:
         from src.odds_api_credits import record_client_quota

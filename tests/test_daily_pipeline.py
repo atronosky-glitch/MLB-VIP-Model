@@ -856,6 +856,87 @@ class TestAPIFailure:
         assert code == EXIT_API_FAILURE
 
 
+# ── SportsGameOdds quota exhaustion -> The Odds API fallback ───────
+# Real production case, 2026-08-22: SportsGameOdds's free-tier monthly
+# object quota was genuinely exhausted (verified live: 2,501/2,500
+# entities used). A plain RuntimeError (above) must still hit
+# EXIT_API_FAILURE unchanged — only a real HTTP 429 with a registered
+# per-league fallback should recover instead of failing the whole run.
+
+class TestSGOFallback:
+    def _http_429(self):
+        import requests
+        resp = MagicMock()
+        resp.status_code = 429
+        err = requests.exceptions.HTTPError("429 rate limit exceeded")
+        err.response = resp
+        return err
+
+    def test_429_recovers_via_fallback_instead_of_api_failure(self, tmp_path):
+        empty_scan = {
+            "opportunities": [], "yn_opportunities": [],
+            "n_events": 0, "n_markets": 0, "n_pitchers": 0,
+            "n_approved_rows": 0, "n_excluded_rows": 0,
+            "scan_start": "2026-08-22T17:00:00Z",
+            "fetch_time": "2026-08-22T17:00:01Z",
+            "data_source": "CACHE",
+            "oldest_obs": "", "newest_obs": "",
+            "age_seconds": 0, "stale_warning": False,
+            "research_only": True, "scanner_title": "TEST", "run_id": "",
+            "_raw_events": [],
+        }
+        fake_normalized_events = [{
+            "id": "game-1", "eventID": "game-1",
+            "teams": {"home": {"name": "New York Yankees"}, "away": {"name": "Toronto Blue Jays"}},
+            "status": {"startsAt": "2026-08-22T17:36:00Z"},
+        }]
+
+        config = PipelineConfig(dry_run=True, live=True, output_dir=str(tmp_path / "output"), league="MLB")
+
+        with patch("src.daily_pipeline.SportsGameOddsClient") as MockClient, \
+             patch("src.daily_pipeline.get_connection", return_value=MagicMock()), \
+             patch("src.daily_pipeline.run_scan", return_value=empty_scan), \
+             patch.dict(os.environ, {"SPORTSODDS_API_KEY": "test_key"}):
+            mock_instance = MagicMock()
+            mock_instance.get_events.side_effect = self._http_429()
+            MockClient.return_value = mock_instance
+
+            from src.sports import mlb as mlb_mod
+            with patch.object(
+                mlb_mod, "fetch_game_odds_via_odds_api",
+                return_value=([], [], fake_normalized_events, False),
+            ) as mock_fallback:
+                code = run_pipeline(config)
+
+        assert code == EXIT_SUCCESS_NO_RECS  # not EXIT_API_FAILURE
+        mock_fallback.assert_called_once()
+
+    def test_429_without_league_fallback_still_exits_api_failure(self, tmp_path):
+        """A league with no fetch_game_odds_via_odds_api registered must
+        still fail the run on a 429 rather than silently doing nothing.
+        Uses a synthetic fake league rather than a real one (e.g. NFL) —
+        both MLB and NFL now have this fallback registered, so a
+        real-league-name test would go stale/break the moment a third
+        league gets it too (this happened once already during this same
+        session — see test_mlb_sgo_fallback.py's equivalent fix)."""
+        config = PipelineConfig(dry_run=False, live=True, output_dir=str(tmp_path / "output"), league="FAKE")
+
+        fake_league = MagicMock(spec=["get_market_registry", "AVAILABLE", "SPORT"])
+        fake_league.AVAILABLE = True
+        fake_league.SPORT = "fake"
+        del fake_league.fetch_game_odds_via_odds_api
+
+        with patch("src.daily_pipeline.SportsGameOddsClient") as MockClient, \
+             patch("src.sports.get_league", return_value=fake_league), \
+             patch.dict(os.environ, {"SPORTSODDS_API_KEY": "test_key"}):
+            mock_instance = MagicMock()
+            mock_instance.get_events.side_effect = self._http_429()
+            MockClient.return_value = mock_instance
+            code = run_pipeline(config)
+
+        assert code == EXIT_API_FAILURE
+
+
 # ── Empty slate (no opportunities) ────────────────────────────────
 
 class TestEmptySlate:

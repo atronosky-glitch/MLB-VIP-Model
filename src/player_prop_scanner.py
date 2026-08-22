@@ -28,6 +28,8 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import NamedTuple
 
+import requests
+
 from . import prop_config as cfg
 from .sports.base import build_lookup_maps
 from .api_client import SportsGameOddsClient
@@ -384,19 +386,46 @@ def run_scan(
                 "starts_after": (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "starts_before": (now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
-        data, from_cache = client.get_events(
-            league=league, event_id=event_id,
-            odds_available=True, include_alt_lines=True,
-            **window_kwargs,
-        )
-        events = data.get("data", data.get("events", [])) or []
+        try:
+            data, from_cache = client.get_events(
+                league=league, event_id=event_id,
+                odds_available=True, include_alt_lines=True,
+                **window_kwargs,
+            )
+            events = data.get("data", data.get("events", [])) or []
 
-        all_odds: list[dict] = []
-        all_audit: list[dict] = []
-        for event in events:
-            parsed = parse_player_props(event, registry=registry)
-            all_odds.extend(parsed.odds_rows)
-            all_audit.extend(parsed.audit_rows)
+            all_odds = []
+            all_audit = []
+            for event in events:
+                parsed = parse_player_props(event, registry=registry)
+                all_odds.extend(parsed.odds_rows)
+                all_audit.extend(parsed.audit_rows)
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            fallback_fn = getattr(league_mod, "fetch_game_odds_via_odds_api", None)
+            if status != 429 or fallback_fn is None:
+                raise
+            # SportsGameOdds quota/rate-limit exhausted (real production
+            # case, 2026-08-22: free tier's monthly object quota hit
+            # 2,501/2,500) and this league has an explicit fallback
+            # registered — game markets only (moneyline/run line/total),
+            # not player props, since The Odds API gives no stable player
+            # ID to resolve without the same identity-resolution work
+            # WNBA needed. Never a silent, permanent provider switch: this
+            # only ever engages on the specific 429 case, every other
+            # failure still raises normally.
+            logger.warning(
+                "[%s] SportsGameOdds returned 429 (quota/rate-limit) — "
+                "falling back to The Odds API for game markets only",
+                league,
+            )
+            fetch_conn = get_connection()
+            try:
+                all_odds, all_audit, events, from_cache = fallback_fn(
+                    event_id=event_id, conn=fetch_conn,
+                )
+            finally:
+                fetch_conn.close()
     else:
         # A league with its own odds provider (different wire format —
         # e.g. WNBA via The Odds API) exposes fetch_and_parse() directly,

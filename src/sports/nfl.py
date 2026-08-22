@@ -29,6 +29,14 @@ SPORT = "football"
 AVAILABLE = True
 UNAVAILABLE_REASON = None
 
+# NFL's primary provider remains SportsGameOdds. ODDS_API_SPORT_KEY /
+# fetch_game_odds_via_odds_api below are the same quota-exhaustion
+# fallback added for MLB 2026-08-22 (see src/sports/mlb.py's module
+# docstring for the full story) — NFL shares the exact same SportsGameOdds
+# account/quota, so it's exposed to the identical failure mode even
+# though it hadn't hit it yet at the time this was added.
+ODDS_API_SPORT_KEY = "americanfootball_nfl"
+
 # ── Game markets ────────────────────────────────────────────────────
 
 GAME_MONEYLINE = MarketConfig(
@@ -218,3 +226,60 @@ def get_settlement_module():
     """Return the module with ingest_results_for_recommendations() for NFL."""
     from src import nfl_results
     return nfl_results
+
+
+def fetch_game_odds_via_odds_api(
+    event_id: str | None = None, conn=None,
+) -> tuple[list[dict], list[dict], list[dict], bool]:
+    """Fetch live NFL game odds (moneyline/spread/total) via The Odds API
+    — the SportsGameOdds quota-exhaustion fallback, not the primary path
+    (see module comment above ``ODDS_API_SPORT_KEY``).
+
+    Same return shape as ``src.sports.mlb.fetch_game_odds_via_odds_api()``
+    / ``src.sports.wnba.fetch_and_parse()``.
+    """
+    from src.odds_api_client import OddsAPIClient
+    from src.nfl_odds_parser import parse_nfl_game_odds
+    from datetime import datetime, timedelta, timezone
+
+    client = OddsAPIClient()
+    # Same -6h/+42h near-term window the SportsGameOdds path uses — real,
+    # necessary fix, not defensive paranoia: verified live 2026-08-22 that
+    # an unbounded call here returns the entire season (272 games,
+    # Sept 2026 through Jan 2027), not "the near-term slate" a daily
+    # pick-generation run needs.
+    now = datetime.now(timezone.utc)
+    games, from_cache = client.get_odds(
+        sport_key=ODDS_API_SPORT_KEY, regions="us", markets="h2h,spreads,totals",
+        commence_time_from=(now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        commence_time_to=(now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    if conn is not None:
+        from src.odds_api_credits import record_client_quota
+        try:
+            record_client_quota(conn, client, endpoint="odds", job_type="nfl_fallback_game_odds",
+                                 cache_hit=from_cache)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Could not record NFL fallback odds-API credit usage", exc_info=True,
+            )
+    if event_id:
+        games = [g for g in games if g.get("id") == event_id]
+
+    parsed = parse_nfl_game_odds(games)
+
+    normalized_events = [
+        {
+            "id": g.get("id"),
+            "eventID": g.get("id"),
+            "teams": {
+                "home": {"name": g.get("home_team", "")},
+                "away": {"name": g.get("away_team", "")},
+            },
+            "status": {"startsAt": g.get("commence_time", "")},
+        }
+        for g in games
+    ]
+
+    return parsed.odds_rows, parsed.audit_rows, normalized_events, from_cache

@@ -214,6 +214,77 @@ class TestOddsAPIClient:
         assert captured["params"]["apiKey"] == "test-key"
         assert "basketball_wnba/odds" in captured["url"]
 
+    def test_get_odds_omits_commence_time_params_when_not_given(self, tmp_path):
+        """Backward compatible: existing callers that don't pass a window
+        (there were none before 2026-08-22, but the param is optional)
+        must not suddenly get an unbounded-vs-bounded behavior change."""
+        from src.odds_api_client import OddsAPIClient
+        client = OddsAPIClient(api_key="test-key", cache_dir=str(tmp_path))
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+            def json(self): return [{"id": "g1"}]
+            def raise_for_status(self): pass
+
+        def fake_get(url, params=None, timeout=None):
+            captured["params"] = params
+            return FakeResponse()
+
+        client.session.get = fake_get
+        client.get_odds(sport_key="basketball_wnba")
+        assert "commenceTimeFrom" not in captured["params"]
+        assert "commenceTimeTo" not in captured["params"]
+
+    def test_get_odds_sends_commence_time_window_when_given(self, tmp_path):
+        """Real fix, 2026-08-22: an unbounded NFL call returned the entire
+        season (272 games, Sept 2026-Jan 2027), not the near-term slate a
+        daily pick-generation run needs — verified live before this was
+        added. commenceTimeFrom/commenceTimeTo are real, documented
+        params (see the-odds-api.com's /odds endpoint docs)."""
+        from src.odds_api_client import OddsAPIClient
+        client = OddsAPIClient(api_key="test-key", cache_dir=str(tmp_path))
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+            def json(self): return [{"id": "g1"}]
+            def raise_for_status(self): pass
+
+        def fake_get(url, params=None, timeout=None):
+            captured["params"] = params
+            return FakeResponse()
+
+        client.session.get = fake_get
+        client.get_odds(
+            sport_key="americanfootball_nfl",
+            commence_time_from="2026-08-22T00:00:00Z",
+            commence_time_to="2026-08-24T00:00:00Z",
+        )
+        assert captured["params"]["commenceTimeFrom"] == "2026-08-22T00:00:00Z"
+        assert captured["params"]["commenceTimeTo"] == "2026-08-24T00:00:00Z"
+
+    def test_cache_path_sanitizes_colons_from_iso_timestamps(self, tmp_path):
+        """Same Windows filename bug found and fixed in api_client.py
+        earlier this session (2026-08-20): ':' in a filename raises
+        OSError on Windows. commenceTimeFrom/commenceTimeTo are ISO
+        timestamps containing ':', so this client needs the identical
+        fix — verify the produced path has no ':' left, on any OS,
+        rather than relying on this specific test only failing on
+        Windows CI."""
+        from src.odds_api_client import OddsAPIClient
+        client = OddsAPIClient(api_key="test-key", cache_dir=str(tmp_path))
+        path = client._cache_path(
+            "/sports/americanfootball_nfl/odds",
+            params={"commenceTimeFrom": "2026-08-22T00:00:00Z", "regions": "us"},
+        )
+        assert ":" not in path.name
+        # Must actually be writable on this OS, not just "look" sanitized.
+        path.write_text("{}")
+        assert path.read_text() == "{}"
+
 
 class TestWNBASportsAdapter:
     def test_fetch_and_parse_normalizes_events_for_build_event_map(self):

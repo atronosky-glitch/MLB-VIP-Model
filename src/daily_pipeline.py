@@ -36,6 +36,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from src.api_client import SportsGameOddsClient
 from src.player_prop_scanner import run_scan
 from src.odds_parser import parse_odds
@@ -363,11 +365,63 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
                 "starts_after": (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "starts_before": (now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
-        data, from_cache = client.get_events(
-            league=config.league, event_id=config.event_id,
-            odds_available=True, include_alt_lines=True,
-            **window_kwargs,
-        )
+        used_odds_api_fallback = False
+        fallback_games_found = 0
+        try:
+            data, from_cache = client.get_events(
+                league=config.league, event_id=config.event_id,
+                odds_available=True, include_alt_lines=True,
+                **window_kwargs,
+            )
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            from src.sports import get_league
+            fallback_fn = getattr(get_league(config.league), "fetch_game_odds_via_odds_api", None)
+            if status != 429 or fallback_fn is None:
+                raise
+            # Same real-production case as player_prop_scanner.py's
+            # equivalent fallback (see that module for the full story) —
+            # SportsGameOdds's shape (games/odds tables via _stage_ingest)
+            # can't be faked from The Odds API's different wire format, so
+            # this populates `games` directly with the minimum real fields
+            # pregame scheduling and the Multi-League Health tab need
+            # (mirroring how WNBA already runs without _stage_ingest ever
+            # touching it), and leaves _raw_events empty so _stage_ingest's
+            # existing SportsGameOdds-specific loop naturally no-ops rather
+            # than needing its own fallback branch.
+            print(f"  SportsGameOdds returned 429 (quota/rate-limit) — "
+                  f"falling back to The Odds API for game markets only")
+            _fb_conn = get_connection()
+            try:
+                _odds_rows, _audit_rows, fb_events, from_cache = fallback_fn(
+                    event_id=config.event_id, conn=_fb_conn,
+                )
+                if not config.dry_run:
+                    for fb_event in fb_events:
+                        try:
+                            save_game(_fb_conn, {
+                                "event_id": fb_event.get("id", ""),
+                                "league": config.league,
+                                "away_team": fb_event.get("teams", {}).get("away", {}).get("name", ""),
+                                "home_team": fb_event.get("teams", {}).get("home", {}).get("name", ""),
+                                "start_time": fb_event.get("status", {}).get("startsAt", ""),
+                                "status": "scheduled",
+                                "sport_id": "",
+                                "league_id": config.league,
+                            })
+                        except Exception:
+                            logger.warning("Fallback game save failed for %s", fb_event.get("id"), exc_info=True)
+            finally:
+                _fb_conn.close()
+            data = {"data": []}  # _raw_events stays empty — see comment above
+            used_odds_api_fallback = True
+            fallback_games_found = len(fb_events)
+            state.warnings.append(
+                f"SportsGameOdds quota exhausted — used The Odds API fallback "
+                f"({fallback_games_found} real game(s) found there, game markets only)"
+            )
+            state.n_warnings += 1
+
         state.data_source = "CACHE" if from_cache else "LIVE API"
 
         events = data.get("data", data.get("events", [])) or []
@@ -390,10 +444,19 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
             print(f"  Scoped event: {config.event_id}")
         print(f"  Source: {state.data_source}")
 
-        if not events:
+        if not events and not used_odds_api_fallback:
             state.warnings.append("No MLB events found")
             state.n_warnings += 1
             print("  WARNING: No events available")
+        elif not events and used_odds_api_fallback:
+            # events (SportsGameOdds-shaped, feeds _raw_events/_stage_ingest)
+            # is legitimately empty here by design — the fallback's real
+            # games were already saved directly via save_game() above, and
+            # the actual odds/opportunities come from _stage_scan's own
+            # independent fallback, not this stage. Not a "nothing found"
+            # situation, so no misleading warning here.
+            print(f"  (SportsGameOdds-shaped ingest skipped; {fallback_games_found} "
+                  f"real game(s) already saved via The Odds API fallback)")
 
     except Exception as exc:
         state.errors.append(f"API fetch failed: {exc}")

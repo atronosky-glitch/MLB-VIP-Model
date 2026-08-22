@@ -106,12 +106,30 @@ class OddsAPIClient:
         regions: str = "us",
         markets: str = "h2h,spreads,totals",
         odds_format: str = "american",
+        commence_time_from: str | None = None,
+        commence_time_to: str | None = None,
     ) -> tuple[list, bool]:
         """Game-level odds for every upcoming event. Costs
-        ``len(markets.split(',')) * len(regions.split(','))`` credits."""
-        return self._get(f"/sports/{sport_key}/odds", params={
-            "regions": regions, "markets": markets, "oddsFormat": odds_format,
-        })
+        ``len(markets.split(',')) * len(regions.split(','))`` credits.
+
+        *commence_time_from*/*commence_time_to* are real, documented
+        params (ISO 8601, e.g. ``2026-08-22T00:00:00Z``) — without them
+        this endpoint returns every event currently listed for the sport,
+        which for a full-season sport like NFL means months out (verified
+        live 2026-08-22: an unbounded call returned 272 games spanning
+        Sept 2026 through Jan 2027, not "the near-term slate"). WNBA
+        callers have gotten away without this so far only because retail
+        books don't post WNBA lines far in advance in practice (also
+        verified live the same day: unbounded WNBA call returned exactly
+        the next ~24h of real games) — still worth passing explicitly for
+        any sport where that assumption might not hold.
+        """
+        params = {"regions": regions, "markets": markets, "oddsFormat": odds_format}
+        if commence_time_from:
+            params["commenceTimeFrom"] = commence_time_from
+        if commence_time_to:
+            params["commenceTimeTo"] = commence_time_to
+        return self._get(f"/sports/{sport_key}/odds", params=params)
 
     def get_event_odds(
         self,
@@ -137,7 +155,13 @@ class OddsAPIClient:
             for k, v in sorted(params.items()):
                 if v is not None:
                     parts.append(f"{k}_{v}")
-        safe = "_".join(parts).replace("?", "").replace("&", "_")
+        # Same fix as api_client.py's _cache_path (found live 2026-08-20):
+        # ISO timestamps (now used in commenceTimeFrom/commenceTimeTo)
+        # contain ':', which Windows rejects outright in filenames — not
+        # just '?'/'&'.
+        safe = "_".join(parts).replace("?", "")
+        for ch in ("&", ":", "/", "\\", "*", '"', "<", ">", "|"):
+            safe = safe.replace(ch, "_")
         safe = safe[:200]
         return self.cache_dir / f"{safe}.json"
 
