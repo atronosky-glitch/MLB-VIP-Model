@@ -16,7 +16,7 @@ from database.db_manager import get_connection
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -2394,6 +2394,35 @@ with tabs[8]:
             game_cols = st.columns(3)
             for gcol, league in zip(game_cols, ["MLB", "NFL", "WNBA"]):
                 with gcol:
+                    if league == "WNBA":
+                        # WNBA's odds provider (The Odds API) never writes to
+                        # the shared `games` table — that only happens in
+                        # daily_pipeline.py's SportsGameOdds-specific ingest
+                        # stage, which is skipped entirely for WNBA. This
+                        # made the section always show 0 games regardless of
+                        # the real schedule (confirmed live: 6 real games
+                        # returned by the free /events endpoint while this
+                        # showed 0). Use the same live discovery call the
+                        # real WNBA scheduler already relies on instead.
+                        try:
+                            from src.worker import _discover_wnba_game_times
+                            _horizon = datetime.now(timezone.utc) + timedelta(days=7)
+                            wnba_times = [t for t in _discover_wnba_game_times() if t <= _horizon]
+                        except Exception:
+                            wnba_times = []
+                        st.caption(f"**WNBA** — {len(wnba_times)} game(s)")
+                        if wnba_times:
+                            st.dataframe(
+                                pd.DataFrame([
+                                    {"Tip-off (UTC)": t.strftime("%Y-%m-%d %H:%M")}
+                                    for t in wnba_times[:10]
+                                ]),
+                                hide_index=True, use_container_width=True, height=180,
+                            )
+                        else:
+                            st.caption("No games discovered in this window.")
+                        continue
+
                     upcoming_rows = _conn_lh.execute(
                         "SELECT event_id, away_team, home_team, start_time FROM games "
                         "WHERE league = ? AND start_time >= datetime('now') "
