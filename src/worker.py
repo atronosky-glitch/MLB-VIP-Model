@@ -806,6 +806,9 @@ def _is_backup_time(now: datetime) -> bool:
     return now.hour == 3 and now.minute == 30
 
 
+MORNING_RUN_RETRY_COOLDOWN_MINUTES = 60
+
+
 def _check_and_schedule_morning_run(conn: DB) -> None:
     """Auto-schedule a morning run at ~9 AM ET if none exists for today.
 
@@ -817,20 +820,60 @@ def _check_and_schedule_morning_run(conn: DB) -> None:
     operation — used to mean the entire day's run silently never got
     scheduled at all, with no way to notice short of checking manually.
     The existing-job check below already makes this safe to call any time
-    of day: it only ever creates one morning-run per calendar day.
+    of day: it only ever creates one *pending/running/completed*
+    morning-run per calendar day.
+
+    A real production case surfaced the gap in that first fix: the run
+    fired on time, hit a transient API failure (exit code 3, 8s — the
+    exact signature of exhausting the SportsGameOdds client's 3 retries),
+    and a *failed* job used to count as "already ran today" just as much
+    as a successful one — so a single transient API hiccup silently lost
+    the entire rest of the day, since nothing ever retried it. Only the
+    most recent job for today now blocks a retry, and only while it's
+    pending/running/completed or still within a cooldown window after
+    failing — a failed run past that cooldown gets one more attempt
+    rather than waiting for tomorrow.
     """
     from src.automation import create_job
     now = _now_local()
     if now.hour < 8 or (now.hour == 8 and now.minute < 30):
         return
     today = now.strftime("%Y-%m-%d")
-    existing = conn.execute(
-        "SELECT 1 FROM scheduled_jobs "
+    latest = conn.execute(
+        "SELECT status, completed_at FROM scheduled_jobs "
         "WHERE job_type = 'morning-run' AND scheduled_at LIKE ? "
-        "AND status IN ('pending', 'running', 'completed', 'failed')",
+        "ORDER BY created_at DESC LIMIT 1",
         (f"{today}%",),
     ).fetchone()
-    if not existing:
+
+    should_schedule = True
+    if latest:
+        status = latest["status"]
+        if status in ("pending", "running", "completed"):
+            should_schedule = False
+        elif status == "failed":
+            # completed_at's exact text shape differs by dialect (SQLite's
+            # datetime('now') has no offset; PostgreSQL's NOW()::text does)
+            # and fromisoformat() returns a naive datetime for the former —
+            # treat a naive result as UTC (both dialects use UTC "now" here)
+            # rather than let a naive-vs-aware subtraction raise below.
+            completed_at = None
+            if latest["completed_at"]:
+                try:
+                    completed_at = datetime.fromisoformat(latest["completed_at"].replace("Z", "+00:00"))
+                    if completed_at.tzinfo is None:
+                        completed_at = completed_at.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    completed_at = None
+            if completed_at is not None:
+                # Uses the same `now` the window check above already
+                # derived from _now_local(), not a fresh datetime.now()
+                # call — keeps this consistent with (and testable via)
+                # the same clock source as the rest of the function.
+                elapsed_minutes = (now.astimezone(timezone.utc) - completed_at).total_seconds() / 60
+                should_schedule = elapsed_minutes >= MORNING_RUN_RETRY_COOLDOWN_MINUTES
+
+    if should_schedule:
         job_id = create_job(conn, job_type="morning-run", scheduled_at=datetime.now(timezone.utc).isoformat())
         logger.info("Auto-scheduled morning run: %s", job_id[:8])
 

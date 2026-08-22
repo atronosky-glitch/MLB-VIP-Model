@@ -265,6 +265,13 @@ class TestRunMorningScanExitCodeClassification:
             result = worker._run_morning_scan(MagicMock(output_dir="output"), league="MLB")
         assert result["status"] == "success"
 
+    def test_real_failure_is_still_reported_as_failed(self):
+        with patch("src.daily_pipeline.run_pipeline", return_value=3):
+            result = worker._run_morning_scan(MagicMock(output_dir="output"), league="NFL")
+        assert result["status"] == "failed"
+        assert result["exit_code"] == 3
+
+
 class TestMorningRunCatchUpWindow:
     """The narrow original 8:30-9:59 AM ET window meant a worker restart
     or redeploy landing anywhere in those 90 minutes silently skipped the
@@ -316,11 +323,57 @@ class TestMorningRunCatchUpWindow:
         ).fetchone()["c"]
         assert count == 1
 
-    def test_real_failure_is_still_reported_as_failed(self):
-        with patch("src.daily_pipeline.run_pipeline", return_value=3):
-            result = worker._run_morning_scan(MagicMock(output_dir="output"), league="NFL")
-        assert result["status"] == "failed"
-        assert result["exit_code"] == 3
+    def _insert_finished_job(self, db_conn, status: str, scheduled_at, completed_at):
+        """Directly insert a scheduled_jobs row with an explicit
+        completed_at, rather than going through update_job_status (which
+        stamps completed_at via SQL's real-wall-clock datetime('now') —
+        useless for controlling elapsed time in a test)."""
+        import uuid
+        db_conn.execute(
+            "INSERT INTO scheduled_jobs (job_id, job_type, status, scheduled_at, completed_at) "
+            "VALUES (?, 'morning-run', ?, ?, ?)",
+            (str(uuid.uuid4()), status, scheduled_at.isoformat(), completed_at.isoformat()),
+        )
+        db_conn.commit()
+
+    def test_recently_failed_job_does_not_retry_within_cooldown(self, db_conn):
+        # The real production scenario this closes: morning-run fired on
+        # time, hit a transient API failure (exit code 3) and completed
+        # (failed) in ~8 seconds — a failed job used to count as "already
+        # ran today" exactly like a successful one, silently losing the
+        # rest of the day. It must not retry instantly on every 60s tick
+        # either, though — that would just hammer a possibly-still-down API.
+        morning = worker._now_local().replace(hour=9, minute=0, second=0, microsecond=0)
+        self._insert_finished_job(db_conn, "failed", morning, morning)
+        soon_after = morning.replace(minute=1)  # 1 minute later — well inside cooldown
+        with patch.object(worker, "_now_local", return_value=soon_after):
+            worker._check_and_schedule_morning_run(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'morning-run'"
+        ).fetchone()["c"]
+        assert count == 1  # no retry yet — still within cooldown
+
+    def test_failed_job_retries_after_cooldown_elapses(self, db_conn):
+        morning = worker._now_local().replace(hour=9, minute=0, second=0, microsecond=0)
+        self._insert_finished_job(db_conn, "failed", morning, morning)
+        later = morning.replace(hour=11)  # 2h later, past the 60-min cooldown
+        with patch.object(worker, "_now_local", return_value=later):
+            worker._check_and_schedule_morning_run(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'morning-run'"
+        ).fetchone()["c"]
+        assert count == 2  # the original failed attempt + one retry
+
+    def test_completed_job_never_retries_regardless_of_time(self, db_conn):
+        morning = worker._now_local().replace(hour=9, minute=0, second=0, microsecond=0)
+        self._insert_finished_job(db_conn, "completed", morning, morning)
+        later = morning.replace(hour=20)
+        with patch.object(worker, "_now_local", return_value=later):
+            worker._check_and_schedule_morning_run(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'morning-run'"
+        ).fetchone()["c"]
+        assert count == 1
 
 
 class TestCatchupGradingResilience:
