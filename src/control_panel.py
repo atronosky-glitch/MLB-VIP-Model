@@ -2376,7 +2376,7 @@ with tabs[8]:
                         st.caption(f"{icon} {label}: {check.message}")
 
             st.divider()
-            st.markdown("##### WNBA API Credit Usage (The Odds API, free tier)")
+            st.markdown("##### Odds API Credit Usage (shared: WNBA + MLB/NFL quota fallback)")
             status = get_latest_credit_status(_conn_lh)
             usage = get_usage_this_month(_conn_lh)
             credit_cols = st.columns(4)

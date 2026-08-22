@@ -194,21 +194,37 @@ class TestWNBAGameOdds:
 class TestWNBAProps:
     def test_no_games_no_fetch(self):
         now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
-        d = wnba_should_fetch_props(now, [], last_fetch=None, credits_remaining=400)
+        d = wnba_should_fetch_props(now, [], last_fetch=None, credits_remaining=5000)
         assert d.should_run is False
 
     def test_too_early_in_the_day_skipped(self):
         now = datetime(2026, 8, 19, 10, 0, tzinfo=UTC)
         game = datetime(2026, 8, 19, 23, 30, tzinfo=UTC)  # 13.5h away
-        d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=400)
+        d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=5000)
         assert d.should_run is False
         assert "too early" in d.reason
 
     def test_inside_window_and_budget_allows_fetch(self):
         now = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
         game = datetime(2026, 8, 19, 23, 30, tzinfo=UTC)  # 90 min away
-        d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=400)
+        d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=5000)
         assert d.should_run is True
+
+    def test_widened_window_allows_4h_out(self):
+        """Window was widened from 3h to 6h 2026-08-22 (real 20,000/mo
+        budget makes fresher pregame lines affordable, not just close to
+        tip-off) — a game 4h away used to be "too early", now isn't."""
+        now = datetime(2026, 8, 19, 18, 0, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)  # 4h away
+        d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=5000)
+        assert d.should_run is True
+
+    def test_still_too_early_beyond_6h(self):
+        now = datetime(2026, 8, 19, 15, 0, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)  # 7h away
+        d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=5000)
+        assert d.should_run is False
+        assert "too early" in d.reason
 
     def test_low_credits_blocks_props(self):
         now = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
@@ -217,17 +233,43 @@ class TestWNBAProps:
         assert d.should_run is False
         assert "reserve" in d.reason
 
-    def test_recently_fetched_throttled_to_once_per_hour(self):
+    def test_default_reserve_scales_with_monthly_budget(self):
+        """No explicit reserve passed -> defaults to 10% of the real
+        current DEFAULT_MONTHLY_BUDGET (20,000 as of 2026-08-22), not a
+        number sized for the old 500/mo free tier."""
+        from src.odds_api_credits import DEFAULT_MONTHLY_BUDGET
+        expected_reserve = int(DEFAULT_MONTHLY_BUDGET * 0.10)
+        now = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 23, 30, tzinfo=UTC)
+        just_below = wnba_should_fetch_props(
+            now, [game], last_fetch=None, credits_remaining=expected_reserve,
+        )
+        assert just_below.should_run is False
+        just_above = wnba_should_fetch_props(
+            now, [game], last_fetch=None, credits_remaining=expected_reserve + 1,
+        )
+        assert just_above.should_run is True
+
+    def test_recently_fetched_throttled_to_once_per_30_minutes(self):
         now = datetime(2026, 8, 19, 22, 30, tzinfo=UTC)
         game = datetime(2026, 8, 19, 23, 30, tzinfo=UTC)
         last = now - timedelta(minutes=20)
-        d = wnba_should_fetch_props(now, [game], last_fetch=last, credits_remaining=400)
+        d = wnba_should_fetch_props(now, [game], last_fetch=last, credits_remaining=5000)
         assert d.should_run is False
+
+    def test_tightened_throttle_allows_35_minutes(self):
+        """Throttle was tightened from once/hour to once/30min 2026-08-22
+        — 35 minutes elapsed used to be blocked, now isn't."""
+        now = datetime(2026, 8, 19, 22, 30, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 23, 30, tzinfo=UTC)
+        last = now - timedelta(minutes=35)
+        d = wnba_should_fetch_props(now, [game], last_fetch=last, credits_remaining=5000)
+        assert d.should_run is True
 
     def test_stops_after_all_games_started(self):
         now = datetime(2026, 8, 19, 23, 45, tzinfo=UTC)
         game = datetime(2026, 8, 19, 23, 30, tzinfo=UTC)  # started 15 min ago, same day
-        d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=400)
+        d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=5000)
         assert d.should_run is False
         assert "started" in d.reason.lower()
 

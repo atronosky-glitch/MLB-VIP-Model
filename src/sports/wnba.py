@@ -265,7 +265,7 @@ def fetch_and_parse(
     return parsed.odds_rows, parsed.audit_rows, normalized_events, from_cache
 
 
-def _recently_captured_prop_event_ids(conn, event_ids: list[str], within_hours: float = 1.0) -> set[str]:
+def _recently_captured_prop_event_ids(conn, event_ids: list[str], within_hours: float = 0.5) -> set[str]:
     """Event IDs that already have a player_prop_odds row captured within
     the last *within_hours* — used to avoid re-spending props credits on
     games the scheduler already covered this cycle."""
@@ -290,11 +290,11 @@ def fetch_and_parse_props(
     Explicit opt-in, separate from ``fetch_and_parse()`` — props are
     billed per event (verified: 8 credits per event for the 8 registered
     markets), so a full slate costs materially more than the bulk
-    game-odds call. A 5-game day is ~40 credits for props alone; a
-    sustained *daily* game+props cadence would exceed the free
-    500-credits/month tier (see docs/MARKET_CAPABILITY.md for the exact
-    math) — callers should decide cadence deliberately rather than having
-    this bundled silently into every scan.
+    game-odds call. A 5-game day is ~40 credits per props fetch; still
+    comfortably affordable at the real current 20,000/month tier (see
+    docs/MARKET_CAPABILITY.md for the exact math and how this changed
+    2026-08-22) — callers should still decide cadence deliberately rather
+    than having this bundled silently into every scan.
 
     Requires a DB connection (*conn*) for identity-resolution caching —
     unlike fetch_and_parse(), which is pure fetch+parse.
@@ -315,17 +315,18 @@ def fetch_and_parse_props(
     else:
         # Intelligent prioritization: skip events whose props were already
         # captured recently. Without this, a scheduler that legitimately
-        # re-checks every hour inside the pregame window (see
-        # src/league_schedule.py::wnba_should_fetch_props) would re-spend
-        # 8 credits/event on the SAME games every time it fires — an
-        # explicit event_id request (e.g. a manual re-check) always
+        # re-checks every PROPS_THROTTLE_MINUTES inside the pregame window
+        # (see src/league_schedule.py::wnba_should_fetch_props, whose
+        # throttle this within_hours default is kept in sync with) would
+        # re-spend 8 credits/event on the SAME games every time it fires —
+        # an explicit event_id request (e.g. a manual re-check) always
         # bypasses this and fetches fresh.
         recent = _recently_captured_prop_event_ids(conn, [e["id"] for e in events])
         skipped = [e for e in events if e["id"] in recent]
         events = [e for e in events if e["id"] not in recent]
         if skipped:
             logger.info(
-                "WNBA props: skipping %d event(s) already captured within the last hour",
+                "WNBA props: skipping %d event(s) already captured within the last 30 min",
                 len(skipped),
             )
 

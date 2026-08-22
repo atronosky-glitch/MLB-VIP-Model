@@ -482,7 +482,10 @@ class TestNFLWNBASchedulingChecks:
         from src.odds_api_credits import record_credit_usage
         now = worker._now_local().replace(hour=12, minute=0, second=0, microsecond=0)
         tipoff = now + timedelta(minutes=60)
-        record_credit_usage(db_conn, endpoint="odds", requests_remaining=400)
+        # Above the default reserve (10% of DEFAULT_MONTHLY_BUDGET, which
+        # is 2000 at the real current 20,000/mo tier) so this exercises
+        # the "budget available" path, not the reserve-blocked one.
+        record_credit_usage(db_conn, endpoint="odds", requests_remaining=5000)
         with patch.object(worker, "_discover_wnba_game_times", return_value=[tipoff]), \
              patch.object(worker, "_now_local", return_value=now):
             worker._check_and_schedule_wnba(db_conn)
