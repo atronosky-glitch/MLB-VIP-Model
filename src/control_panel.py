@@ -1136,8 +1136,8 @@ with tabs[2]:
             for r in filtered:
                 mform = r.get("market_form", "")
                 is_yn = mform == "yn"
-                ev_d = round(r["ev_pct"], 2) if not is_yn and r.get("ev_pct") is not None else ""
-                pa_d = round(r["yn_implied_prob_adv"], 2) if is_yn and r.get("yn_implied_prob_adv") is not None else ""
+                ev_d = round(r["ev_pct"], 2) if not is_yn and r.get("ev_pct") is not None else None
+                pa_d = round(r["yn_implied_prob_adv"], 2) if is_yn and r.get("yn_implied_prob_adv") is not None else None
                 table_data.append({
                     "Player": r.get("player_name", ""),
                     "Market": _format_market_type(r.get("market_type", "")),
@@ -1441,14 +1441,36 @@ with tabs[5]:
     try:
         _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Load all odds rows from today
+        # Load today's player-prop odds rows. Previously this read the `odds`
+        # table, which only ever holds game-level markets (moneyline/spread/
+        # total) — player props (batting_hits_ou, RBI, home runs, etc.) are
+        # written to player_prop_odds instead, so this tab was structurally
+        # blind to the vast majority of what the model actually scans (real
+        # local check: odds=61615 rows, 0 of them player props;
+        # player_prop_odds=26385 rows spanning the full market registry).
         _mi_rows = _conn_mi.execute(
-            "SELECT market AS market_type, event_id, NULL AS player_id, NULL AS player_name, sportsbook, "
-            "'VALID' AS validation_status, '' AS mapping_confidence, is_alt_line, available, "
-            "pulled_at AS captured_at, points AS line, selection AS side "
-            "FROM odds WHERE date(pulled_at) = ?",
+            "SELECT market_type, event_id, player_id, player_name, sportsbook, "
+            "validation_status, mapping_confidence, is_alt_line, available, "
+            "captured_at, line, side "
+            "FROM player_prop_odds WHERE date(captured_at) = ?",
             (_today_str,),
         ).fetchall()
+
+        # Game-level markets (moneyline/spread/total) live in a separate
+        # table with raw provider codes rather than the player-prop
+        # registry's clean market_type names — surfaced as a simple coverage
+        # summary rather than merged into the per-market breakdown below.
+        _game_odds_summary = _conn_mi.execute(
+            "SELECT COUNT(*) AS n_rows, COUNT(DISTINCT sportsbook) AS n_books, "
+            "COUNT(DISTINCT event_id) AS n_events "
+            "FROM odds WHERE date(pulled_at) = ?",
+            (_today_str,),
+        ).fetchone()
+        if _game_odds_summary and _game_odds_summary["n_rows"]:
+            st.caption(
+                f"Game markets (moneyline/spread/total): {_game_odds_summary['n_rows']} odds rows, "
+                f"{_game_odds_summary['n_books']} sportsbooks, {_game_odds_summary['n_events']} events today."
+            )
 
         # Load today's recommendations
         _mi_recs = _conn_mi.execute(
