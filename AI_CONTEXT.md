@@ -3,16 +3,18 @@
 ## Purpose
 
 This repository is a multi-league sportsbook market-analysis platform.
-MLB is the only league in active production. NFL has a verified, tested
-market registry and settlement adapter but has not yet been run in
-production. WNBA has a verified, live-working game-market registry
+**MLB, NFL, and WNBA are all in active production** (wired into the
+worker loop 2026-08-20, `c141475`). WNBA uses a different provider (The
+Odds API) than MLB/NFL (SportsGameOdds), since SportsGameOdds does not
+offer WNBA at any tier — it has a live-working game-market registry
 (moneyline/spread/total) plus 8 live-verified player-prop markets
 (points/rebounds/assists/threes/PRA/pts+reb/pts+ast/reb+ast, gated behind
-team-scoped player-identity resolution) via The Odds API — a different
-provider than MLB/NFL use, since SportsGameOdds does not offer WNBA at any
-tier — and a working settlement adapter for both, but still no production
-schedule (see `docs/MARKET_CAPABILITY.md`). Game-level settlement
-(moneyline/spread/total) is now shared across all three leagues via
+team-scoped player-identity resolution) and a working settlement adapter.
+As of 2026-08-22, MLB and NFL also fall back to The Odds API for game
+markets only when SportsGameOdds's own quota is exhausted
+(`fetch_game_odds_via_odds_api()` on each league module — see
+`docs/SESSION_HANDOFF.md`'s 2026-08-21/22 entry). Game-level settlement
+(moneyline/spread/total) is shared across all three leagues via
 `src/game_settlement.py`. See "Multi-League Architecture" below.
 
 It identifies:
@@ -166,13 +168,18 @@ API covers WNBA results/boxscores (same pattern as MLB StatsAPI and ESPN
 NFL). The operator provided a free The Odds API key
 (`THE_ODDS_API_KEY` in `.env`, gitignored, never logged/printed/committed)
 — confirmed live: WNBA game odds (moneyline/spread/total, 9 books) and
-player props (8 markets registered as of 2026-08-20, 3-4 books) both work
-on the free tier. A sustained *daily* game-markets-only cadence fits
-comfortably in the free 500-credits/month budget (~90/month); daily
-game+props for every game would exceed it, so the $30/month tier will
-likely be needed for a scheduled props cadence — not needed yet since
-`fetch_and_parse_props()` is opt-in, not run on any schedule. Nothing has
-been subscribed to; see `docs/MARKET_CAPABILITY.md` for the exact math.
+player props (8 markets registered as of 2026-08-20, 3-4 books) both
+work. The account was upgraded 2026-08-22 from the free tier
+(500 credits/month) to the paid "20K" tier (20,000 credits/month,
+$30/mo) — not for WNBA's own cadence, but so MLB and NFL could fall back
+to this same provider for game markets when SportsGameOdds's own quota
+runs out (see `fetch_game_odds_via_odds_api()` on `src/sports/mlb.py`/
+`src/sports/nfl.py`, and `docs/SESSION_HANDOFF.md`'s 2026-08-21/22
+entry). `src/odds_api_credits.py::DEFAULT_MONTHLY_BUDGET` reflects the
+real current tier (env-configurable via `THE_ODDS_API_MONTHLY_BUDGET` if
+it changes again) and `credit_budget_check()` now gates spend from all
+three leagues against this one shared budget. See
+`docs/MARKET_CAPABILITY.md` for the exact math.
 
 ## System Architecture
 
@@ -190,10 +197,12 @@ SportsGameOdds API v2
   -> reports and Streamlit dashboard
 ```
 
-This diagram is MLB's concrete production path (still the only league
-live in production). NFL runs through the identical modules with a
+This diagram is MLB's concrete production path; MLB, NFL, and WNBA are
+all live in production. NFL runs through the identical modules with a
 different `league`/`registry` argument — see "Multi-League Architecture"
-above rather than assuming this diagram is MLB-exclusive by design.
+above rather than assuming this diagram is MLB-exclusive by design. WNBA
+uses a different provider (The Odds API, `src/odds_api_client.py`)
+instead of SportsGameOdds at the top of this chain.
 
 Production automation adds:
 
@@ -503,7 +512,7 @@ Do not assume project-memory files fully reflect the current branch.
 - Y/N settlement (still requires a verified numeric fact; still not automatic for every YN market)
 - Full PostgreSQL production verification
 - Portfolio optimization and correlation analysis
-- ~~Multi-league support~~ Architecture done 2026-08-19 (NFL added, WNBA unblocked). ~~Automated post-game settlement~~ done 2026-08-20, shared across MLB/NFL/WNBA (`src/game_settlement.py`). ~~Reliable CLV observation scheduling~~ line-movement-aware CLV done 2026-08-20. ~~Website~~ multi-sport pick lifecycle done 2026-08-20 (`src/customer_view.py`). ~~NFL/WNBA scheduling logic~~ done 2026-08-20 (`src/league_schedule.py`, `src/odds_api_credits.py`, worker.py wiring, per-league health) — remaining: actually deploy it (wire into the Render worker service; nothing runs on Render for NFL/WNBA yet), full `control_panel.py` multi-league pass beyond the new health tab.
+- ~~Multi-league support~~ Architecture done 2026-08-19 (NFL added, WNBA unblocked). ~~Automated post-game settlement~~ done 2026-08-20, shared across MLB/NFL/WNBA (`src/game_settlement.py`). ~~Reliable CLV observation scheduling~~ line-movement-aware CLV done 2026-08-20. ~~Website~~ multi-sport pick lifecycle done 2026-08-20 (`src/customer_view.py`), redesigned 2026-08-21 (`docs/SESSION_HANDOFF.md`). ~~NFL/WNBA scheduling logic~~ done and **deployed to Render** 2026-08-20 (`c141475` — `src/league_schedule.py`, `src/odds_api_credits.py`, worker.py wiring, per-league health); all three leagues have been running in production since, including surviving a real SportsGameOdds quota exhaustion via a tested MLB/NFL fallback (2026-08-22, see `docs/SESSION_HANDOFF.md`'s 2026-08-21/22 entry).
 - Long-term intelligence architecture (independent predictive models, champion/challenger, line-movement prediction, BET NOW vs WAIT, middle detection) — deliberately deferred per operator's 2026-08-20 "architecture readiness, not build now" instruction
 
 ## Recommended Priorities
@@ -526,12 +535,12 @@ multi-league architecture and NFL work. See `docs/SESSION_HANDOFF.md` and
 10. ~~Consider multi-league expansion.~~ Done 2026-08-19/2026-08-20 (NFL added, WNBA unblocked including player props) — see "Multi-League Architecture" above and `docs/MARKET_CAPABILITY.md`.
 11. ~~Implement scheduled snapshots and settlement (MLB).~~ Settlement is done and shared across all 3 leagues (`src/game_settlement.py`, 2026-08-20); scheduled snapshots for CLV are also working (line-movement-aware as of 2026-08-20).
 12. Implement alt-line scanning.
-13. ~~**Operator decision needed**: WNBA data access.~~ Resolved 2026-08-19 (The Odds API, free tier). **New operator decision, only if a sustained props cadence is wanted**: the $30/mo paid tier — a busy multi-game WNBA day can consume 80-120+ credits against the 500/month free budget even with per-event dedup (`src/sports/wnba.py::_recently_captured_prop_event_ids`); live-verified 436/500 remaining as of 2026-08-20. See `docs/MARKET_CAPABILITY.md` → WNBA cost note. Nothing purchased.
-14. ~~Design NFL/WNBA production scheduling.~~ Done 2026-08-20 — `src/league_schedule.py` (kickoff-time-driven NFL, credit-aware WNBA), `src/odds_api_credits.py`, worker.py wiring (per-league job types, per-league locks, resilient grading), `src/league_health.py`. **Still not deployed** — nothing runs any of this on Render yet; wiring the worker service's actual cron/persistent loop to include the new checks is the concrete next step, not a design question.
-15. ~~Customer-facing multi-league UI (`src/customer_view.py`).~~ Done 2026-08-20 — MLB/NFL/WNBA, filters, fair odds/confidence/CLV fields, Performance Dashboard with breakdowns. A full `control_panel.py` (internal admin) multi-league pass beyond the new Multi-League Health tab is still open.
-16. Deploy NFL/WNBA scheduling to Render (see item 14) — this is what actually starts NFL/WNBA accumulating a live track record.
+13. ~~**Operator decision needed**: WNBA data access.~~ Resolved 2026-08-19 (The Odds API, free tier). ~~**New operator decision**: the $30/mo paid tier~~ Resolved 2026-08-22 — operator upgraded to the 20K tier (20,000 credits/mo, $30/mo), driven primarily by the MLB/NFL SportsGameOdds-fallback need (item below), which also happens to make a sustained WNBA props cadence comfortably affordable. See `docs/MARKET_CAPABILITY.md` → WNBA cost note's 2026-08-22 update.
+14. ~~Design NFL/WNBA production scheduling.~~ Done 2026-08-20 — `src/league_schedule.py` (kickoff-time-driven NFL, credit-aware WNBA), `src/odds_api_credits.py`, worker.py wiring (per-league job types, per-league locks, resilient grading), `src/league_health.py`. ~~Deploy NFL/WNBA scheduling to Render~~ Done same day (`c141475`) — all three leagues have been running live in production since.
+15. ~~Customer-facing multi-league UI (`src/customer_view.py`).~~ Done 2026-08-20 — MLB/NFL/WNBA, filters, fair odds/confidence/CLV fields, Performance Dashboard with breakdowns. Redesigned 2026-08-21 (dark+gold visual identity, format matched to a reference site — see `docs/SESSION_HANDOFF.md`). `control_panel.py` (internal admin) also got League columns, a dynamic slate label, and the same visual redesign the same day — a dedicated multi-league *functional* pass beyond that is still open.
+16. **New (2026-08-22)**: SportsGameOdds quota exhaustion for MLB/NFL, resolved with a tested fallback to The Odds API for game markets — done, see `docs/SESSION_HANDOFF.md`'s 2026-08-21/22 entry. Player props for that fallback are still out of scope (would need the same player-identity-resolution work WNBA has).
 17. Long-term intelligence architecture (independent predictive models, champion/challenger, calibration, line-movement prediction, BET NOW vs WAIT, middle detection) — deliberately not built yet; the underlying data is now being captured (`historical_recommendations` carries confidence/features/raw_line/CLV/line-movement-direction for every recommendation).
-16. Website (full market-visualization site, beyond the existing Streamlit admin dashboard and customer Render service) — the original long-term ask, now unblocked by a league-agnostic data layer.
+18. Website (full market-visualization site, beyond the existing Streamlit admin dashboard and customer Render service) — the original long-term ask, now unblocked by a league-agnostic data layer; the 2026-08-21 redesign moved both existing sites toward this without yet being the full standalone site.
 
 ## Change Discipline
 

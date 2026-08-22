@@ -258,6 +258,43 @@ season — an occasional or manually-triggered props scan stays well
 within the free tier. Nothing purchased; this is presented for an
 operator decision, not acted on.
 
+### Update 2026-08-22 — account upgraded to 20,000 credits/month; now also shared by an MLB/NFL fallback
+
+The cost analysis above (free tier, 500 credits/month) is now
+historical — kept for the reasoning, not the numbers. Two things changed
+the same day:
+
+1. **SportsGameOdds's own free-tier monthly object quota was genuinely
+   exhausted** (verified live via the real `/v2/account/usage` endpoint:
+   2,501/2,500 entities used), blocking MLB and NFL entirely. Rather than
+   pay SportsGameOdds's Rookie tier ($99/mo, 100k objects), the operator
+   upgraded **The Odds API** — this section's provider, previously WNBA-
+   only — to its paid "20K" tier (**20,000 credits/month, $30/mo**),
+   specifically so MLB and NFL could fall back to it for game markets
+   when SportsGameOdds's own quota runs out
+   (`fetch_game_odds_via_odds_api()` on `src/sports/mlb.py`/
+   `src/sports/nfl.py` — see `docs/SESSION_HANDOFF.md`'s 2026-08-21/22
+   entry for the full build).
+2. That means **this budget is no longer WNBA-exclusive** — MLB and NFL
+   now spend from the same account whenever SportsGameOdds returns a 429.
+   `src/odds_api_credits.py::DEFAULT_MONTHLY_BUDGET` was updated from the
+   hardcoded 500 to reflect the real 20,000/month tier (env-configurable
+   via `THE_ODDS_API_MONTHLY_BUDGET` if it changes again), and
+   `credit_budget_check()` is now called inside the MLB/NFL fallback
+   fetch functions too, not just WNBA's scheduler — a burst of MLB/NFL
+   fallback usage during a SportsGameOdds outage can't silently starve
+   WNBA's share of the same account, or vice versa.
+
+At 20,000 credits/month, every scenario modeled above (game markets
+~90-540/month, even a sustained daily player-props cadence at
+80-120+/day ≈ 2,400-3,600/month) fits comfortably inside the new budget
+with room to spare for MLB/NFL fallback usage on top — the free-tier
+sustainability concern this section originally raised no longer applies
+at the current tier. Re-verify the real remaining balance via the
+Multi-League Health tab or `/account/usage` rather than trusting this
+note indefinitely, the same discipline that caught the original 500/mo
+numbers going stale.
+
 ## Future leagues (architecture ready, not started)
 
 SportsGameOdds already supports NBA, NHL, NCAAF, NCAAB, MLS, and UEFA

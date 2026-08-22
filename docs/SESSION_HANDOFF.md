@@ -2,6 +2,323 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-21 to 2026-08-22 — Website redesign, a real production crash chain on the Multi-League Health tab, a permanent settlement backlog, two morning-run scheduling bugs, and a genuine SportsGameOdds quota exhaustion resolved with a tested fallback
+
+This entry covers everything from the website redesign through the
+SportsGameOdds quota exhaustion and its fallback, in the order it
+actually happened. See `CHANGELOG.md` for the same material in the
+standard dated-entry format; this is the fuller narrative.
+
+### 1. Website redesign — matching a reference site's format, not its features
+
+Operator's contact showed them a competitor site (bigpicksbetting.com)
+and asked for the *format* to be matched — nav bar, hero structure, CTA
+buttons, benefits checklist, footer band, section ordering. Operator
+explicitly clarified mid-session this meant format/layout, not a literal
+feature clone: no search box, no account system, no unrelated tools were
+added.
+
+Both `src/customer_view.py` and `src/control_panel.py` moved from their
+prior navy/mint (customer) and lime/navy (admin) palettes to a shared
+dark + gold identity (`--ink:#f5f1e6; --gold:#e8b923; --win:#3ddc84;
+--loss:#ff5468`). Win/loss unified to green/red on both sites — the
+admin dashboard had previously shown "win" in gold, inconsistent with
+the customer site's green. A real equity-curve chart (Altair area chart,
+Expected vs. Actual, with a cumulative-units callout) replaced the plain
+`st.line_chart` on both. The hero got an italic serif (Playfair Display)
+headline, a benefits checklist, a two-button CTA row with real in-page
+anchors (`#today-picks`/`#track-record`, not decorative), a top nav bar,
+and a faint background wordmark inside the hero — verification via
+Streamlit `AppTest` caught a real CSS specificity bug where a later
+`.hero > *` rule silently overrode the watermark's absolute positioning;
+fixed by scoping it with `:not(.hero-watermark)`. The Real Results
+equity panel was reordered to appear immediately under the Track Record
+header (ahead of the pick-by-pick list, now a collapsed expander below
+it), and a footer band was added listing leagues covered and the real
+sportsbooks seen in the data (computed live from actual rows, never
+hardcoded).
+
+Separately, while investigating the operator's concern "I think our
+model is still MLB only" (it wasn't — the display just didn't reflect
+NFL/WNBA activity), three real gaps were found and fixed: (1) the admin
+dashboard's hero always said "MLB Slate" regardless of what actually ran
+that day — now computed live from today's official picks; (2)
+`get_official_picks()` never selected `league`/`sport` at all, so there
+was no way to show which league a pick belonged to even once NFL/WNBA
+data existed — added those columns plus a League column on the picks
+table and a league tag on the Top Picks stub cards; (3) a latent
+Arrow/pyarrow dtype crash risk in the official-picks table (a `""`
+placeholder mixed with real floats in the profit column) that would trip
+on any pending/unsettled pick — which NFL/WNBA produce constantly right
+after going live, unlike MLB's settled-heavy history.
+
+Every change in this phase was verified end-to-end via Streamlit
+`AppTest` against a real seeded production-schema database before
+committing, not just unit tests.
+
+### 2. Multi-League Health tab — a real production crash chain, diagnosed from real screenshots
+
+Operator reported crashes on the Multi-League Health tab across several
+rounds, each time pasting the real error text or a screenshot rather
+than a description — every fix in this phase was diagnosed from that
+real evidence, not assumed.
+
+**Market Intelligence tab showing no player props**: traced to the tab
+querying the `odds` table, which only ever holds game-level markets
+(moneyline/spread/total, raw provider codes). Player props live in a
+separate `player_prop_odds` table. Confirmed by running a real live
+local pipeline: `odds` had 61,615 rows, zero of them props;
+`player_prop_odds` had 26,385 rows spanning the full 24-market registry.
+Switched the tab to the correct table; added a simple game-market
+coverage caption pulling from `odds` separately so that data isn't
+dropped from view.
+
+**`function julianday(text) does not exist`** — a real Postgres
+production error. `_check_event_date_sanity()` (added the prior session)
+used SQLite's `julianday()` for date-difference math, which has no
+PostgreSQL equivalent and was never covered by the automatic
+SQLite-to-PostgreSQL query translator in `database/connection.py`'s
+`_convert_sql()` — it passed through untouched and broke the entire
+health report for every league, not just that one check. Fixed by
+computing the two boundary timestamps in Python and comparing
+`event_start_time` as plain ISO-8601 text (`<`/`>`) instead of doing
+date arithmetic in SQL at all — both dialects store these columns as
+text, and ISO-8601 sorts correctly as plain strings, so this works
+identically on both with no dialect-specific code needed.
+
+**`tuple index out of range`** — a second crash that surfaced
+immediately after the julianday fix deployed. Root cause: the Recent Job
+Activity query had literal `%` characters inline in the SQL text (`LIKE
+'%-nfl'`, `LIKE 'wnba-%'`). `DB.execute()` in `database/connection.py`
+always passes a params tuple to psycopg2's `execute()` even when empty,
+so psycopg2 tries to `%`-format the query string against it — a bare `%`
+with no params to match raises exactly this error. SQLite never hit this
+since it doesn't do `%`-style substitution, which is why it only showed
+up against the real Postgres production database. Fixed by binding the
+`%` inside parameter values (`LIKE ?`, params `("%-nfl", "wnba-%")`)
+instead of the SQL text. Audited the rest of the codebase for the same
+pattern; this was the only instance.
+
+**NFL (and MLB) morning-run jobs mislabeled FAILED**: reproduced
+locally — the NFL pipeline ran completely cleanly (10 events, 374
+markets scanned, real live odds) and correctly found zero qualifying
+opportunities, the same Pinnacle-gating situation already affecting MLB
+on quiet days. `daily_pipeline.py` deliberately returns exit code 1
+(`EXIT_SUCCESS_NO_RECS`) for exactly this case, distinct from real
+failure codes 2-6. `_run_morning_scan()` in `worker.py` — which backs
+both MLB's daily morning-run and NFL's morning-run-nfl — was the one job
+runner still treating any non-zero exit code as failed, meaning MLB's
+own quiet days were likely mislabeled too, not just NFL's.
+
+**"WNBA — 0 games" false reading**: verified live against The Odds API
+directly that 6 real WNBA games existed in the near-term schedule right
+now (Fever/Liberty, Sun/Sparks, Dream/Mercury, etc.) — the "0 games
+discovered" reading was wrong, not reality. Root cause #1: the shared
+`games` table only gets populated inside `daily_pipeline.py`'s
+SportsGameOdds-specific ingest stage, which WNBA's separate provider
+path never calls — the Upcoming Games Discovered section queried that
+table for all three leagues, so WNBA's column was structurally
+guaranteed to always read 0. Fixed by using the same live
+schedule-discovery call (`_discover_wnba_game_times`, the free
+`/events` endpoint) the real WNBA scheduler already relies on. Root
+cause #2 (recurred after #1 deployed): that discovery call runs inside
+the `mlb-vip-dashboard` process itself, but `THE_ODDS_API_KEY` had only
+ever been added to `mlb-vip-worker`'s env vars in `render.yaml` — the
+dashboard never had it, so the discovery call raised `OddsAPIKeyError`,
+caught and swallowed, silently reproducing the same symptom for an
+entirely different reason. Added the same config slot to the dashboard
+service in `render.yaml`.
+
+### 3. The 658-unresolved-recommendations backlog
+
+Traced to its real cause: live scan data that same day showed
+`batting_hits+runs+rbi` was the single most common market in the
+model's daily top-ranked picks (12 of the top 15 in a real live ranking
+run) — and `mlb_results.py` never had a settlement contract for it, or
+for the related `batting_runs+rbi`. Every recommendation for either
+market sat UNRESOLVED forever, regardless of how long after the game it
+was — not a transient backlog, a permanent one growing every day these
+markets get picked, which given the finding above is often. Added real
+settlement support: both are simple sums of already-tracked box-score
+fields (hits+runs+rbi, runs+rbi), computed the same way the existing
+`batting_singles` composite already works. Verified against a real
+completed game (2026-08-21 Braves @ Brewers, Michael Harris II: 2 hits /
+0 runs / 1 rbi → H+R+RBI=3, R+RBI=1, matching manual box-score math
+exactly) before writing it up as a regression test. Both markets added
+to `AUTO_SETTLEABLE_MARKET_TYPES` so they can also qualify as Official
+picks, not just Research. Separately hardened `_check_last_settlement()`
+so the backlog count excludes recommendations for markets with no
+settlement contract at all (e.g. `first_home_run`, a real, still-open
+gap) — those will always sit UNRESOLVED by design, and counting them
+made a permanent, expected gap look like a growing operational problem.
+
+### 4. Morning-run reliability — two independent scheduling bugs
+
+Investigating "it hasn't auto-run today" led to two separate real bugs,
+found one after the other.
+
+**Missed catch-up window**: `_check_and_schedule_morning_run()` only
+ever fired inside a fixed 8:30-9:59 AM ET window, with no catch-up if
+that window was missed — e.g. a worker restart/redeploy landing anywhere
+in those 90 minutes (not unlikely; several redeploys landed at arbitrary
+times this session) meant the entire day's morning run silently never
+got scheduled, with nothing checking back later. NFL/WNBA scheduling
+never had this fragility since they continuously re-evaluate against
+real game timing rather than a fixed daily window. Fixed by widening the
+window to 8:30 AM through end of day — the existing "does a morning-run
+job already exist for today" check already made it safe to call any
+time of day, it just wasn't being given the chance to.
+
+**Failed job blocking all retry**: even after the catch-up-window fix
+deployed, MLB still showed zero picks the next day it was checked.
+Traced from real production data: MLB's morning-run fired exactly on
+schedule (8:30 AM ET) and failed after 8 seconds with `exit_code=3`
+(`EXIT_API_FAILURE`) — the exact timing signature of exhausting the
+SportsGameOdds client's 3 retries against a rate limit (this was the
+first visible symptom of the quota exhaustion root-caused in the next
+section). Because the morning-run's own ingest never completed, that
+day's `games` table was never populated, so no pregame-check jobs were
+ever created either — that's why MLB showed zero picks of any tier all
+day, not lenient qualification gates. The catch-up-window fix's "does a
+job exist for today" check had treated a failed job exactly like a
+successful one, so once the 8:30 AM attempt failed, nothing was ever
+allowed to retry for the rest of the day — a single transient API hiccup
+silently lost the whole day again, just via a different mechanism than
+before. Fixed by checking the most recent job's actual status:
+pending/running/completed still blocks (as before), but a failed job
+only blocks for a 60-minute cooldown, then becomes eligible for one
+retry attempt. `completed_at`'s timestamp text differs by dialect
+(SQLite's `datetime('now')` has no offset, PostgreSQL's `NOW()::text`
+does) — parsed defensively, and a naive result is treated as UTC rather
+than risking a naive/aware subtraction crash.
+
+### 5. SportsGameOdds quota exhaustion — genuine, verified, and resolved
+
+The failed-job-retry fix above surfaced the real underlying problem:
+MLB's morning-run really was hitting a 429 every single time it ran, not
+just once. Operator asked directly whether this was really happening
+("well ... i think it should be giving some picks today ... just wait
+and then verify what im saying") and to verify rather than assume.
+Direct query against the real, non-quota-counting
+`GET /v2/account/usage` endpoint confirmed it: **2,501/2,500 entities
+used** on the SportsGameOdds Amateur (free) tier — genuinely exhausted,
+not a bug in the pipeline, and (partially) not even new: my own
+diagnostic/local testing that same day had also been hitting the same
+rate limit and likely contributed to using up the last of the month's
+quota — owned directly rather than deflected.
+
+Operator asked whether The Odds API (WNBA's existing, separate provider)
+could cover MLB and NFL too, given it's a general multi-sport
+aggregator. Verified live: yes, for game markets, including that it
+covers `baseball_mlb` and `americanfootball_nfl` with the same wire
+shape already used for WNBA. Weighing SportsGameOdds's Rookie tier
+($99/mo, 100k objects) against The Odds API's 20K tier ($30/mo, 20,000
+credits) side by side, operator chose the cheaper option explicitly on
+cost ("id rather only spend $30 so ima do that one") and upgraded the
+real account.
+
+Built the fallback: extracted WNBA's game-odds row-building logic (never
+actually WNBA-specific) into a shared `src/odds_api_game_parser.py`;
+added thin per-sport parsers (`src/mlb_odds_parser.py`,
+`src/nfl_odds_parser.py`, using each league's own market-type naming —
+MLB's `game_runline_ou` vs. NFL's generic `game_spread_ou`) and
+`fetch_game_odds_via_odds_api()` on both `src/sports/mlb.py` and
+`src/sports/nfl.py`. Game markets only (moneyline/spread-or-runline/
+total) — The Odds API gives no stable player ID, so player props would
+need the same identity-resolution work `src/player_identity.py` did for
+WNBA, deliberately left out of scope for this pass. Wired as a narrow,
+explicit fallback in both real call sites
+(`player_prop_scanner.py::run_scan()`, `daily_pipeline.py::
+_stage_fetch_events()`) — engages only on a genuine HTTP 429 with a
+fallback registered for that league; every other failure (500,
+RuntimeError, no fallback registered) still raises/fails normally,
+verified via explicit negative-case tests so this can never become an
+accidental blanket safety net masking other real bugs.
+`_stage_fetch_events()` additionally saves real games directly via
+`save_game()` on the fallback path, since the SportsGameOdds-shaped
+`games`/`odds` tables can't be populated from a different provider's
+wire format — this keeps pregame scheduling and the Multi-League Health
+tab's "Upcoming Games Discovered" working the same way WNBA already
+does without ever touching `_stage_ingest`.
+
+Real live end-to-end verification (not just mocks) caught two genuine
+bugs before this shipped: an `UnboundLocalError` — the fallback branch
+in `run_scan()` had assigned to a discarded `_events` variable instead
+of the `events` variable downstream code actually needed — and a real
+production correctness bug: an unbounded call to The Odds API's `/odds`
+endpoint returns every game currently listed for the sport, which for
+NFL meant the entire season (272 games spanning Sept 2026 through Jan
+2027) instead of the near-term slate a daily pick-generation run needs.
+Fixed by adding `commence_time_from`/`commence_time_to` support to
+`OddsAPIClient.get_odds()` (real, documented API params) and wiring the
+same `-6h/+42h` window the SportsGameOdds path already uses into
+MLB/NFL, applied to WNBA too for consistency even though it wasn't
+currently causing a problem there in practice. Also proactively fixed
+the same Windows cache-filename `:` bug in `OddsAPIClient._cache_path()`
+that `api_client.py` had before — ISO timestamps in the new
+commence-time params would otherwise have crashed it on this Windows
+dev machine.
+
+Live-verified end-to-end twice for MLB (2 real recommendations from 2
+real games) and once for NFL (correctly found 0 real games in the
+near-term window — a genuine preseason/Week-1 scheduling gap, not a
+bug) after the date-window fix.
+
+### 6. Credit-budget safety for the shared Odds API account
+
+With MLB/NFL now able to spend from the same Odds API account WNBA
+already uses, `DEFAULT_MONTHLY_BUDGET` in `src/odds_api_credits.py` was
+still hardcoded to the old free-tier limit (500/mo) even after the real
+account was upgraded to 20,000/mo — stale in three places: the existing
+`credit_budget_check()` safety function, the `fits_free_tier` estimate
+helper, and the Multi-League Health tab's WNBA credit-percentage
+display. Made it env-configurable (`THE_ODDS_API_MONTHLY_BUDGET`),
+defaulting to 20000 to match the real current tier (already went stale
+once — worth being able to change again without a code edit). Wired the
+existing `credit_budget_check()` into both `fetch_game_odds_via_odds_api()`
+functions: before spending, it checks the shared budget and raises a
+clear `RuntimeError` (propagates to the existing exception handlers as
+`EXIT_API_FAILURE`, the same classification a 429-with-no-fallback
+already gets — not a crash) if the budget is genuinely exhausted. The
+check itself is wrapped in its own defensive try/except (matching the
+existing `record_client_quota` call in the same functions) so a problem
+in the check itself — a bad connection, a missing table — can't block a
+fallback that's often the only remaining way to get data; only a
+successfully-read "budget exhausted" result stops the call. Renamed
+`estimate_monthly_cost()`'s `fits_free_tier` key to `fits_monthly_budget`
+since it's no longer checking against a free tier. Updated pre-existing
+tests that had implicitly hardcoded assumptions about the old 500-credit
+budget (a "58 remaining, 8 requested" boundary test, a "450 remaining is
+plentiful" health-check test) to either pin `monthly_budget=500`
+explicitly or scale off `DEFAULT_MONTHLY_BUDGET`, so they stay
+meaningful if the tier changes again.
+
+Full suite at the end of this session: **1794 passed, 0 failed** (was
+1766 at the start of 2026-08-21).
+
+### Standing operator instruction this session
+
+Operator explicitly asked for autonomous, uninterrupted work while away
+from their computer for several hours ("dont stop and dont ask me
+questions cause i wont be on my computer"), after confirming
+`THE_ODDS_API_KEY` was updated on both Render services. Also standing
+throughout: never purchase anything (report costs, never buy), and
+never write raw API key values into any repo file.
+
+### What's still open
+
+- Verifying the real, post-upgrade Odds API key actually works in
+  production once Render redeploys with it — not yet possible from this
+  environment; the Multi-League Health tab's WNBA credit display should
+  show a remaining balance near 20,000 once real production data flows
+  through the new key, which would be external confirmation the upgrade
+  took effect.
+- Player props for the MLB/NFL Odds-API fallback are still out of scope
+  — would need the same player-identity-resolution work WNBA has.
+- `docs/MARKET_CAPABILITY.md` still needs its per-call-cost section
+  reconciled with the new 20,000/month budget (was written against the
+  old 500/month free tier).
+
 ## Session: 2026-08-20 (SportsGameOdds investigation) — The "stale data" finding from earlier today was a real bug, now root-caused and fixed — NOT primarily an account/tier issue
 
 ### Correction to the immediately-preceding session entry
