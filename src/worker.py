@@ -807,11 +807,21 @@ def _is_backup_time(now: datetime) -> bool:
 
 
 def _check_and_schedule_morning_run(conn: DB) -> None:
-    """Auto-schedule a morning run at ~9 AM ET if none exists for today."""
+    """Auto-schedule a morning run at ~9 AM ET if none exists for today.
+
+    Normal target window is 8:30-9:59 AM ET, but this always fires (with a
+    catch-up path) any time from 8:30 AM through 11:59 PM ET rather than
+    only in that 90-minute window. A worker restart/redeploy landing
+    anywhere in that narrow window — not unlikely, since a deploy is
+    exactly the kind of thing that happens during normal daytime
+    operation — used to mean the entire day's run silently never got
+    scheduled at all, with no way to notice short of checking manually.
+    The existing-job check below already makes this safe to call any time
+    of day: it only ever creates one morning-run per calendar day.
+    """
     from src.automation import create_job
     now = _now_local()
-    # Only between 8:30 AM and 9:59 AM ET
-    if now.hour < 8 or now.hour > 9 or (now.hour == 8 and now.minute < 30):
+    if now.hour < 8 or (now.hour == 8 and now.minute < 30):
         return
     today = now.strftime("%Y-%m-%d")
     existing = conn.execute(

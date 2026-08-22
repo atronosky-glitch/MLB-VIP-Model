@@ -265,6 +265,57 @@ class TestRunMorningScanExitCodeClassification:
             result = worker._run_morning_scan(MagicMock(output_dir="output"), league="MLB")
         assert result["status"] == "success"
 
+class TestMorningRunCatchUpWindow:
+    """The narrow original 8:30-9:59 AM ET window meant a worker restart
+    or redeploy landing anywhere in those 90 minutes silently skipped the
+    entire day's morning run, with no catch-up — a real production gap
+    (worker.py has had several redeploys land at arbitrary times this
+    session). The existing-job-for-today check already makes it safe to
+    call this any time of day; it should now actually do so."""
+
+    def test_still_does_not_fire_before_830am(self, db_conn):
+        now = worker._now_local().replace(hour=8, minute=0, second=0, microsecond=0)
+        with patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_morning_run(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'morning-run'"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_fires_in_original_window(self, db_conn):
+        now = worker._now_local().replace(hour=9, minute=0, second=0, microsecond=0)
+        with patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_morning_run(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'morning-run'"
+        ).fetchone()
+        assert row is not None
+
+    def test_catches_up_later_in_the_day_if_missed(self, db_conn):
+        # This is the exact scenario that used to lose an entire day:
+        # nothing scheduled by 2 PM because the 8:30-9:59 window was
+        # missed (e.g. worker was mid-redeploy) — it must still catch up
+        # rather than silently waiting for tomorrow's window.
+        now = worker._now_local().replace(hour=14, minute=0, second=0, microsecond=0)
+        with patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_morning_run(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'morning-run'"
+        ).fetchone()
+        assert row is not None
+
+    def test_does_not_duplicate_if_already_scheduled_today(self, db_conn):
+        morning = worker._now_local().replace(hour=9, minute=0, second=0, microsecond=0)
+        afternoon = morning.replace(hour=14)
+        with patch.object(worker, "_now_local", return_value=morning):
+            worker._check_and_schedule_morning_run(db_conn)
+        with patch.object(worker, "_now_local", return_value=afternoon):
+            worker._check_and_schedule_morning_run(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'morning-run'"
+        ).fetchone()["c"]
+        assert count == 1
+
     def test_real_failure_is_still_reported_as_failed(self):
         with patch("src.daily_pipeline.run_pipeline", return_value=3):
             result = worker._run_morning_scan(MagicMock(output_dir="output"), league="NFL")
