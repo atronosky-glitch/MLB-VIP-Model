@@ -426,6 +426,36 @@ def run_scan(
                 )
             finally:
                 fetch_conn.close()
+
+        if fetch_props:
+            # Supplemental Odds-API player props alongside this league's
+            # primary SportsGameOdds props (added 2026-08-22 for MLB/NFL —
+            # not a fallback, a second independent data source, merged
+            # into the same consensus/EV/qualification pass as everything
+            # else below). Same opt-in mechanism WNBA's non-SportsGameOdds
+            # branch already uses (see the `else` branch below), extended
+            # here since MLB/NFL's primary provider IS SportsGameOdds.
+            props_fn = getattr(league_mod, "fetch_player_props_via_odds_api", None)
+            if props_fn is None:
+                logger.debug(
+                    "fetch_props=True but %s has no fetch_player_props_via_odds_api — ignored",
+                    league,
+                )
+            else:
+                props_conn = get_connection()
+                try:
+                    prop_odds, prop_audit = props_fn(props_conn, event_id=event_id)
+                    all_odds = all_odds + prop_odds
+                    all_audit = all_audit + prop_audit
+                    logger.info(
+                        "[%s] merged %d Odds-API player-prop odds rows into scan", league, len(prop_odds),
+                    )
+                except Exception:
+                    logger.exception(
+                        "[%s] Odds-API player-prop fetch failed, continuing without it", league,
+                    )
+                finally:
+                    props_conn.close()
     else:
         # A league with its own odds provider (different wire format —
         # e.g. WNBA via The Odds API) exposes fetch_and_parse() directly,

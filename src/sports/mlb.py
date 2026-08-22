@@ -13,11 +13,18 @@ NOT a provider switch — it's an explicit fallback the callers reach for
 only when a SportsGameOdds call fails with a real quota/rate-limit error
 (HTTP 429), added 2026-08-22 after that account's free-tier monthly
 object quota was exhausted mid-session (verified live via the real
-``/v2/account/usage`` endpoint: 2,501/2,500 entities used). Game markets
-only (moneyline/run line/total) — The Odds API gives no stable player ID,
-so player props would need the same identity-resolution work
-``src/player_identity.py`` did for WNBA, deliberately out of scope for
-this pass.
+``/v2/account/usage`` endpoint: 2,501/2,500 entities used).
+
+``fetch_player_props_via_odds_api()``, added the same day, is different
+in kind: not a fallback, a genuine supplemental data SOURCE that runs on
+its own schedule regardless of SportsGameOdds's health, merged into the
+same scan as any other odds (see ``player_prop_scanner.run_scan()``'s
+``fetch_props`` handling). Built once the identity-resolution work
+noted above as "out of scope" was actually done — ``src/player_identity.py``
+already generalized cleanly to MLB's ESPN rosters (only its grouped
+roster-response shape needed handling, not anything MLB-specific). Only
+4 props markets registered, chosen from a live liquidity check — see
+``src/mlb_props_parser.py``'s docstring for the full snapshot.
 """
 
 from __future__ import annotations
@@ -123,3 +130,22 @@ def fetch_game_odds_via_odds_api(
     ]
 
     return parsed.odds_rows, parsed.audit_rows, normalized_events, from_cache
+
+
+def fetch_player_props_via_odds_api(
+    conn, event_id: str | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Fetch live MLB player props via The Odds API — a supplemental
+    source alongside SportsGameOdds's own props, not a fallback (see
+    module docstring). Same shape/behavior as
+    ``src.sports.wnba.fetch_and_parse_props()``: explicit opt-in
+    (``fetch_props=True`` on ``run_scan()``/``PipelineConfig``), billed
+    per event, gated by a real credit-budget check per event.
+    """
+    from src.odds_api_props_fetch import fetch_player_props
+    from src.mlb_props_parser import parse_mlb_player_props, PROP_MARKET_KEYS
+
+    return fetch_player_props(
+        conn, sport_key=ODDS_API_SPORT_KEY, prop_market_keys=PROP_MARKET_KEYS,
+        parse_fn=parse_mlb_player_props, league="MLB", event_id=event_id,
+    )

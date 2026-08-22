@@ -265,23 +265,6 @@ def fetch_and_parse(
     return parsed.odds_rows, parsed.audit_rows, normalized_events, from_cache
 
 
-def _recently_captured_prop_event_ids(conn, event_ids: list[str], within_hours: float = 0.5) -> set[str]:
-    """Event IDs that already have a player_prop_odds row captured within
-    the last *within_hours* — used to avoid re-spending props credits on
-    games the scheduler already covered this cycle."""
-    if not event_ids:
-        return set()
-    from datetime import datetime, timedelta, timezone
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=within_hours)).isoformat()
-    placeholders = ",".join("?" * len(event_ids))
-    rows = conn.execute(
-        f"""SELECT DISTINCT event_id FROM player_prop_odds
-            WHERE event_id IN ({placeholders}) AND captured_at >= ?""",
-        (*event_ids, cutoff),
-    ).fetchall()
-    return {r["event_id"] for r in rows}
-
-
 def fetch_and_parse_props(
     conn, event_id: str | None = None,
 ) -> tuple[list[dict], list[dict]]:
@@ -296,63 +279,18 @@ def fetch_and_parse_props(
     2026-08-22) — callers should still decide cadence deliberately rather
     than having this bundled silently into every scan.
 
-    Requires a DB connection (*conn*) for identity-resolution caching —
-    unlike fetch_and_parse(), which is pure fetch+parse.
+    Thin WNBA-specific wrapper around the sport-agnostic
+    ``src.odds_api_props_fetch.fetch_player_props`` — extracted 2026-08-22
+    the same day MLB/NFL got their own Odds-API-sourced props, since the
+    discover/dedup/per-event credit-checked fetch loop was never actually
+    WNBA-specific either. Requires a DB connection (*conn*) for
+    identity-resolution caching and the props scheduler's own dedup
+    check — unlike fetch_and_parse(), which is pure fetch+parse.
     """
-    from src.odds_api_client import OddsAPIClient, EVENTS_CACHE_TTL_SECONDS
+    from src.odds_api_props_fetch import fetch_player_props
     from src.wnba_odds_parser import parse_wnba_player_props, PROP_MARKET_KEYS
-    from src.player_identity import ESPNRosterClient
-    from src.odds_api_credits import (
-        record_client_quota, credit_budget_check, PROPS_COST_PER_EVENT,
+
+    return fetch_player_props(
+        conn, sport_key=ODDS_API_SPORT_KEY, prop_market_keys=PROP_MARKET_KEYS,
+        parse_fn=parse_wnba_player_props, league="WNBA", event_id=event_id,
     )
-
-    # get_events() takes no time-varying params -- without a bounded
-    # max_cache_age this would serve the same frozen event list forever
-    # after the first real call (see EVENTS_CACHE_TTL_SECONDS's docstring
-    # in src/odds_api_client.py).
-    client = OddsAPIClient(max_cache_age=EVENTS_CACHE_TTL_SECONDS)
-    events, events_from_cache = client.get_events(sport_key=ODDS_API_SPORT_KEY)
-    record_client_quota(conn, client, endpoint="events", job_type="props_discovery",
-                         cache_hit=events_from_cache)
-    if event_id:
-        events = [e for e in events if e.get("id") == event_id]
-    else:
-        # Intelligent prioritization: skip events whose props were already
-        # captured recently. Without this, a scheduler that legitimately
-        # re-checks every PROPS_THROTTLE_MINUTES inside the pregame window
-        # (see src/league_schedule.py::wnba_should_fetch_props, whose
-        # throttle this within_hours default is kept in sync with) would
-        # re-spend 8 credits/event on the SAME games every time it fires —
-        # an explicit event_id request (e.g. a manual re-check) always
-        # bypasses this and fetches fresh.
-        recent = _recently_captured_prop_event_ids(conn, [e["id"] for e in events])
-        skipped = [e for e in events if e["id"] in recent]
-        events = [e for e in events if e["id"] not in recent]
-        if skipped:
-            logger.info(
-                "WNBA props: skipping %d event(s) already captured within the last 30 min",
-                len(skipped),
-            )
-
-    roster_client = ESPNRosterClient()
-    event_odds_responses = []
-    for event in events:
-        allowed, reason = credit_budget_check(conn, PROPS_COST_PER_EVENT)
-        if not allowed:
-            logger.warning(
-                "WNBA props fetch stopped at %d/%d events — credit budget: %s",
-                len(event_odds_responses), len(events), reason,
-            )
-            break
-        try:
-            event_odds, from_cache = client.get_event_odds(
-                event["id"], sport_key=ODDS_API_SPORT_KEY, markets=PROP_MARKET_KEYS,
-            )
-        except Exception:
-            continue
-        record_client_quota(conn, client, endpoint="event_odds", job_type="props_scan",
-                             cache_hit=from_cache)
-        event_odds_responses.append(event_odds)
-
-    parsed = parse_wnba_player_props(event_odds_responses, conn=conn, roster_client=roster_client)
-    return parsed.odds_rows, parsed.audit_rows

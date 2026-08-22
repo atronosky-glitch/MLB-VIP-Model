@@ -62,6 +62,10 @@ PREGAME_CHECK_INTERVAL_MINUTES = 10
 # call) from firing every worker tick.
 NFL_SCHEDULE_CHECK_INTERVAL_MINUTES = 30
 WNBA_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
+# MLB's supplemental props check (added 2026-08-22) reads the local
+# games table rather than calling a live API, so this interval only
+# controls how often that cheap local check runs, not any API cost.
+MLB_PROPS_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
 
 TZ_NAME = os.environ.get("MLB_SCHEDULER_TIMEZONE", os.environ.get("MLB_TIMEZONE", "America/New_York"))
 
@@ -344,6 +348,38 @@ def _run_wnba_props_scan(config) -> dict:
     return {"status": "success" if exit_code in (0, 1) else "failed", "exit_code": exit_code}
 
 
+def _run_mlb_props_scan(config) -> dict:
+    """MLB supplemental Odds-API props scan (added 2026-08-22 — see
+    src/mlb_props_parser.py). Unlike WNBA, MLB's primary provider IS
+    SportsGameOdds, so this run's SportsGameOdds fetch (unavoidable —
+    fetch_props=True only ADDS the Odds-API merge, it doesn't replace the
+    primary path) is not free: it costs a genuinely new SportsGameOdds
+    call unless another MLB job already refreshed that 15-minute client
+    cache (cfg.LIVE_CACHE_TTL_SECONDS) recently. In an active game window
+    that's usually true (morning-run/pregame-check jobs already run
+    often), but isn't guaranteed — a real, accepted tradeoff, not a free
+    lunch, in exchange for reusing the same well-tested scan/qualification
+    pipeline instead of building a second one."""
+    from src.daily_pipeline import run_pipeline, PipelineConfig
+    exit_code = run_pipeline(PipelineConfig(
+        output_dir=config.output_dir, live=True, challenger_shadow=False,
+        league="MLB", fetch_props=True,
+    ))
+    return {"status": "success" if exit_code in (0, 1) else "failed", "exit_code": exit_code}
+
+
+def _run_nfl_props_scan(config) -> dict:
+    """NFL supplemental Odds-API props scan — see _run_mlb_props_scan's
+    docstring for the SportsGameOdds-cache interaction tradeoff, which
+    applies identically here."""
+    from src.daily_pipeline import run_pipeline, PipelineConfig
+    exit_code = run_pipeline(PipelineConfig(
+        output_dir=config.output_dir, live=True, challenger_shadow=False,
+        league="NFL", fetch_props=True,
+    ))
+    return {"status": "success" if exit_code in (0, 1) else "failed", "exit_code": exit_code}
+
+
 def _run_grading(conn: DB, config) -> dict:
     """Catch up grading from verified stored final-stat results."""
     from src.automation import schedule_grading
@@ -547,6 +583,8 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "pregame-check-nfl": lambda: _run_pregame_scan(conn, config, event_id, league="NFL"),
         "wnba-odds-scan": lambda: _run_wnba_odds_scan(config),
         "wnba-props-scan": lambda: _run_wnba_props_scan(config),
+        "mlb-props-scan": lambda: _run_mlb_props_scan(config),
+        "nfl-props-scan": lambda: _run_nfl_props_scan(config),
         "grading": lambda: _run_grading(conn, config),
         "backup": lambda: _run_backup(config),
         "adaptive-learning": lambda: _run_adaptive_learning(conn, config),
@@ -752,6 +790,73 @@ def _check_and_schedule_nfl(conn: DB) -> None:
         if job_id:
             logger.info("[NFL] Scheduled pregame check: %s (%s)", job_id[:8], pregame_decision.reason)
 
+    # Supplemental Odds-API props (added 2026-08-22 — see
+    # src/nfl_props_parser.py), reusing the kickoff times already
+    # discovered above so this adds no extra SportsGameOdds API cost.
+    from src.league_schedule import nfl_should_fetch_props
+    from src.odds_api_credits import get_latest_credit_status
+
+    try:
+        status = get_latest_credit_status(conn)
+    except Exception:
+        status = None
+    credits_remaining = status.get("requests_remaining") if status else None
+
+    last_props = _get_last_completed_job_at(conn, "nfl-props-scan")
+    props_decision = nfl_should_fetch_props(now, game_times, last_props, credits_remaining)
+    if props_decision.should_run:
+        job_id = _create_job_if_not_queued(conn, "nfl-props-scan")
+        if job_id:
+            logger.info("[NFL] Scheduled props scan: %s (%s)", job_id[:8], props_decision.reason)
+
+
+def _mlb_game_times_from_db(conn: DB) -> list:
+    """MLB's own upcoming game times, read from the local ``games`` table
+    rather than a new live API call — that table is already populated by
+    the daily morning SportsGameOdds ingest, so this costs nothing extra
+    against either provider's budget (unlike NFL's/WNBA's discovery,
+    which needs a live call since MLB has no per-tick discovery step of
+    its own — its primary scan runs on a fixed daily window instead)."""
+    from src.league_schedule import extract_game_start_times
+    try:
+        rows = conn.execute(
+            "SELECT start_time FROM games WHERE league = 'MLB' "
+            "AND start_time >= datetime('now', '-1 hours')"
+        ).fetchall()
+    except Exception:
+        logger.warning("[MLB] Could not read game times from games table", exc_info=True)
+        return []
+    events = [{"status": {"startsAt": r["start_time"]}} for r in rows if r["start_time"]]
+    return extract_game_start_times(events)
+
+
+def _check_and_schedule_mlb_props(conn: DB) -> None:
+    """MLB: supplemental Odds-API props only (added 2026-08-22 — see
+    src/mlb_props_parser.py). MLB's primary daily scan is already handled
+    by _check_and_schedule_morning_run; this only schedules the second,
+    independent props source, gated on the local games table rather than
+    a live discovery call (see _mlb_game_times_from_db)."""
+    from src.league_schedule import mlb_should_fetch_props
+    from src.odds_api_credits import get_latest_credit_status
+
+    now = _now_local()
+    game_times = _mlb_game_times_from_db(conn)
+    if not game_times:
+        return
+
+    try:
+        status = get_latest_credit_status(conn)
+    except Exception:
+        status = None
+    credits_remaining = status.get("requests_remaining") if status else None
+
+    last_props = _get_last_completed_job_at(conn, "mlb-props-scan")
+    props_decision = mlb_should_fetch_props(now, game_times, last_props, credits_remaining)
+    if props_decision.should_run:
+        job_id = _create_job_if_not_queued(conn, "mlb-props-scan")
+        if job_id:
+            logger.info("[MLB] Scheduled props scan: %s (%s)", job_id[:8], props_decision.reason)
+
 
 def _check_and_schedule_wnba(conn: DB) -> None:
     """WNBA: schedule discovery is free; game odds are a cheap flat rate;
@@ -914,6 +1019,7 @@ def run_worker_persistent(config) -> None:
     last_morning_check = 0
     last_nfl_check = 0
     last_wnba_check = 0
+    last_mlb_props_check = 0
     last_backup_minute = -1
     last_maintenance_day = ""
 
@@ -976,6 +1082,16 @@ def run_worker_persistent(config) -> None:
                     logger.exception("[WNBA] Scheduling check failed")
                 last_wnba_check = now
 
+            # MLB: supplemental Odds-API props only (2026-08-22) — MLB's
+            # own primary daily scan is handled above by
+            # _check_and_schedule_morning_run; isolated the same way.
+            if now - last_mlb_props_check >= MLB_PROPS_SCHEDULE_CHECK_INTERVAL_MINUTES * 60:
+                try:
+                    _check_and_schedule_mlb_props(conn)
+                except Exception:
+                    logger.exception("[MLB] Props scheduling check failed")
+                last_mlb_props_check = now
+
             # Daily backup at 3:30 AM ET
             if _is_backup_time(now_local) and last_backup_minute != now_local.minute:
                 try:
@@ -1026,8 +1142,9 @@ def run_worker_once(config) -> None:
         _check_and_schedule_morning_run(conn)
         _check_and_schedule_pregame(conn)
         _check_and_schedule_grading(conn)
-        # NFL/WNBA scheduling checks — isolated so a failure in one
-        # league's discovery/credit check never blocks MLB's one-shot run.
+        # NFL/WNBA/MLB-props scheduling checks — isolated so a failure in
+        # one league's discovery/credit check never blocks MLB's own
+        # primary one-shot run.
         try:
             _check_and_schedule_nfl(conn)
         except Exception:
@@ -1036,7 +1153,11 @@ def run_worker_once(config) -> None:
             _check_and_schedule_wnba(conn)
         except Exception:
             logger.exception("[WNBA] Scheduling check failed")
-        # Newly-queued NFL/WNBA jobs from the checks above are due
+        try:
+            _check_and_schedule_mlb_props(conn)
+        except Exception:
+            logger.exception("[MLB] Props scheduling check failed")
+        # Newly-queued NFL/WNBA/MLB-props jobs from the checks above are due
         # immediately — run them now rather than waiting for the next
         # one-shot invocation (which, on a cron schedule, could be hours
         # away for a job that's actually time-sensitive right now).

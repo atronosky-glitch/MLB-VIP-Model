@@ -495,6 +495,92 @@ class TestNFLWNBASchedulingChecks:
         assert row is not None
 
 
+class TestMLBAndNFLPropsScheduling:
+    """src.worker._check_and_schedule_mlb_props / the NFL props check
+    folded into _check_and_schedule_nfl — added 2026-08-22 alongside
+    MLB/NFL's new supplemental Odds-API props source."""
+
+    def test_mlb_no_games_creates_no_props_job(self, db_conn):
+        with patch.object(worker, "_mlb_game_times_from_db", return_value=[]):
+            worker._check_and_schedule_mlb_props(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'mlb-props-scan'"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_mlb_game_inside_window_schedules_props_job(self, db_conn):
+        now = worker._now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        game_time = now + timedelta(hours=2)  # inside MLB's 3h props window
+        with patch.object(worker, "_mlb_game_times_from_db", return_value=[game_time]), \
+             patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_mlb_props(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'mlb-props-scan'"
+        ).fetchone()
+        assert row is not None
+
+    def test_mlb_props_scheduling_does_not_duplicate_queued_job(self, db_conn):
+        now = worker._now_local().replace(hour=12, minute=0, second=0, microsecond=0)
+        game_time = now + timedelta(hours=2)
+        with patch.object(worker, "_mlb_game_times_from_db", return_value=[game_time]), \
+             patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_mlb_props(db_conn)
+            worker._check_and_schedule_mlb_props(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'mlb-props-scan'"
+        ).fetchone()["c"]
+        assert count == 1
+
+    def test_mlb_game_times_from_db_reads_the_games_table(self, db_conn):
+        """Unlike NFL/WNBA, MLB's props scheduling must not make a new
+        live API call — it reads the local games table, already
+        populated by the daily SportsGameOdds morning run."""
+        from datetime import datetime, timezone, timedelta as _td
+        future = (datetime.now(timezone.utc) + _td(hours=3)).isoformat()
+        db_conn.execute(
+            """INSERT INTO games (event_id, league, away_team, home_team, start_time, status)
+               VALUES ('g1', 'MLB', 'Away Team', 'Home Team', ?, 'scheduled')""",
+            (future,),
+        )
+        db_conn.commit()
+        times = worker._mlb_game_times_from_db(db_conn)
+        assert len(times) == 1
+
+    def test_mlb_game_times_from_db_ignores_other_leagues(self, db_conn):
+        from datetime import datetime, timezone, timedelta as _td
+        future = (datetime.now(timezone.utc) + _td(hours=3)).isoformat()
+        db_conn.execute(
+            """INSERT INTO games (event_id, league, away_team, home_team, start_time, status)
+               VALUES ('g1', 'NFL', 'Away Team', 'Home Team', ?, 'scheduled')""",
+            (future,),
+        )
+        db_conn.commit()
+        times = worker._mlb_game_times_from_db(db_conn)
+        assert times == []
+
+    def test_nfl_props_job_scheduled_alongside_daily_scan(self, db_conn):
+        """_check_and_schedule_nfl now also schedules nfl-props-scan,
+        reusing the same discovered kickoff times as the primary scan
+        decision (no extra API call)."""
+        now = worker._now_local().replace(hour=15, minute=0, second=0, microsecond=0)
+        kickoff = now + timedelta(hours=2)  # inside NFL's 4h props window
+        with patch.object(worker, "_discover_nfl_game_times", return_value=[kickoff]), \
+             patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_nfl(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'nfl-props-scan'"
+        ).fetchone()
+        assert row is not None
+
+    def test_nfl_props_job_type_registered_in_dispatch(self):
+        """mlb-props-scan / nfl-props-scan must actually route to their
+        job runners, not silently no-op as an unknown job type."""
+        import inspect
+        source = inspect.getsource(worker._execute_job)
+        assert '"mlb-props-scan"' in source
+        assert '"nfl-props-scan"' in source
+
+
 class TestWNBADiscoveryCacheTTL:
     """Real bug fix, 2026-08-22: _discover_wnba_game_times() calls
     get_events(), which takes no time-varying params -- an OddsAPIClient

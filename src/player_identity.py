@@ -45,9 +45,12 @@ _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 ESPN_ROSTER_URL_TEMPLATE = "https://site.api.espn.com/apis/site/v2/sports/{sport_path}/teams/{team_id}/roster"
 ESPN_TEAMS_URL_TEMPLATE = "https://site.api.espn.com/apis/site/v2/sports/{sport_path}/teams"
 
-# league -> ESPN's sport path segment, verified live 2026-08-19.
+# league -> ESPN's sport path segment, verified live 2026-08-19 (WNBA),
+# 2026-08-22 (MLB/NFL).
 _ESPN_SPORT_PATH = {
     "WNBA": "basketball/wnba",
+    "MLB": "baseball/mlb",
+    "NFL": "football/nfl",
 }
 
 
@@ -149,8 +152,21 @@ class ESPNRosterClient:
         resp.raise_for_status()
         data = resp.json()
         team_name = (data.get("team") or {}).get("displayName", "")
+        # ESPN's roster shape differs by sport, verified live 2026-08-22:
+        # WNBA's "athletes" is a flat list of athlete objects directly;
+        # MLB/NFL's is a list of position-group objects (e.g.
+        # {"position": "Pitchers", "items": [...]}), with the actual
+        # athlete objects nested under "items". Flatten both into the
+        # same shape rather than assuming WNBA's was universal.
+        raw_entries = data.get("athletes") or []
+        flat_athletes = []
+        for entry in raw_entries:
+            if isinstance(entry, dict) and "items" in entry:
+                flat_athletes.extend(entry.get("items") or [])
+            else:
+                flat_athletes.append(entry)
         players = []
-        for athlete in data.get("athletes") or []:
+        for athlete in flat_athletes:
             display_name = athlete.get("displayName") or athlete.get("fullName") or ""
             if not display_name or not athlete.get("id"):
                 continue

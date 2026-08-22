@@ -17,6 +17,8 @@ from src.league_schedule import (
     nfl_should_run_daily_scan,
     nfl_pregame_window,
     nfl_should_run_pregame_check,
+    nfl_should_fetch_props,
+    mlb_should_fetch_props,
     wnba_has_games_today,
     wnba_should_check_schedule,
     wnba_should_fetch_game_odds,
@@ -280,3 +282,81 @@ class TestWNBAProps:
         game = datetime(2026, 8, 19, 23, 30, tzinfo=UTC)
         d = wnba_should_fetch_props(now, [game], last_fetch=None, credits_remaining=None)
         assert d.should_run is True
+
+
+class TestMLBAndNFLProps:
+    """MLB/NFL got their own supplemental Odds-API props source
+    2026-08-22, deliberately on a narrower cadence than WNBA's — MLB
+    alone has ~12x WNBA's daily game volume, so the same per-game
+    cadence would cost ~12x as much in aggregate. Confirms each league's
+    window/throttle really are independently configured, not accidentally
+    sharing WNBA's wider numbers."""
+
+    def test_mlb_window_is_3h_not_wnbas_6h(self):
+        now = datetime(2026, 8, 19, 18, 0, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)  # 4h away
+        d = mlb_should_fetch_props(now, [game], last_fetch=None, credits_remaining=5000)
+        assert d.should_run is False
+        assert "too early" in d.reason
+
+    def test_mlb_allows_inside_3h(self):
+        now = datetime(2026, 8, 19, 19, 30, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)  # 2.5h away
+        d = mlb_should_fetch_props(now, [game], last_fetch=None, credits_remaining=5000)
+        assert d.should_run is True
+
+    def test_mlb_throttled_to_once_per_60_minutes(self):
+        now = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
+        last = now - timedelta(minutes=45)
+        d = mlb_should_fetch_props(now, [game], last_fetch=last, credits_remaining=5000)
+        assert d.should_run is False
+        allows = mlb_should_fetch_props(
+            now, [game], last_fetch=now - timedelta(minutes=65), credits_remaining=5000,
+        )
+        assert allows.should_run is True
+
+    def test_nfl_window_is_4h(self):
+        now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+        game = datetime(2026, 9, 14, 17, 0, tzinfo=UTC)  # 5h away
+        d = nfl_should_fetch_props(now, [game], last_fetch=None, credits_remaining=5000)
+        assert d.should_run is False
+        inside = nfl_should_fetch_props(
+            now, [datetime(2026, 9, 14, 15, 0, tzinfo=UTC)], last_fetch=None, credits_remaining=5000,
+        )
+        assert inside.should_run is True
+
+    def test_nfl_throttled_to_once_per_60_minutes(self):
+        now = datetime(2026, 9, 14, 14, 0, tzinfo=UTC)
+        game = datetime(2026, 9, 14, 17, 0, tzinfo=UTC)
+        last = now - timedelta(minutes=45)
+        d = nfl_should_fetch_props(now, [game], last_fetch=last, credits_remaining=5000)
+        assert d.should_run is False
+
+    def test_mlb_and_nfl_use_the_same_shared_reserve_default(self):
+        """Same scaled-with-budget default as WNBA (10% of
+        DEFAULT_MONTHLY_BUDGET), not a separate hardcoded number."""
+        from src.odds_api_credits import DEFAULT_MONTHLY_BUDGET
+        expected_reserve = int(DEFAULT_MONTHLY_BUDGET * 0.10)
+        now = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
+        blocked = mlb_should_fetch_props(
+            now, [game], last_fetch=None, credits_remaining=expected_reserve,
+        )
+        assert blocked.should_run is False
+        allowed = mlb_should_fetch_props(
+            now, [game], last_fetch=None, credits_remaining=expected_reserve + 1,
+        )
+        assert allowed.should_run is True
+
+    def test_mlb_no_games_today(self):
+        now = datetime(2026, 8, 19, 12, 0, tzinfo=UTC)
+        d = mlb_should_fetch_props(now, [], last_fetch=None, credits_remaining=5000)
+        assert d.should_run is False
+        assert "no MLB games" in d.reason
+
+    def test_nfl_no_games_today(self):
+        now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+        d = nfl_should_fetch_props(now, [], last_fetch=None, credits_remaining=5000)
+        assert d.should_run is False
+        assert "no NFL games" in d.reason

@@ -167,49 +167,107 @@ def _default_props_reserve() -> int:
     return int(DEFAULT_MONTHLY_BUDGET * 0.10)
 
 
-PROPS_WINDOW_MINUTES = 360  # widened from 180 (3h) 2026-08-22 — see wnba_should_fetch_props
-PROPS_THROTTLE_MINUTES = 30  # tightened from 60 2026-08-22 — see wnba_should_fetch_props
+# WNBA's own window/throttle — widened from 180min(3h)/60min 2026-08-22:
+# at the old 500-credits/month free tier this cadence was deliberately
+# conservative; at the real current 20,000/month tier (see
+# src/odds_api_credits.py), a full WNBA season of daily props at this
+# pace is still a small fraction of the budget, so there's real room to
+# fetch fresher lines earlier in the pregame window instead of leaving
+# nearly all of the paid-for budget unused.
+WNBA_PROPS_WINDOW_MINUTES = 360
+WNBA_PROPS_THROTTLE_MINUTES = 30
+
+# MLB/NFL's props windows are deliberately more conservative than
+# WNBA's, added 2026-08-22 alongside their new Odds-API props source
+# (src/mlb_props_parser.py / src/nfl_props_parser.py) — not because the
+# budget can't afford WNBA's pace, but because MLB alone has ~12x WNBA's
+# daily game volume: the SAME per-game cadence WNBA uses would cost
+# roughly 12x more in aggregate for MLB, easily exceeding the whole
+# monthly budget on its own (~34,000/mo estimated at WNBA's pace vs.
+# ~4,300/mo at this narrower one). NFL is much lower-volume than MLB but
+# still scaled back for the same reason on any Sunday with a full slate.
+MLB_PROPS_WINDOW_MINUTES = 180
+MLB_PROPS_THROTTLE_MINUTES = 60
+NFL_PROPS_WINDOW_MINUTES = 240
+NFL_PROPS_THROTTLE_MINUTES = 60
+
+
+def _should_fetch_player_props(
+    now: datetime, game_times: list[datetime], last_fetch: datetime | None,
+    credits_remaining: int | None, *,
+    window_minutes: int, throttle_minutes: int, league_label: str,
+    reserve: int | None = None,
+) -> ScheduleDecision:
+    """Shared decision logic behind wnba_should_fetch_props /
+    mlb_should_fetch_props / nfl_should_fetch_props — player props are
+    always the expensive call (8 credits/event across every league here),
+    only worth spending inside *window_minutes* of the next game,
+    throttled to at most once every *throttle_minutes*, and never if it
+    would eat into the reserve. Stops once every game today has started
+    (post-tip-off props aren't useful for pregame recommendations).
+
+    ``reserve`` defaults to a real 10%-of-budget safety margin (see
+    ``_default_props_reserve``), not a hardcoded number sized for
+    whatever tier happened to be active when this was written — that
+    already went stale once (a bare ``50``, sized for the old 500/mo free
+    tier, until the account was upgraded to 20,000/mo 2026-08-22)."""
+    if reserve is None:
+        reserve = _default_props_reserve()
+    if not any(_same_local_date(gt, now) for gt in game_times):
+        return ScheduleDecision(False, f"no {league_label} games today")
+    upcoming = [gt for gt in game_times if gt > now]
+    if not upcoming:
+        return ScheduleDecision(False, "all of today's games have started")
+    minutes_to_next = (min(upcoming) - now).total_seconds() / 60
+    if minutes_to_next > window_minutes:
+        return ScheduleDecision(
+            False,
+            f"{minutes_to_next:.0f} min to next game — too early, "
+            f"wait until inside {window_minutes // 60}h",
+        )
+    if credits_remaining is not None and credits_remaining <= reserve:
+        return ScheduleDecision(False, f"only {credits_remaining} credits remaining, reserve is {reserve}")
+    if last_fetch is not None:
+        elapsed = (now - last_fetch).total_seconds() / 60
+        if elapsed < throttle_minutes:
+            return ScheduleDecision(
+                False, f"props fetched {elapsed:.0f} min ago, at most once/{throttle_minutes}min",
+            )
+    return ScheduleDecision(True, f"{minutes_to_next:.0f} min to next game, inside props window")
 
 
 def wnba_should_fetch_props(
     now: datetime, game_times: list[datetime], last_fetch: datetime | None,
     credits_remaining: int | None, reserve: int | None = None,
 ) -> ScheduleDecision:
-    """Player props are the expensive call (8 credits/event) — only
-    worth spending close to tip-off, throttled, and never if it would eat
-    into the reserve. Stops once every game today has started (post-tip-off
-    props aren't useful for pregame recommendations and there's no reason
-    to keep spending on them).
+    return _should_fetch_player_props(
+        now, game_times, last_fetch, credits_remaining,
+        window_minutes=WNBA_PROPS_WINDOW_MINUTES, throttle_minutes=WNBA_PROPS_THROTTLE_MINUTES,
+        league_label="WNBA", reserve=reserve,
+    )
 
-    Window/throttle widened 2026-08-22 (3h->6h, once/hour->every 30min):
-    at the old 500-credits/month free tier this cadence was deliberately
-    conservative; at the real current 20,000/month tier (see
-    ``src/odds_api_credits.py``), a full WNBA season of daily props at
-    this pace is still a small fraction of the budget, so there's real
-    room to fetch fresher lines earlier in the pregame window instead of
-    leaving nearly all of the paid-for budget unused. ``reserve`` still
-    defaults to a real 10%-of-budget safety margin, not a hardcoded
-    number sized for the old tier."""
-    if reserve is None:
-        reserve = _default_props_reserve()
-    if not wnba_has_games_today(now, game_times):
-        return ScheduleDecision(False, "no WNBA games today")
-    upcoming = [gt for gt in game_times if gt > now]
-    if not upcoming:
-        return ScheduleDecision(False, "all of today's games have started")
-    minutes_to_next = (min(upcoming) - now).total_seconds() / 60
-    if minutes_to_next > PROPS_WINDOW_MINUTES:
-        return ScheduleDecision(
-            False,
-            f"{minutes_to_next:.0f} min to next game — too early, "
-            f"wait until inside {PROPS_WINDOW_MINUTES // 60}h",
-        )
-    if credits_remaining is not None and credits_remaining <= reserve:
-        return ScheduleDecision(False, f"only {credits_remaining} credits remaining, reserve is {reserve}")
-    if last_fetch is not None:
-        elapsed = (now - last_fetch).total_seconds() / 60
-        if elapsed < PROPS_THROTTLE_MINUTES:
-            return ScheduleDecision(
-                False, f"props fetched {elapsed:.0f} min ago, at most once/{PROPS_THROTTLE_MINUTES}min",
-            )
-    return ScheduleDecision(True, f"{minutes_to_next:.0f} min to next game, inside props window")
+
+def mlb_should_fetch_props(
+    now: datetime, game_times: list[datetime], last_fetch: datetime | None,
+    credits_remaining: int | None, reserve: int | None = None,
+) -> ScheduleDecision:
+    """MLB's own game times come from the local ``games`` table (already
+    populated by the daily SportsGameOdds morning run — see
+    ``src/worker.py::_mlb_game_times_from_db``), not a new live discovery
+    call, so this costs nothing extra against either provider's budget."""
+    return _should_fetch_player_props(
+        now, game_times, last_fetch, credits_remaining,
+        window_minutes=MLB_PROPS_WINDOW_MINUTES, throttle_minutes=MLB_PROPS_THROTTLE_MINUTES,
+        league_label="MLB", reserve=reserve,
+    )
+
+
+def nfl_should_fetch_props(
+    now: datetime, game_times: list[datetime], last_fetch: datetime | None,
+    credits_remaining: int | None, reserve: int | None = None,
+) -> ScheduleDecision:
+    return _should_fetch_player_props(
+        now, game_times, last_fetch, credits_remaining,
+        window_minutes=NFL_PROPS_WINDOW_MINUTES, throttle_minutes=NFL_PROPS_THROTTLE_MINUTES,
+        league_label="NFL", reserve=reserve,
+    )

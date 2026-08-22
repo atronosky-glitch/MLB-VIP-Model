@@ -35,6 +35,15 @@ UNAVAILABLE_REASON = None
 # docstring for the full story) — NFL shares the exact same SportsGameOdds
 # account/quota, so it's exposed to the identical failure mode even
 # though it hadn't hit it yet at the time this was added.
+#
+# fetch_player_props_via_odds_api below (added the same day) is a
+# genuine supplemental props source, not a fallback — see
+# src/sports/mlb.py's module docstring for why. Only 4 markets
+# registered, and only the genuinely two-sided Over/Under ones (NFL's
+# anytime-touchdown market on this provider is single-sided "Yes" pricing,
+# not O/U, and deliberately excluded) — see src/nfl_props_parser.py's
+# docstring for the full live liquidity snapshot, checked 19 days before
+# the earliest available game and worth re-verifying closer to kickoff.
 ODDS_API_SPORT_KEY = "americanfootball_nfl"
 
 # ── Game markets ────────────────────────────────────────────────────
@@ -304,3 +313,22 @@ def fetch_game_odds_via_odds_api(
     ]
 
     return parsed.odds_rows, parsed.audit_rows, normalized_events, from_cache
+
+
+def fetch_player_props_via_odds_api(
+    conn, event_id: str | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Fetch live NFL player props via The Odds API — a supplemental
+    source alongside SportsGameOdds's own props, not a fallback (see
+    module docstring). Same shape/behavior as
+    ``src.sports.wnba.fetch_and_parse_props()``: explicit opt-in
+    (``fetch_props=True`` on ``run_scan()``/``PipelineConfig``), billed
+    per event, gated by a real credit-budget check per event.
+    """
+    from src.odds_api_props_fetch import fetch_player_props
+    from src.nfl_props_parser import parse_nfl_player_props, PROP_MARKET_KEYS
+
+    return fetch_player_props(
+        conn, sport_key=ODDS_API_SPORT_KEY, prop_market_keys=PROP_MARKET_KEYS,
+        parse_fn=parse_nfl_player_props, league="NFL", event_id=event_id,
+    )
