@@ -266,6 +266,58 @@ class TestOddsAPIClient:
         assert captured["params"]["commenceTimeFrom"] == "2026-08-22T00:00:00Z"
         assert captured["params"]["commenceTimeTo"] == "2026-08-24T00:00:00Z"
 
+    def test_default_max_cache_age_serves_stale_cache_forever(self, tmp_path):
+        """Documents the real behavior that caused a genuine bug (found
+        2026-08-22 answering an operator question about whether every run
+        pulls fresh data): with no max_cache_age, ANY existing cache file
+        is served regardless of age -- there is no implicit expiry. This
+        is fine for endpoints whose params vary by call time (get_odds
+        with a commenceTime window) but a real trap for ones that don't
+        (get_events) -- see EVENTS_CACHE_TTL_SECONDS in src/odds_api_client.py."""
+        import os
+        import time
+        from src.odds_api_client import OddsAPIClient
+        client = OddsAPIClient(api_key="test-key", cache_dir=str(tmp_path))
+        cache_path = client._cache_path("/sports/basketball_wnba/events", params={})
+        cache_path.write_text('[{"id": "stale-event"}]')
+        old_time = time.time() - 3600 * 24 * 30  # 30 days old
+        os.utime(cache_path, (old_time, old_time))
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("must not make a live call — should have served the (stale) cache")
+        client.session.get = fail_if_called
+
+        data, from_cache = client.get_events()
+        assert from_cache is True
+        assert data == [{"id": "stale-event"}]
+
+    def test_bounded_max_cache_age_expires_stale_cache(self, tmp_path):
+        """The actual fix: passing a real max_cache_age makes a stale
+        file correctly trigger a live call instead of being served
+        forever. Reproduced live 2026-08-22: a 2-day-old local cache file
+        for WNBA schedule discovery was still being served unconditionally
+        until this was fixed."""
+        import os
+        import time
+        from src.odds_api_client import OddsAPIClient
+        client = OddsAPIClient(api_key="test-key", cache_dir=str(tmp_path), max_cache_age=300)
+        cache_path = client._cache_path("/sports/basketball_wnba/events", params={})
+        cache_path.write_text('[{"id": "stale-event"}]')
+        old_time = time.time() - 3600 * 24 * 30  # 30 days old — well beyond the 300s TTL
+        os.utime(cache_path, (old_time, old_time))
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+            def json(self): return [{"id": "fresh-event"}]
+            def raise_for_status(self): pass
+
+        client.session.get = lambda url, params=None, timeout=None: FakeResponse()
+
+        data, from_cache = client.get_events()
+        assert from_cache is False
+        assert data == [{"id": "fresh-event"}]
+
     def test_cache_path_sanitizes_colons_from_iso_timestamps(self, tmp_path):
         """Same Windows filename bug found and fixed in api_client.py
         earlier this session (2026-08-20): ':' in a filename raises
@@ -558,6 +610,30 @@ class TestFetchAndParsePropsIntelligentPrioritization:
         fake_client.get_event_odds.assert_called_once()
         called_event_id = fake_client.get_event_odds.call_args[0][0]
         assert called_event_id == "evt-fresh"
+
+    def test_get_events_client_uses_bounded_cache_ttl(self, tmp_path):
+        """Real bug fix, 2026-08-22: get_events() takes no time-varying
+        params, so an OddsAPIClient() built with no max_cache_age would
+        serve the same frozen event list forever after the first real
+        call. fetch_and_parse_props() must pass EVENTS_CACHE_TTL_SECONDS
+        explicitly, not rely on the (unbounded) default."""
+        from database.db_manager import init_db, get_connection
+        from src.sports import wnba as wnba_mod
+        from src.odds_api_client import EVENTS_CACHE_TTL_SECONDS
+
+        db_path = tmp_path / "props_ttl.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = ([], False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client) as MockClient:
+            wnba_mod.fetch_and_parse_props(conn)
+
+        _, kwargs = MockClient.call_args
+        assert kwargs.get("max_cache_age") == EVENTS_CACHE_TTL_SECONDS
 
     def test_explicit_event_id_bypasses_dedup(self, tmp_path):
         """A manual/targeted re-check must always fetch fresh, even if

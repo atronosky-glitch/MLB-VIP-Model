@@ -299,14 +299,18 @@ def fetch_and_parse_props(
     Requires a DB connection (*conn*) for identity-resolution caching —
     unlike fetch_and_parse(), which is pure fetch+parse.
     """
-    from src.odds_api_client import OddsAPIClient
+    from src.odds_api_client import OddsAPIClient, EVENTS_CACHE_TTL_SECONDS
     from src.wnba_odds_parser import parse_wnba_player_props, PROP_MARKET_KEYS
     from src.player_identity import ESPNRosterClient
     from src.odds_api_credits import (
         record_client_quota, credit_budget_check, PROPS_COST_PER_EVENT,
     )
 
-    client = OddsAPIClient()
+    # get_events() takes no time-varying params -- without a bounded
+    # max_cache_age this would serve the same frozen event list forever
+    # after the first real call (see EVENTS_CACHE_TTL_SECONDS's docstring
+    # in src/odds_api_client.py).
+    client = OddsAPIClient(max_cache_age=EVENTS_CACHE_TTL_SECONDS)
     events, events_from_cache = client.get_events(sport_key=ODDS_API_SPORT_KEY)
     record_client_quota(conn, client, endpoint="events", job_type="props_discovery",
                          cache_hit=events_from_cache)

@@ -43,6 +43,24 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.the-odds-api.com/v4"
 _ENV_VAR = "THE_ODDS_API_KEY"
 
+# Real bug, found 2026-08-22 while answering an operator question about
+# whether every run pulls fresh data: every call site that constructs
+# OddsAPIClient() with no max_cache_age gets one (None = the cache never
+# expires by age — see _get() below, which returns any existing cache
+# file unconditionally when max_cache_age is None). That's harmless for
+# the odds-fetch calls, whose commenceTimeFrom/To params are recomputed
+# from datetime.now() on every call and so naturally produce a fresh
+# cache key each time -- but get_events() (WNBA schedule discovery, and
+# the props path's own event lookup) takes no time-varying params at
+# all, so once a real response is cached, EVERY future call would keep
+# reading that same now-frozen file forever, with no live call ever
+# made again. Reproduced locally: a cache file from 2026-08-20 was still
+# being served unconditionally two days later. get_events() is free (0
+# credits, confirmed live), so there's no cost reason for this to ever
+# be stale -- both call sites (src/worker.py::_discover_wnba_game_times,
+# src/sports/wnba.py::fetch_and_parse_props) pass this explicitly.
+EVENTS_CACHE_TTL_SECONDS = 300
+
 
 class OddsAPIKeyError(RuntimeError):
     """Raised when THE_ODDS_API_KEY is required but not configured."""

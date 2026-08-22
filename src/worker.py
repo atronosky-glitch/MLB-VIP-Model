@@ -666,11 +666,17 @@ def _discover_nfl_game_times() -> list:
 def _discover_wnba_game_times() -> list:
     """Discover today's/upcoming WNBA game times via the FREE /events
     endpoint (0 credits, confirmed live — see src/odds_api_client.py) —
-    safe to call often regardless of the monthly credit budget."""
-    from src.odds_api_client import OddsAPIClient, OddsAPIKeyError
+    safe to call often regardless of the monthly credit budget.
+
+    get_events() takes no time-varying params, so without an explicit
+    max_cache_age the client's cache would serve the same frozen
+    response forever after the first real call (see EVENTS_CACHE_TTL_SECONDS's
+    docstring — a real bug found and fixed 2026-08-22, reproduced locally
+    with a 2-day-stale cache file still being served unconditionally)."""
+    from src.odds_api_client import OddsAPIClient, OddsAPIKeyError, EVENTS_CACHE_TTL_SECONDS
     from src.league_schedule import extract_game_start_times
     try:
-        client = OddsAPIClient()
+        client = OddsAPIClient(max_cache_age=EVENTS_CACHE_TTL_SECONDS)
         events, _from_cache = client.get_events()
         return extract_game_start_times(events)
     except OddsAPIKeyError:

@@ -495,6 +495,26 @@ class TestNFLWNBASchedulingChecks:
         assert row is not None
 
 
+class TestWNBADiscoveryCacheTTL:
+    """Real bug fix, 2026-08-22: _discover_wnba_game_times() calls
+    get_events(), which takes no time-varying params -- an OddsAPIClient
+    built with no max_cache_age would serve the same frozen event list
+    forever after the first real call (reproduced locally: a 2-day-old
+    cache file was still being served unconditionally). The client must
+    be constructed with a bounded TTL, not the default."""
+
+    def test_discover_wnba_uses_bounded_cache_ttl(self):
+        from src.odds_api_client import EVENTS_CACHE_TTL_SECONDS
+
+        fake_client = MagicMock()
+        fake_client.get_events.return_value = ([], False)
+        with patch("src.odds_api_client.OddsAPIClient", return_value=fake_client) as MockClient:
+            worker._discover_wnba_game_times()
+
+        _, kwargs = MockClient.call_args
+        assert kwargs.get("max_cache_age") == EVENTS_CACHE_TTL_SECONDS
+
+
 class TestLastCompletedJobAt:
     def test_none_when_never_run(self, db_conn):
         assert worker._get_last_completed_job_at(db_conn, "wnba-odds-scan") is None
