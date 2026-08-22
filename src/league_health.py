@@ -83,18 +83,25 @@ def _check_last_settlement(conn, league: str, now: datetime) -> HealthCheck:
            WHERE hr.league = ? AND ms.settled_at IS NOT NULL""",
         (league,),
     ).fetchone()
-    pending = conn.execute(
-        """SELECT COUNT(*) AS n FROM historical_recommendations hr
+    pending_rows = conn.execute(
+        """SELECT hr.market_type AS market_type FROM historical_recommendations hr
            LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
            WHERE hr.league = ? AND (ms.settlement_status IS NULL OR ms.settlement_status = 'UNRESOLVED')
              AND hr.event_start_time < ?""",
         (league, (now - timedelta(hours=6)).isoformat()),
-    ).fetchone()
+    ).fetchall()
     # "None ever settled" is OK for a league with no games yet today, not
     # necessarily broken — only escalate once there's a real backlog of
     # recs whose games clearly already finished (6h past start) still
-    # sitting unsettled.
-    unsettled_backlog = pending["n"] if pending else 0
+    # sitting unsettled. Filtered to markets that actually have a verified
+    # settlement contract (is_auto_settleable_market) — a market with no
+    # contract yet (e.g. first_home_run) will sit UNRESOLVED forever by
+    # design, not because anything is stuck, and counting it here made
+    # this look like a growing operational backlog when it wasn't one.
+    from src.prop_config import is_auto_settleable_market
+    unsettled_backlog = sum(
+        1 for r in pending_rows if is_auto_settleable_market(r["market_type"])
+    )
     status, msg = _age_status(_parse_ts(row["ts"] if row else None), now, allow_none_ok=True)
     if unsettled_backlog > 0 and status == "ok":
         status = "warning"

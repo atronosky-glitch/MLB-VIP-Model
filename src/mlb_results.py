@@ -38,6 +38,11 @@ _MARKET_FIELDS = {
     "batting_strikeouts": ("batting", "strikeOuts"),
     "batting_singles": ("batting", "hits"),
     "pitching_pitchesThrown": ("pitching", "pitchesThrown"),
+    # Composite props: the second tuple element is a placeholder (unused —
+    # extract_stat_fact() computes these as a sum of multiple fields below,
+    # the same pattern batting_singles already uses).
+    "batting_hits+runs+rbi": ("batting", "hits"),
+    "batting_runs+rbi": ("batting", "runs"),
 }
 
 
@@ -146,6 +151,12 @@ def extract_stat_fact(feed: dict, recommendation: dict) -> dict | None:
                 required[0] - required[1] - required[2] - required[3]
                 if all(item is not None for item in required) else None
             )
+        elif base_market == "batting_hits+runs+rbi":
+            required = (stats.get("hits"), stats.get("runs"), stats.get("rbi"))
+            value = sum(required) if all(item is not None for item in required) else None
+        elif base_market == "batting_runs+rbi":
+            required = (stats.get("runs"), stats.get("rbi"))
+            value = sum(required) if all(item is not None for item in required) else None
         else:
             value = stats.get(field_spec[1])
         if value is None:

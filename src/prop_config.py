@@ -42,6 +42,8 @@ AUTO_SETTLEABLE_MARKET_TYPES = frozenset({
     "batting_triples_ou", "batting_triples_yn", "batting_basesOnBalls_ou", "batting_basesOnBalls_yn",
     "batting_strikeouts_ou", "batting_strikeouts_yn",
     "batting_stolenBases_ou", "batting_stolenBases_yn",
+    "batting_hits+runs+rbi_ou", "batting_hits+runs+rbi_yn",
+    "batting_runs+rbi_ou", "batting_runs+rbi_yn",
 })
 
 # Extreme outlier: EV magnitude beyond this threshold triggers NEEDS_REVIEW

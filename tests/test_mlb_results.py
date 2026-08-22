@@ -57,6 +57,31 @@ def test_extracts_verified_atomic_batter_and_pitcher_fields():
     })["value"] == 1
 
 
+def test_extracts_hits_runs_rbi_and_runs_rbi_composites():
+    # Real box-score math (verified live against a real completed game
+    # during this fix): Michael Harris II, 2026-08-21 Braves @ Brewers,
+    # went 2 hits / 0 runs / 1 rbi -> H+R+RBI=3, R+RBI=1. Composites were
+    # previously absent from _MARKET_FIELDS entirely, so every
+    # recommendation for these two markets sat UNRESOLVED forever no
+    # matter how long after the game it was — accounting for the bulk of
+    # a real production settlement backlog once traced back to specific
+    # market types.
+    feed = _feed()
+    feed["liveData"]["boxscore"]["teams"]["home"]["players"]["ID456"] = {
+        "person": {"id": 456, "fullName": "Test Batter"},
+        "stats": {"batting": {
+            "hits": 2, "doubles": 1, "triples": 0,
+            "homeRuns": 0, "rbi": 1, "runs": 0,
+        }},
+    }
+    assert extract_stat_fact(feed, {
+        "player_name": "Test Batter", "market_type": "batting_hits+runs+rbi_ou",
+    })["value"] == 3
+    assert extract_stat_fact(feed, {
+        "player_name": "Test Batter", "market_type": "batting_runs+rbi_yn",
+    })["value"] == 1
+
+
 def test_missing_player_stats_are_unresolved():
     rec = {"player_name": "Missing", "market_type": "pitching_strikeouts_ou"}
     assert extract_stat_fact(_feed(), rec) is None
@@ -87,9 +112,11 @@ def test_ingestion_persists_final_fact(db_conn):
 
 
 def test_ingestion_reports_unsupported_market_reason(db_conn):
+    # batting_firstHomeRun has no verified settlement contract yet (unlike
+    # batting_hits+runs+rbi / batting_runs+rbi below, which do now).
     result = ingest_results_for_recommendations(
         db_conn,
-        [{"market_type": "batting_hits+runs+rbi_ou"}],
+        [{"market_type": "batting_firstHomeRun_ou"}],
         client=FakeClient(),
     )
     assert result["unresolved_reasons"]["unsupported_or_research_market"] == 1
