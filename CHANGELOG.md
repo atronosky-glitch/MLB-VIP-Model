@@ -4,6 +4,127 @@ Dated, narrative record of notable engineering sessions. `PROJECT_STATUS.md`
 is the authoritative current-state snapshot; this file is the story of how
 it got there. Newest entries first.
 
+## 2026-08-22 (later) — MLB/NFL supplemental player props via The Odds API
+
+### Why
+
+Operator noticed the Multi-League Health tab showing only ~337 credits/month
+projected against the new 20,000/mo budget — most of the paid-for
+capacity was going unused. After widening WNBA's own props cadence
+(previous entry below) still left huge headroom, operator asked what it
+would cost to give MLB and NFL real player props from the same
+provider, not just the existing 429-only game-markets fallback. Verified
+live before building anything: The Odds API genuinely carries MLB and
+NFL player props on this account (not assumed) — 13 of 14 candidate MLB
+markets returned real bookmaker data against an upcoming game, and 6 of
+10 NFL candidates did against the earliest available NFL event (19 days
+out, so thin but real).
+
+### What changed
+
+- Extracted the row-building/identity-resolution logic that was already
+  proven for WNBA into shared `src/odds_api_props_parser.py` (mirrors
+  the game-odds extraction from earlier the same day) and the
+  discover/dedup/per-event-credit-checked fetch loop into shared
+  `src/odds_api_props_fetch.py`. `wnba_odds_parser.py::parse_wnba_player_props`
+  and `sports/wnba.py::fetch_and_parse_props` are now thin wrappers over
+  these — a real regression-tested refactor, not just new code sitting
+  next to the old.
+- Generalized `src/player_identity.py`'s ESPN roster client to MLB/NFL:
+  added their sport paths, and fixed a real shape difference found live
+  — WNBA's roster response is a flat athlete list, MLB/NFL's is grouped
+  by position (`{"position": "Pitchers", "items": [...]}`) — the
+  original code would have silently returned zero players for both
+  leagues without this fix.
+- `src/mlb_props_parser.py` / `src/nfl_props_parser.py` (new): register
+  only the markets with real observed liquidity from the live check —
+  MLB: batter hits/total bases, pitcher strikeouts/outs (4-6 books each);
+  NFL: pass yards/rush yards/receptions/reception yards (genuinely
+  two-sided; `player_anytime_td` was present but single-sided "Yes"
+  pricing on this provider, not Over/Under, so deliberately excluded).
+  Every market reuses each league's existing primary-registry
+  `market_type` string, so the existing settlement contract
+  (`mlb_results.py`/`nfl_results.py`) applies automatically — confirmed
+  all 8 markets already have one, zero new settlement code needed.
+- `fetch_player_props_via_odds_api()` added to `src/sports/mlb.py` /
+  `src/sports/nfl.py`. Unlike the game-markets fallback, this is **not**
+  a 429-triggered fallback — it's a genuine second, independent data
+  source that runs on its own schedule regardless of SportsGameOdds's
+  health. Wired into `player_prop_scanner.run_scan()`'s SportsGameOdds
+  branch (MLB/NFL's primary path) as a new merge step, distinct from the
+  existing WNBA-style merge in the non-SportsGameOdds branch.
+- New, deliberately narrower cadence than WNBA's: MLB games are ~12x
+  WNBA's daily volume, so the same per-game pace would have cost
+  roughly 12x as much in aggregate (~34,000/mo estimated — more than the
+  entire monthly budget from MLB alone). Settled on MLB: 3h window/60min
+  throttle, NFL: 4h window/60min throttle (vs WNBA's 6h/30min) —
+  refactored `wnba_should_fetch_props` into a shared
+  `_should_fetch_player_props` in `src/league_schedule.py` with
+  per-league window/throttle constants rather than duplicating the
+  function three times. MLB's own game times come from the local
+  `games` table (already populated by the daily SportsGameOdds morning
+  run) instead of a new live discovery call, so this costs nothing
+  against either provider's quota; NFL reuses the kickoff times its
+  existing scheduling check already discovers.
+- New `mlb-props-scan` / `nfl-props-scan` job types wired into
+  `worker.py`'s dispatch table and both the persistent-loop and one-shot
+  scheduling paths. Documented, not hidden: because MLB/NFL's primary
+  provider IS SportsGameOdds, running this job also re-runs that
+  league's SportsGameOdds fetch as a side effect (fetch_props=True only
+  adds the merge, it doesn't replace the primary path) — usually
+  absorbed by the existing 15-minute SportsGameOdds client cache since
+  other MLB/NFL jobs already run frequently in an active window, but not
+  a guaranteed-free operation, and said so in the code rather than
+  implied otherwise.
+- New estimate at this cadence: MLB ~4,300/mo, NFL ~1,100/mo, WNBA
+  ~2,800/mo (unchanged) — roughly 8,200/mo total, well inside the
+  20,000/mo budget with real headroom left over.
+
+Full suite: **1831 passed, 0 failed**. See `docs/SESSION_HANDOFF.md` for
+the full account, including the live liquidity-check data this was
+built from.
+
+## 2026-08-22 — WNBA props cadence widened + a real schedule-discovery cache bug fixed
+
+### Why
+
+Operator, looking at the Multi-League Health tab's credit panel (19,833
+remaining, only 336.8/month projected), asked directly whether every run
+pulls fresh live odds — a fair question given how little of the new
+20,000/month budget was being used.
+
+### What was found and fixed
+
+- **Yes for odds fetches, no for WNBA schedule discovery.** Every
+  odds-fetch call (`get_odds()`) computes its `commenceTimeFrom`/
+  `commenceTimeTo` params from `datetime.now()` on every call, so the
+  cache key is effectively unique each time — genuinely fresh every run.
+  `get_events()` (WNBA schedule discovery) takes no time-varying params
+  at all, and `OddsAPIClient`'s cache has no age-based expiry by default
+  — any existing cache file is served forever, no matter how old.
+  Reproduced locally: a cache file from 2026-08-20 was still being
+  served unconditionally two days later, undercounting real upcoming
+  games (6 vs. the real live 7). Fixed with a bounded 5-minute TTL
+  (`EVENTS_CACHE_TTL_SECONDS` in `src/odds_api_client.py`) at both call
+  sites (`src/worker.py::_discover_wnba_game_times`,
+  `src/sports/wnba.py::fetch_and_parse_props`'s own event lookup).
+- **WNBA props cadence widened**: the follow-up question ("should that
+  make our projected credits be more?") led to checking whether the
+  *existing* props scheduler (`wnba_should_fetch_props`, already wired
+  into the worker loop since 2026-08-20 — contrary to an earlier,
+  incorrect assumption that it had never been scheduled) was just
+  conservatively tuned for the old 500-credit budget. It was: 3h pregame
+  window, checked once/hour, with a hardcoded 50-credit reserve. Widened
+  to a 6h window checked every 30 minutes, and replaced the hardcoded
+  reserve with 10% of the real current budget (scales automatically if
+  the tier changes again). Synced the per-event dedup window in
+  `src/sports/wnba.py` from 1h to 30min to match the new throttle.
+- Fixed the Multi-League Health tab's credit-panel label, which still
+  said "The Odds API, free tier" — stale on both counts (paid tier now,
+  and the budget is shared with the MLB/NFL fallback, not WNBA-exclusive).
+
+Full suite: **1802 passed, 0 failed**.
+
 ## 2026-08-22 — SportsGameOdds quota exhaustion: MLB/NFL fallback via The Odds API + shared credit-budget safety
 
 ### Why

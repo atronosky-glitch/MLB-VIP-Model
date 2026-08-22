@@ -69,7 +69,7 @@ logic. This key is production-capable for live current MLB/NFL data —
 no tier upgrade needed. Full findings: `docs/SESSION_HANDOFF.md` →
 "SportsGameOdds investigation" (2026-08-20).
 
-## NFL — Supported (verified, not yet in production)
+## NFL — Supported (production)
 
 Data provider: SportsGameOdds v2 (`leagueID=NFL`) — confirmed identical
 event/odds schema to MLB. Settlement: ESPN's public NFL scoreboard/summary
@@ -117,15 +117,64 @@ Also available with real liquidity but not yet wired in: 1st-half /
 reasonable near-term expansion (the provider data is already there),
 distinct from the list above where liquidity itself was the blocker.
 
-Status: **not yet run in production** — the scheduling logic exists and
-is tested (`src/league_schedule.py::nfl_should_run_daily_scan`/
-`nfl_should_run_pregame_check`, driven by real discovered kickoff times,
-2026-08-20), and `src/worker.py` has the job types/dispatch wired
-(`morning-run-nfl`, `pregame-check-nfl`), but none of it is deployed —
-nothing runs it on Render's actual worker service yet. Pinnacle sharp-reference pricing
-is unverified for NFL (`pinnacle_feed.py` is hardcoded to baseball's sport
-ID); NFL runs on LOO market-median consensus only, the same fallback path
-MLB itself uses whenever Pinnacle is absent.
+Status: **active production pipeline**, running on Render since
+2026-08-20 (`c141475`) — `src/league_schedule.py::nfl_should_run_daily_scan`/
+`nfl_should_run_pregame_check` (driven by real discovered kickoff times)
+and `src/worker.py`'s `morning-run-nfl`/`pregame-check-nfl` job types are
+both deployed and generating real recommendations, including surviving a
+real SportsGameOdds quota exhaustion via the fallback below. Pinnacle
+sharp-reference pricing is unverified for NFL (`pinnacle_feed.py` is
+hardcoded to baseball's sport ID); NFL runs on LOO market-median
+consensus only, the same fallback path MLB itself uses whenever Pinnacle
+is absent.
+
+### Supplemental player props via The Odds API (added 2026-08-22)
+
+Alongside the SportsGameOdds-sourced registry above, MLB and NFL now
+also pull a small set of player props from The Odds API — the same
+provider WNBA uses, and the same one the game-markets 429-fallback
+below uses. This is genuinely additive, not a fallback: it runs on its
+own schedule regardless of SportsGameOdds's health, merged into the
+same scan (`fetch_player_props_via_odds_api()` on each league's
+`src/sports/<league>.py`, wired into `player_prop_scanner.run_scan()`).
+
+Registered after a live liquidity check (not assumed) against a real
+event on each side — see `src/mlb_props_parser.py`/
+`src/nfl_props_parser.py`'s docstrings for the full snapshot:
+
+| League | Market | Odds-API key | Books observed | Reused market_type |
+|---|---|---|---|---|
+| MLB | Pitcher Outs | `pitcher_outs` | 6 | `pitching_outs_ou` |
+| MLB | Batter Total Bases | `batter_total_bases` | 5 | `batting_totalBases_ou` |
+| MLB | Pitcher Strikeouts | `pitcher_strikeouts` | 5 | `pitching_strikeouts_ou` |
+| MLB | Batter Hits | `batter_hits` | 4 | `batting_hits_ou` |
+| NFL | Passing Yards | `player_pass_yds` | 2 (19 days pre-kickoff) | `passing_yards_ou` |
+| NFL | Rushing Yards | `player_rush_yds` | 2 (19 days pre-kickoff) | `rushing_yards_ou` |
+| NFL | Receptions | `player_receptions` | 2 (19 days pre-kickoff) | `receiving_receptions_ou` |
+| NFL | Receiving Yards | `player_reception_yds` | 2 (19 days pre-kickoff) | `receiving_yards_ou` |
+
+MLB's book counts were checked against a real near-term game, so they're
+a genuine liquidity read. NFL's were checked against the earliest
+available event (19 days before kickoff at check time) — real, but
+thin-because-early, not a mature liquidity read; re-verify closer to
+kickoff before trusting these counts for anything beyond "the market
+exists." `player_anytime_td` was also confirmed live but is single-sided
+"Yes" pricing on this provider (not Over/Under), so it's deliberately
+not registered — the same "different market shape" reason WNBA's
+first-basket/double-double/triple-double are excluded above.
+
+Every registered market reuses each league's EXISTING primary-registry
+`market_type` string rather than inventing a new one, so the existing
+settlement contract already applies — confirmed all 8 (4 MLB + 4 NFL)
+already have one (`AUTO_SETTLEABLE_MARKET_TYPES` for MLB,
+`_SIMPLE_STAT_FIELDS` for NFL). Zero new settlement code was needed.
+
+Cadence is deliberately narrower than WNBA's own props pace: MLB alone
+averages roughly 12x WNBA's daily game count, so the same per-game
+frequency would cost proportionally more in aggregate. MLB: 3h pregame
+window, checked at most once/60min. NFL: 4h window, once/60min. See
+the "Update 2026-08-22" cost note below for the full budget math across
+all three leagues at this cadence.
 
 ## WNBA — Supported (verified live, game markets + player props + settlement)
 
@@ -294,6 +343,27 @@ at the current tier. Re-verify the real remaining balance via the
 Multi-League Health tab or `/account/usage` rather than trusting this
 note indefinitely, the same discipline that caught the original 500/mo
 numbers going stale.
+
+### Update 2026-08-22 (later same day) — MLB/NFL got real props too; final combined estimate
+
+Same day, after confirming the account had far more headroom than any
+single league needed: MLB and NFL got their own supplemental player
+props via this same provider (see each league's section above). Final
+projected combined usage at the cadence actually shipped:
+
+| Source | Monthly estimate |
+|---|---|
+| WNBA (game odds + props, 6h/30min cadence) | ~2,800 |
+| MLB (props only, 3h/60min cadence, 4 markets) | ~4,300 |
+| NFL (props only, 4h/60min cadence, 4 markets) | ~1,100 |
+| **Total** | **~8,200** |
+
+Well inside the 20,000/mo budget, with the 2,000-credit (10%) reserve
+still intact on top. MLB's per-game cadence was deliberately kept far
+narrower than WNBA's — WNBA's own 6h/30min pace applied to MLB's ~12x
+higher daily game volume would alone have cost an estimated ~34,000/mo,
+more than the entire budget. This is why `src/league_schedule.py`'s
+props scheduling constants are per-league, not one shared global.
 
 ## Future leagues (architecture ready, not started)
 
