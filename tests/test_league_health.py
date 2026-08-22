@@ -175,8 +175,11 @@ class TestWNBACreditHealthCheck:
         assert credit_check.status == "error"
 
     def test_plentiful_credits_reported_as_ok(self, db_conn):
-        from src.odds_api_credits import record_credit_usage
-        record_credit_usage(db_conn, endpoint="odds", requests_remaining=450)
+        from src.odds_api_credits import record_credit_usage, DEFAULT_MONTHLY_BUDGET
+        # 90% of whatever the real current budget is (not a hardcoded
+        # absolute number) — this already went stale once, when the
+        # account's tier changed from 500/mo to 20,000/mo, 2026-08-22.
+        record_credit_usage(db_conn, endpoint="odds", requests_remaining=int(DEFAULT_MONTHLY_BUDGET * 0.9))
         report = run_league_health_checks(db_conn, "WNBA")
         credit_check = next(c for c in report.checks if "credit budget" in c.name.lower())
         assert credit_check.status == "ok"

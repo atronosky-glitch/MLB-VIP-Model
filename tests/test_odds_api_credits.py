@@ -117,30 +117,39 @@ class TestEstimateMonthlyCost:
         result = estimate_monthly_cost(game_scans_per_day=2, prop_events_per_day=0)
         assert result["daily_game_credits"] == 2 * GAME_ODDS_COST
         assert result["daily_props_credits"] == 0
-        assert result["fits_free_tier"] is True
+        assert result["fits_monthly_budget"] is True
 
     def test_props_dominate_cost(self):
         result = estimate_monthly_cost(game_scans_per_day=1, prop_events_per_day=5)
         assert result["daily_props_credits"] == 5 * PROPS_COST_PER_EVENT
         assert result["monthly_total_credits"] > result["daily_total_credits"]
 
-    def test_daily_props_scan_exceeds_free_tier(self):
-        # 5 games/day, props once per game, every day of the month.
-        result = estimate_monthly_cost(game_scans_per_day=1, prop_events_per_day=5)
-        assert result["fits_free_tier"] is False
+    def test_daily_props_scan_exceeds_budget(self):
+        # Scaled off DEFAULT_MONTHLY_BUDGET (not a hardcoded cadence) so
+        # this keeps testing the failure branch even if the budget
+        # constant changes again (it already has once — see module
+        # docstring: free tier 500/mo -> paid 20,000/mo, 2026-08-22).
+        prop_events_per_day = (DEFAULT_MONTHLY_BUDGET / 30 / PROPS_COST_PER_EVENT) + 10
+        result = estimate_monthly_cost(game_scans_per_day=1, prop_events_per_day=prop_events_per_day)
+        assert result["fits_monthly_budget"] is False
         assert result["monthly_total_credits"] > DEFAULT_MONTHLY_BUDGET
 
 
 class TestCreditBudgetCheck:
+    # These pin monthly_budget=500 explicitly rather than relying on
+    # DEFAULT_MONTHLY_BUDGET, so the boundary math stays meaningful
+    # regardless of the real account's current tier (which already
+    # changed once, 2026-08-22: free 500/mo -> paid 20,000/mo).
+
     def test_allows_when_plenty_remaining(self, db_conn):
         record_credit_usage(db_conn, endpoint="odds", requests_remaining=400)
-        allowed, reason = credit_budget_check(db_conn, 8)
+        allowed, reason = credit_budget_check(db_conn, 8, monthly_budget=500)
         assert allowed is True
 
     def test_blocks_when_reserve_would_be_breached(self, db_conn):
         # 500 budget, 10% reserve = 50. Only 40 remaining reported.
         record_credit_usage(db_conn, endpoint="odds", requests_remaining=40)
-        allowed, reason = credit_budget_check(db_conn, 8)
+        allowed, reason = credit_budget_check(db_conn, 8, monthly_budget=500)
         assert allowed is False
         assert "reserve" in reason
 
@@ -148,18 +157,18 @@ class TestCreditBudgetCheck:
         record_credit_usage(db_conn, endpoint="odds", requests_remaining=58)
         # 58 - 50 reserve = 8 available; requesting exactly 8 must NOT
         # exceed and should be allowed (boundary is > not >=).
-        allowed, _ = credit_budget_check(db_conn, 8)
+        allowed, _ = credit_budget_check(db_conn, 8, monthly_budget=500)
         assert allowed is True
-        allowed2, _ = credit_budget_check(db_conn, 9)
+        allowed2, _ = credit_budget_check(db_conn, 9, monthly_budget=500)
         assert allowed2 is False
 
     def test_falls_back_to_monthly_estimate_when_no_provider_reading(self, db_conn):
-        allowed, reason = credit_budget_check(db_conn, 8)
+        allowed, reason = credit_budget_check(db_conn, 8, monthly_budget=500)
         assert allowed is True  # no usage yet, full budget available
         assert "no recent provider reading" in reason.lower() or "no provider reading" in reason.lower()
 
     def test_falls_back_estimate_blocks_when_month_usage_high(self, db_conn):
         now = datetime.now(timezone.utc)
         record_credit_usage(db_conn, endpoint="odds", requests_last=470, cache_hit=False)
-        allowed, reason = credit_budget_check(db_conn, 40)
+        allowed, reason = credit_budget_check(db_conn, 40, monthly_budget=500)
         assert allowed is False

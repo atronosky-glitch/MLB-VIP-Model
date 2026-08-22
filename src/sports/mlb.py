@@ -59,7 +59,28 @@ def fetch_game_odds_via_odds_api(
     """
     from src.odds_api_client import OddsAPIClient
     from src.mlb_odds_parser import parse_mlb_game_odds
+    from src.odds_api_credits import credit_budget_check, GAME_ODDS_COST
     from datetime import datetime, timedelta, timezone
+
+    if conn is not None:
+        # Same defensive try/except as record_client_quota below — a
+        # problem in the check itself (bad conn, missing table) must not
+        # block a fallback that's often the only remaining way to get
+        # data; only a genuine, successfully-read "budget exhausted"
+        # result should stop the call.
+        try:
+            ok, reason = credit_budget_check(conn, GAME_ODDS_COST)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Could not run Odds API budget check for MLB fallback — proceeding", exc_info=True,
+            )
+            ok, reason = True, "budget check failed, proceeding"
+        if not ok:
+            raise RuntimeError(
+                f"MLB SportsGameOdds fallback skipped — Odds API budget "
+                f"exhausted: {reason}"
+            )
 
     client = OddsAPIClient()
     # Same -6h/+42h near-term window the SportsGameOdds path uses, and for

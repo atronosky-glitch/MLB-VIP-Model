@@ -1,24 +1,36 @@
 """WNBA API credit tracking and budget control (The Odds API).
 
-The Odds API's free tier is a hard 500-credits/month quota. Every real
-(non-cached) response carries the ground truth —
+Every real (non-cached) response carries the ground truth —
 ``x-requests-used``/``x-requests-remaining``/``x-requests-last`` headers,
 already captured by ``OddsAPIClient.last_quota`` (see
 ``src/odds_api_client.py``) but never persisted before this module. This
 gives ``src/league_schedule.py`` a real budget to check against before
 spending credits on the more expensive player-props calls, instead of
-guessing usage or hoping the free tier holds up.
+guessing usage or hoping the tier holds up.
+
+The account was upgraded 2026-08-22 from the free tier (500 credits/mo)
+to the "20K" paid tier (20,000 credits/mo, $30/mo), specifically so MLB
+and NFL could fall back to this provider when SportsGameOdds's own quota
+runs out (see ``src/sports/mlb.py``/``src/sports/nfl.py``'s
+``fetch_game_odds_via_odds_api()``). That fallback now shares this same
+budget with WNBA's existing usage, so ``credit_budget_check()`` is wired
+into it too — a burst of MLB/NFL fallback calls must not be able to
+silently starve WNBA's budget (or vice versa).
 """
 
 from __future__ import annotations
 
 import calendar
 import logging
+import os
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MONTHLY_BUDGET = 500  # The Odds API free tier
+# Real current tier as of 2026-08-22 (see module docstring). Configurable
+# via env var since paid-tier changes are a real possibility, not just a
+# hypothetical — this constant already went stale once.
+DEFAULT_MONTHLY_BUDGET = int(os.getenv("THE_ODDS_API_MONTHLY_BUDGET", "20000"))
 
 # Verified per-call costs — see src/odds_api_client.py and
 # docs/MARKET_CAPABILITY.md for how these were confirmed live.
@@ -142,7 +154,7 @@ def estimate_monthly_cost(*, game_scans_per_day: float, prop_events_per_day: flo
         "daily_props_credits": daily_props_cost,
         "daily_total_credits": daily_total,
         "monthly_total_credits": round(daily_total * 30, 1),
-        "fits_free_tier": (daily_total * 30) <= DEFAULT_MONTHLY_BUDGET,
+        "fits_monthly_budget": (daily_total * 30) <= DEFAULT_MONTHLY_BUDGET,
     }
 
 

@@ -84,6 +84,58 @@ def _mlb_game(game_id="game-1", home_team="New York Yankees", away_team="Toronto
     }
 
 
+class TestFallbackCreditBudget:
+    """The MLB/NFL fallback shares its budget with WNBA's existing Odds
+    API usage (upgraded 2026-08-22 to the 20K/mo paid tier specifically
+    to fund this fallback) — credit_budget_check() must actually stop a
+    fallback call when that shared budget is exhausted, not just record
+    usage after the fact."""
+
+    def test_mlb_fallback_raises_when_budget_exhausted(self, db_conn):
+        from src.sports.mlb import fetch_game_odds_via_odds_api
+        from src.odds_api_credits import record_credit_usage
+
+        record_credit_usage(
+            db_conn, endpoint="odds", requests_used=19995, requests_remaining=5,
+        )
+        with mock.patch("src.odds_api_client.OddsAPIClient") as MockClient:
+            MockClient.return_value.get_odds.return_value = ([], False)
+            try:
+                fetch_game_odds_via_odds_api(conn=db_conn)
+                assert False, "expected RuntimeError for exhausted budget"
+            except RuntimeError as exc:
+                assert "budget" in str(exc).lower()
+        MockClient.return_value.get_odds.assert_not_called()
+
+    def test_nfl_fallback_raises_when_budget_exhausted(self, db_conn):
+        from src.sports.nfl import fetch_game_odds_via_odds_api
+        from src.odds_api_credits import record_credit_usage
+
+        record_credit_usage(
+            db_conn, endpoint="odds", requests_used=19995, requests_remaining=5,
+        )
+        with mock.patch("src.odds_api_client.OddsAPIClient") as MockClient:
+            MockClient.return_value.get_odds.return_value = ([], False)
+            try:
+                fetch_game_odds_via_odds_api(conn=db_conn)
+                assert False, "expected RuntimeError for exhausted budget"
+            except RuntimeError as exc:
+                assert "budget" in str(exc).lower()
+        MockClient.return_value.get_odds.assert_not_called()
+
+    def test_mlb_fallback_proceeds_when_budget_available(self, db_conn):
+        from src.sports.mlb import fetch_game_odds_via_odds_api
+        from src.odds_api_credits import record_credit_usage
+
+        record_credit_usage(
+            db_conn, endpoint="odds", requests_used=100, requests_remaining=19900,
+        )
+        with mock.patch("src.odds_api_client.OddsAPIClient") as MockClient:
+            MockClient.return_value.get_odds.return_value = ([_mlb_game()], False)
+            odds_rows, audit_rows, events, from_cache = fetch_game_odds_via_odds_api(conn=db_conn)
+        assert len(events) == 1
+
+
 class TestRunScanMLBFallback:
     """run_scan(league='MLB', ...) — only the SportsGameOdds call mocked
     to fail, the real scanner/analysis pipeline runs on top of it."""
