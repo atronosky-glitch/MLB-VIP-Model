@@ -2416,11 +2416,19 @@ with tabs[8]:
 
             st.divider()
             st.markdown("##### Recent Job Activity")
+            # LIKE patterns are bound parameters, not inline SQL text: a
+            # literal '%' in the query string makes psycopg2 (which always
+            # receives a params tuple, even an empty one) try to %-format
+            # against it and raise "tuple index out of range" - the real
+            # production error this caused. Binding the '%' inside the
+            # parameter value instead of the SQL text sidesteps that for
+            # both dialects.
             job_rows = _conn_lh.execute(
                 "SELECT job_type, status, started_at, completed_at, error_message "
-                "FROM scheduled_jobs WHERE job_type LIKE '%-nfl' OR job_type LIKE 'wnba-%' "
+                "FROM scheduled_jobs WHERE job_type LIKE ? OR job_type LIKE ? "
                 "OR job_type IN ('morning-run', 'pregame-check', 'grading') "
                 "ORDER BY created_at DESC LIMIT 20",
+                ("%-nfl", "wnba-%"),
             ).fetchall()
             if job_rows:
                 st.dataframe(
