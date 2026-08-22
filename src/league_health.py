@@ -165,15 +165,20 @@ def _check_event_date_sanity(conn, league: str, now: datetime) -> HealthCheck:
     year's games. This checks the actual event dates being recommended
     on, not just that a scan happened.
     """
+    # Bounds computed in Python and compared as plain ISO-8601 text rather
+    # than SQL date arithmetic: julianday() is SQLite-only and has no
+    # PostgreSQL equivalent, which broke this check in production (real
+    # error: "function julianday(text) does not exist"). Both dialects
+    # store these columns as ISO-8601 text, which sorts/compares correctly
+    # lexicographically, so plain </> works identically on both.
+    lower_bound = (now - timedelta(days=3)).isoformat()
+    upper_bound = (now + timedelta(days=14)).isoformat()
     row = conn.execute(
         """SELECT COUNT(*) AS n FROM historical_recommendations
            WHERE league = ? AND date(scan_timestamp) = date('now')
              AND event_start_time IS NOT NULL
-             AND (
-                 julianday(event_start_time) < julianday(scan_timestamp) - 3
-                 OR julianday(event_start_time) > julianday(scan_timestamp) + 14
-             )""",
-        (league,),
+             AND (event_start_time < ? OR event_start_time > ?)""",
+        (league, lower_bound, upper_bound),
     ).fetchone()
     implausible_n = row["n"] if row else 0
     status = "error" if implausible_n > 0 else "ok"
