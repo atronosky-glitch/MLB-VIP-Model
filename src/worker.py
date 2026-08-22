@@ -252,7 +252,12 @@ def _run_morning_scan(config, league: str = "MLB") -> dict:
         league=league,
     )
     exit_code = run_pipeline(pipeline_config)
-    return {"status": "success" if exit_code == 0 else "failed", "exit_code": exit_code}
+    # EXIT_SUCCESS_NO_RECS (1) means the pipeline ran fine and found zero
+    # qualifying opportunities that day — a normal outcome, not a failure.
+    # Every other job runner in this file already treats it this way; this
+    # one didn't, so a real "no picks today" NFL/MLB run was showing up as
+    # a red FAILED job on the Multi-League Health tab.
+    return {"status": "success" if exit_code in (0, 1) else "failed", "exit_code": exit_code}
 
 
 def _initialize_worker_schema(config) -> None:

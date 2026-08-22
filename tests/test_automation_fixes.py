@@ -245,6 +245,33 @@ class TestPerLeagueJobLockIsolation:
         assert row["job_type"] == "pregame-pipeline-NFL"
 
 
+class TestRunMorningScanExitCodeClassification:
+    """EXIT_SUCCESS_NO_RECS (1) means the pipeline ran fine and simply
+    found zero qualifying opportunities that day — a normal outcome for
+    any league, not a failure. Every other job runner in worker.py already
+    treated it this way; _run_morning_scan (used by both MLB's daily
+    morning-run and NFL's morning-run-nfl) was the one holdout still
+    treating any non-zero exit code as failed, which showed real "no
+    picks today" runs as a red FAILED job on the Multi-League Health tab."""
+
+    def test_no_recommendations_is_reported_as_success(self):
+        with patch("src.daily_pipeline.run_pipeline", return_value=1):
+            result = worker._run_morning_scan(MagicMock(output_dir="output"), league="NFL")
+        assert result["status"] == "success"
+        assert result["exit_code"] == 1
+
+    def test_clean_success_is_still_success(self):
+        with patch("src.daily_pipeline.run_pipeline", return_value=0):
+            result = worker._run_morning_scan(MagicMock(output_dir="output"), league="MLB")
+        assert result["status"] == "success"
+
+    def test_real_failure_is_still_reported_as_failed(self):
+        with patch("src.daily_pipeline.run_pipeline", return_value=3):
+            result = worker._run_morning_scan(MagicMock(output_dir="output"), league="NFL")
+        assert result["status"] == "failed"
+        assert result["exit_code"] == 3
+
+
 class TestCatchupGradingResilience:
     """One league's result-ingestion failure must not prevent grading for
     the other two leagues, or for the game-market grading pass."""
