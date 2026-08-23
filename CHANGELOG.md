@@ -4,6 +4,62 @@ Dated, narrative record of notable engineering sessions. `PROJECT_STATUS.md`
 is the authoritative current-state snapshot; this file is the story of how
 it got there. Newest entries first.
 
+## 2026-08-23 — Pinnacle wired in for MLB, NFL, and WNBA; game markets added
+
+### Why
+
+Operator's standing goal: "I want all the picks that pass our guidelines
+to show up to me and customers... i ideally want this model to make
+official picks for all 3 leagues." Investigating why Official picks were
+near-zero surfaced a real structural gap: `REQUIRE_PINNACLE_FOR_OFFICIAL`
+already applied to every league, but `src/pinnacle_feed.py` was hardcoded
+to MLB only — NFL and WNBA O/U picks could never pass Gate 9 no matter
+how good the edge was. The operator personally verified Pinnacle carries
+these markets and pushed back when told otherwise, which was the right
+call — Pinnacle (via pinnapi.com) is a real, separate, working feed that
+had simply never been extended past MLB in code.
+
+### What changed
+
+- `src/prop_config.py`: replaced the single-league `PINNACLE_FEED_SPORT_ID`/
+  `PINNACLE_FEED_LEAGUE` constants with per-league maps —
+  `PINNACLE_SPORT_ID_BY_LEAGUE`, `PINNACLE_LEAGUE_NAME_BY_LEAGUE`,
+  `PINNACLE_PROP_UNITS_BY_LEAGUE`, `PINNACLE_PROP_SUFFIXES_BY_LEAGUE`,
+  `PINNACLE_GAME_MARKET_TYPES_BY_LEAGUE` — found by live-probing pinnapi's
+  undocumented `sport_id` scheme (MLB=6, NFL=5, WNBA=3).
+- `src/pinnacle_feed.py`: generalized prop parsing/matching to any league
+  via the new config maps; added full-game moneyline/spread/total support
+  (`parse_game_odds`, `build_pinnacle_game_lookup`, `match_pinnacle_game`,
+  `inject_pinnacle_game_reference`) — a market Pinnacle was never used for
+  before, even for MLB. Game markets ride the existing `player_id=="GAME"`
+  sentinel already shared by the SportsGameOdds and Odds-API game-parsers,
+  so no new analysis engine was needed.
+- `src/player_prop_scanner.py`: the Pinnacle injection block (already at
+  the shared, per-league call site) now fetches and injects both props
+  and game odds for every league Pinnacle covers.
+- `src/mlb_props_parser.py`: swapped the Odds-API-sourced `batter_hits`
+  market for `batter_home_runs` — Pinnacle never prices hits, so
+  `batter_hits` had no path to Official regardless of its own book depth;
+  `batter_home_runs` does.
+- **Real bug caught before shipping**: fetching props and game odds as
+  two separate calls per league would hit the shared 10-second
+  module-level rate limiter back-to-back and silently drop the second
+  fetch almost every time in real usage (both need the same raw
+  `/prematch/fixtures` payload). Fixed by caching the raw payload once
+  per league (`_get_raw_payload`) and parsing both from it.
+
+### Verified live (2026-08-23, real pinnapi trial key)
+
+MLB: 26 props, 227 game-market entries (16 games). NFL: 0 props (real —
+no specials posted this far pre-season, confirmed via a full
+`special_category` breakdown) / 368 game-market entries (16 games).
+WNBA: 82 props / 60 game-market entries (4 games). Ran a real WNBA prop
+(Alanna Smith, Points, 9.5) and a real WNBA game total through the actual
+production matching/injection functions end-to-end — both landed real
+`"pinnacle"` reference prices on both sides. Full test suite: 1,854
+passed. Full market audit: `docs/MARKET_CAPABILITY.md` →
+"Pinnacle sharp-reference feed."
+
 ## 2026-08-22 (verification pass) — Live end-to-end test caught a real unbounded-events bug in the new props fetch
 
 ### Why

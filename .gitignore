@@ -39,7 +39,9 @@ venv/
 # Cache
 data/_api_cache/
 data/_odds_api_cache/
+data/_test_odds_api_cache/
 data/_pinnacle_feed_cache.json
+data/_pinnacle_feed_cache_*.json
 
 # Output (generated)
 output/*.csv

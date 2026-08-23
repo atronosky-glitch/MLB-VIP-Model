@@ -35,7 +35,7 @@ class FakeRosterClientForProps:
 
 def _mlb_event_odds_with_props(
     player_name="Mitch Bratt", home_team="Arizona Diamondbacks",
-    away_team="Houston Astros", event_id="evt-1", market_key="batter_hits",
+    away_team="Houston Astros", event_id="evt-1", market_key="batter_home_runs",
 ):
     """Shaped like GET /v4/sports/baseball_mlb/events/{id}/odds — same
     outcome shape verified live 2026-08-22 (outcome.description carries
@@ -94,11 +94,13 @@ class TestMLBPropsMarketMapping:
     def test_registered_markets_reuse_mlb_primary_registry_naming(self):
         from src.mlb_props_parser import _PROP_MARKET_TYPE
         # Exact strings from src/prop_config.py's PITCHER_STRIKEOUTS/
-        # PITCHER_OUTS/BATTER_HITS/BATTER_TOTAL_BASES — reusing them (not
-        # inventing new ones) is what makes MLB's existing settlement
-        # contract apply automatically.
+        # PITCHER_OUTS/BATTER_HOME_RUNS/BATTER_TOTAL_BASES — reusing them
+        # (not inventing new ones) is what makes MLB's existing settlement
+        # contract apply automatically. batter_home_runs (not
+        # batter_hits, swapped 2026-08-23) specifically because it's one
+        # of Pinnacle's 6 real covered MLB stats — batting_hits_ou isn't.
         assert _PROP_MARKET_TYPE == {
-            "batter_hits": "batting_hits_ou",
+            "batter_home_runs": "batting_homeRuns_ou",
             "batter_total_bases": "batting_totalBases_ou",
             "pitcher_strikeouts": "pitching_strikeouts_ou",
             "pitcher_outs": "pitching_outs_ou",
@@ -128,7 +130,7 @@ class TestMLBPropsMarketMapping:
             [_mlb_event_odds_with_props()], conn=conn, roster_client=roster_client,
         )
         assert len(result.odds_rows) == 2
-        assert all(r["market_type"] == "batting_hits_ou" for r in result.odds_rows)
+        assert all(r["market_type"] == "batting_homeRuns_ou" for r in result.odds_rows)
         assert all(r["player_id"] == "ESPN_MLB_5123768" for r in result.odds_rows)
 
     def test_unregistered_market_key_ignored(self, tmp_path):
@@ -142,7 +144,10 @@ class TestMLBPropsMarketMapping:
         init_db(str(db_path))
         conn = get_connection(str(db_path))
 
-        event_odds = _mlb_event_odds_with_props(market_key="batter_home_runs")
+        # batter_hits specifically -- no longer registered as of 2026-08-23
+        # (swapped for batter_home_runs, see module docstring), so this
+        # doubles as a regression test that the swap actually took.
+        event_odds = _mlb_event_odds_with_props(market_key="batter_hits")
         result = parse_mlb_player_props(
             [event_odds], conn=conn, roster_client=FakeRosterClientForProps({}, {}),
         )
@@ -220,7 +225,7 @@ class TestFetchPlayerPropsViaOddsAPIDelegation:
         assert kwargs["sport_key"] == "baseball_mlb"
         assert kwargs["league"] == "MLB"
         assert kwargs["event_id"] == "evt-x"
-        assert "batter_hits" in kwargs["prop_market_keys"]
+        assert "batter_home_runs" in kwargs["prop_market_keys"]
 
     def test_nfl_delegates_with_correct_args(self, tmp_path):
         from database.db_manager import init_db, get_connection

@@ -2,6 +2,105 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-08-23 — Pinnacle wired in for all 3 leagues (props + game markets), plus the LOO book-count floor
+
+Operator's business goal, stated directly: "i want all the picks that
+pass our guidelines to show up to me and customers." Investigating why
+Official picks were near-zero surfaced the real cause and led to two
+distinct pieces of work, both operator-directed.
+
+### 1. Book-count gate lowered to the LOO mathematical floor
+
+Live production data showed `insufficient_comparison_books` was by far
+the dominant rejection reason (326 of 367 real MLB groups in one scan).
+Explained the tradeoff to the operator (a 2-book consensus is noisier;
+a lone outlier book is more likely a stale price than real edge) before
+acting. Operator's explicit call: "use all the books to find that
+average number but only require 1 book to pass guidelines of 2% EV and
+whatever the other guidelines are" — i.e. use every book present to
+build the fair-price consensus, but only require ONE individual book to
+independently clear the real EV/model-score gates. Lowered
+`MIN_COMPARISON_BOOKS`/`YN_MIN_COMPARISON_BOOKS`/`RELIABLE_EV_MIN_BOOKS`
+from 4/3/4 to 1 (2 total books, the floor). Live-verified: raw O/U
+opportunities evaluated in one real MLB scan went from ~1,418 to 1,832.
+See `docs/DECISIONS.md` "Book-count gate lowered to the LOO floor".
+
+### 2. Pinnacle was MLB-only in code — fixed for all 3 leagues, plus game markets
+
+Told the operator "Pinnacle is unreachable from either data source" —
+the operator personally pushed back ("i have personally looked at
+pinnacle lines they have all the markets we are looking at"), which was
+correct: Pinnacle (`src/pinnacle_feed.py`, pinnapi.com) is a real,
+separate, working feed, just never extended past MLB. Proved this by
+reproducing a real match (Tyler Mahle, 5.5 strikeouts) through the full
+production pipeline. The "missing Pinnacle" cases were explained by
+Pinnacle's genuinely smaller total market inventory (26-27 real MLB
+props vs. 50+ groups across all books combined on the same slate) — not
+a bug.
+
+Given a real, working mechanism, the operator directed a full build:
+"lets onyl search markets that pinnacle has do that and come back to me
+with all the markets we found that pinnacle has" — later expanded to
+"we want pinnacle to be used for all 3 leagues yes also we want
+moneylines and over unders included."
+
+**What was built** (all in `src/pinnacle_feed.py`/`src/prop_config.py`/
+`src/player_prop_scanner.py`/`src/mlb_props_parser.py`):
+
+- Found pinnapi's undocumented `sport_id` scheme by live-probing IDs
+  1-19: MLB=6 ("Baseball", also carries NPB/KBO/Mexican League), NFL=5
+  ("Football"), WNBA=3 ("Basketball", shared with NBA and many other
+  real basketball leagues worldwide — confirmed live this ID currently
+  also carries Paraguay, Uruguay, Uganda, Mexico, etc., so the
+  `league_name` filter is load-bearing).
+- Generalized prop parsing/matching from MLB-only to any league via new
+  per-league config maps.
+- Added full-game moneyline/spread/total support for the first time —
+  Pinnacle had never been used for game markets before, even for MLB.
+  Parsed from each event's "Game" period. Rides the existing
+  `player_id=="GAME"` sentinel already shared generically by the
+  SportsGameOdds and Odds-API game-parsers — confirmed
+  `src/market_analysis.py::analyze_two_way_market` is dead code (zero
+  real call sites), so no new analysis engine was needed.
+- Swapped MLB's Odds-API-sourced `batter_hits` market for
+  `batter_home_runs` — Pinnacle never prices hits, so `batter_hits` had
+  4 books of raw liquidity but zero path to Official; `batter_home_runs`
+  is one of Pinnacle's 6 real MLB stat types.
+- **Real bug caught before shipping**: fetching props and game odds as
+  two independent calls per league would hit the shared 10-second
+  module-level rate limiter back-to-back and silently drop the second
+  fetch almost every time in real usage (both need the same raw
+  `/prematch/fixtures` payload). Fixed by caching the raw payload once
+  per league (`_get_raw_payload`), both parsers reading from it.
+- New pinnapi trial key obtained by the operator after discovering the
+  old one, flagged for rotation since 2026-08-06, had never actually
+  been rotated.
+
+**Verified live** (2026-08-23, real pinnapi trial key, not mocked): MLB
+26 props / 227 game-market entries across 16 games. NFL 0 props (real —
+zero specials posted this far pre-season, confirmed via a full
+`special_category` breakdown, not a bug) / 368 game-market entries
+across 16 games. WNBA 82 props / 60 game-market entries across 4 games.
+Ran a real WNBA prop (Alanna Smith, Points, line 9.5) and a real WNBA
+game total (line 174.0) through the actual production
+`build_pinnacle_lookup`/`match_pinnacle`/`inject_pinnacle_reference` and
+`build_pinnacle_game_lookup`/`match_pinnacle_game`/
+`inject_pinnacle_game_reference` functions against synthetic O/U groups
+shaped exactly like `player_prop_scanner.py` produces — both landed real
+`"pinnacle"` reference prices on both sides. 37 tests in
+`tests/test_pinnacle_feed.py` (22 pre-existing + 15 new for WNBA
+props/game-market parsing/matching/injection). Full suite: **1,854
+passed, 0 failed**.
+
+**Full market audit** (the operator's explicit "come back to me with
+all the markets" ask): `docs/MARKET_CAPABILITY.md` → "Pinnacle
+sharp-reference feed."
+
+**Not yet done**: confirm the new pinnapi key is set as `PINNAPI_API_KEY`
+on Render's `mlb-vip-worker` (code doesn't require a new value, but
+production needs the current one); re-check NFL prop coverage closer to
+its 2026-09-10 season opener.
+
 ## Session: 2026-08-22 (continued) — Confirmed the new Odds API key is live, fixed a real WNBA schedule-discovery cache bug, and built MLB/NFL a genuine second player-props source
 
 Direct continuation of the same day's SportsGameOdds-fallback work below

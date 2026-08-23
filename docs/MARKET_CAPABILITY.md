@@ -123,10 +123,11 @@ Status: **active production pipeline**, running on Render since
 and `src/worker.py`'s `morning-run-nfl`/`pregame-check-nfl` job types are
 both deployed and generating real recommendations, including surviving a
 real SportsGameOdds quota exhaustion via the fallback below. Pinnacle
-sharp-reference pricing is unverified for NFL (`pinnacle_feed.py` is
-hardcoded to baseball's sport ID); NFL runs on LOO market-median
-consensus only, the same fallback path MLB itself uses whenever Pinnacle
-is absent.
+sharp-reference pricing for NFL game markets (moneyline/spread/total) is
+now live as of 2026-08-23 — see "Pinnacle sharp-reference feed" below.
+NFL has zero player-prop specials on Pinnacle this far ahead of its
+season opener (real, confirmed live — not a bug), so NFL props still
+run on LOO market-median consensus only until Pinnacle posts them.
 
 ### Supplemental player props via The Odds API (added 2026-08-22)
 
@@ -147,7 +148,7 @@ event on each side — see `src/mlb_props_parser.py`/
 | MLB | Pitcher Outs | `pitcher_outs` | 6 | `pitching_outs_ou` |
 | MLB | Batter Total Bases | `batter_total_bases` | 5 | `batting_totalBases_ou` |
 | MLB | Pitcher Strikeouts | `pitcher_strikeouts` | 5 | `pitching_strikeouts_ou` |
-| MLB | Batter Hits | `batter_hits` | 4 | `batting_hits_ou` |
+| MLB | Batter Home Runs | `batter_home_runs` | 1 (thin on raw Odds-API liquidity, but the only one of the 5 candidate markets Pinnacle actually prices — see "Pinnacle sharp-reference feed" below; swapped in 2026-08-23 for `batter_hits`, which had 4 books but zero path to Official since Pinnacle never prices hits) | `batting_homeRuns_ou` |
 | NFL | Passing Yards | `player_pass_yds` | 2 (19 days pre-kickoff) | `passing_yards_ou` |
 | NFL | Rushing Yards | `player_rush_yds` | 2 (19 days pre-kickoff) | `rushing_yards_ou` |
 | NFL | Receptions | `player_receptions` | 2 (19 days pre-kickoff) | `receiving_receptions_ou` |
@@ -364,6 +365,107 @@ narrower than WNBA's — WNBA's own 6h/30min pace applied to MLB's ~12x
 higher daily game volume would alone have cost an estimated ~34,000/mo,
 more than the entire budget. This is why `src/league_schedule.py`'s
 props scheduling constants are per-league, not one shared global.
+
+## Pinnacle sharp-reference feed (all 3 leagues, live as of 2026-08-23)
+
+Separate from the primary data providers above (SportsGameOdds, The Odds
+API), `src/pinnacle_feed.py` pulls Pinnacle's own prices directly from
+pinnapi.com (`GET /kit/v1/prematch/fixtures`, `x-portal-apikey` auth,
+trial tier: 20/min, 100/hour, 100/day, no card, no expiry) and injects
+them as a `"pinnacle"` reference book into matching O/U groups. This is
+what Gate 9 (`_is_official()`) checks against for O/U Official-pick
+eligibility (`REQUIRE_PINNACLE_FOR_OFFICIAL=True`, `MIN_PINNACLE_EV=0.04`,
+`MIN_PINNACLE_PROB_EDGE=0.025`). Previously MLB-only in code even though
+the Official gate already applied to all 3 leagues — rebuilt 2026-08-23
+so NFL and WNBA have a real path to Official O/U picks, per the
+operator's explicit direction. Every market below was confirmed by
+inspecting real live API responses, not assumed from documentation —
+pinnapi has none.
+
+**How leagues map to pinnapi's `sport_id`** (undocumented; found by
+live-probing IDs 1-19): MLB=6 ("Baseball" — also carries NPB/KBO/Mexican
+League, filtered out by real `league_name=="MLB"`), NFL=5 ("Football" —
+also carries other football leagues), WNBA=3 ("Basketball" — shares this
+ID with NBA and many other basketball leagues worldwide, filtered by
+`league_name=="WNBA"`; confirmed live 2026-08-23 this ID also currently
+carries Paraguay, Uruguay, Uganda, Mexico, and several other leagues in
+the same payload, so the league-name filter is load-bearing, not
+cosmetic).
+
+### Player props
+
+| League | Pinnacle unit | Suffix in Pinnacle's label | Registered market_type |
+|---|---|---|---|
+| MLB | Strikeouts | "Total Strikeouts" | `pitching_strikeouts_ou` |
+| MLB | HitsAllowed | "Hits Allowed" | `pitching_hits_ou` |
+| MLB | EarnedRuns | "Earned Runs" | `pitching_earnedRuns_ou` |
+| MLB | PitchingOuts | "Pitching Outs" | `pitching_outs_ou` |
+| MLB | TotalBases | "Total Bases" | `batting_totalBases_ou` |
+| MLB | HomeRuns | "Home Runs" | `batting_homeRuns_ou` |
+| WNBA | Points | "Total Points" | `player_points_ou` |
+| WNBA | Rebounds | "Total Rebounds" | `player_rebounds_ou` |
+| WNBA | Assists | "Total Assists" | `player_assists_ou` |
+| WNBA | Threes Made | "Total Threes Made" | `player_threes_ou` |
+| NFL | — none — | — | — |
+
+NFL currently has **zero** player-prop specials on Pinnacle of any kind
+this far before its season opener — confirmed live by inspecting every
+`special_category` present in the raw NFL payload (there were none),
+not a miscategorization or a bug. Re-check closer to the season; NFL's
+`PINNACLE_PROP_UNITS_BY_LEAGUE` entry is deliberately empty (`{}`) so
+NFL props simply get no Pinnacle reference (LOO market-median consensus
+only) rather than erroring, until real NFL specials data is confirmed
+and this table gets filled in.
+
+Live snapshot (2026-08-23, one call per league): MLB 26 props / WNBA 82
+props across 4 games / NFL 0 props.
+
+Note: Pinnacle offers no batter-hits or batter-RBI market at all for
+MLB — this is why `src/mlb_props_parser.py`'s Odds-API-sourced registry
+swapped `batter_hits` for `batter_home_runs` (see `docs/DECISIONS.md`
+"Pinnacle wired in for all 3 leagues, including game markets").
+
+### Game markets (moneyline / spread / total)
+
+All 3 leagues carry real full-game moneyline/spread/total prices in
+every event's "Game" period (`periods["num_N"]` where
+`description=="Game"` — distinct from sub-period entries like "Half 1"
+or "1st Quarter", which are ignored). No wording variance to reconcile
+here — Pinnacle's period/market shape is structurally identical across
+sports; only the label used for the ±line market differs by convention:
+
+| League | Moneyline market_type | ±Line market_type | Total market_type |
+|---|---|---|---|
+| MLB | `game_moneyline` | `game_runline_ou` | `game_total_ou` |
+| NFL | `game_moneyline` | `game_spread_ou` | `game_total_ou` |
+| WNBA | `game_moneyline` | `game_spread_ou` | `game_total_ou` |
+
+Live snapshot (2026-08-23): MLB 227 game-market entries across 16 games
+(16 moneylines, 105 distinct spread lines, 106 distinct total lines —
+Pinnacle offers multiple alt-lines per game, each becomes its own
+entry, same convention props already used); NFL 368 entries across 16
+games (16/144/208); WNBA 60 entries across 4 games (4/28/28).
+
+These game markets flow through the exact same O/U-group pipeline as
+player props (`analyze_prop_group()`), identified by the `player_id ==
+"GAME"` sentinel already set generically for every game-level market
+regardless of provider — no new analysis code was needed, only new
+Pinnacle-side parsing (`parse_game_odds()`) and matching/injection
+(`build_pinnacle_game_lookup()`, `match_pinnacle_game()`,
+`inject_pinnacle_game_reference()`) functions.
+
+### End-to-end verification (2026-08-23)
+
+Beyond unit tests (synthetic fixtures), the real pinnapi API was called
+live with the current trial key for all 3 leagues, and a real matched
+prop + a real matched game market were run through the actual
+production `build_pinnacle_lookup`/`match_pinnacle`/
+`inject_pinnacle_reference` and `build_pinnacle_game_lookup`/
+`match_pinnacle_game`/`inject_pinnacle_game_reference` functions against
+synthetic O/U groups shaped exactly like `player_prop_scanner.py`
+produces them — confirmed real `"pinnacle"` reference prices land in
+both `over`/`under` sides for a real WNBA player prop (Alanna Smith,
+Points, line 9.5) and a real WNBA game total market (line 174.0).
 
 ## Future leagues (architecture ready, not started)
 

@@ -134,17 +134,99 @@ MIN_PINNACLE_PROB_EDGE = 0.025
 
 # ── Pinnacle feed (pinnapi.com) ───────────────────────────────────
 # Free-tier Pinnacle-reseller API that serves Pinnacle's sharp O/U
-# player props.  When enabled, the scanner fetches this feed and injects
-# a "pinnacle" book entry into every O/U group at the exact same line,
-# which activates the frozen Pinnacle value model above.
+# player props AND game-level (moneyline/spread/total) prices. When
+# enabled, the scanner fetches this feed and injects a "pinnacle" book
+# entry into every O/U group (props and game markets alike) at the exact
+# same line, which activates the frozen Pinnacle value model above.
+#
+# Multi-league as of 2026-08-23 — verified live which of pinnapi's own
+# sport_id values correspond to our 3 leagues (their numbering doesn't
+# match anything documented, had to probe it): 6=Baseball(MLB),
+# 5=Football(NFL), 3=Basketball(WNBA, alongside NBA/other basketball
+# leagues also under sport_id 3 — league_name still needs filtering to
+# "WNBA" specifically, same as MLB already filtered to "MLB" from
+# Baseball's NPB/KBO/Mexican League neighbors).
 PINNACLE_FEED_ENABLED = True
 PINNACLE_FEED_API_KEY_ENV = "PINNAPI_API_KEY"
 PINNACLE_FEED_BASE_URL = "https://pinnapi.com"
-PINNACLE_FEED_SPORT_ID = 6      # baseball
-PINNACLE_FEED_LEAGUE = "MLB"    # feed also carries NPB/KBO/Mexican League
 PINNACLE_FEED_TIMEOUT_SECONDS = 30
 PINNACLE_FEED_CACHE_TTL_SECONDS = 300          # reuse a feed for this long
 PINNACLE_FEED_MIN_INTERVAL_SECONDS = 10.0      # min gap between live calls
+
+# league -> pinnapi sport_id, verified live 2026-08-23 (see module
+# docstring above).
+PINNACLE_SPORT_ID_BY_LEAGUE = {
+    "MLB": 6,
+    "NFL": 5,
+    "WNBA": 3,
+}
+# league -> the real league_name string pinnapi uses inside that sport_id
+# (a sport_id can carry multiple real leagues, e.g. Basketball also
+# carries NBA/other regional leagues alongside WNBA).
+PINNACLE_LEAGUE_NAME_BY_LEAGUE = {
+    "MLB": "MLB",
+    "NFL": "NFL",
+    "WNBA": "WNBA",
+}
+
+# league -> {pinnapi special_units -> our market_type_ou}, for Player
+# Props specials. Verified live 2026-08-23 against real posted props
+# (see docs/DECISIONS.md "Pinnacle wired in for all 3 leagues" for the
+# full audit). NFL is intentionally empty — confirmed live that Pinnacle
+# has zero specials posted for NFL this far before its 2026-09-10 season
+# opener; re-verify closer to kickoff before assuming this stays empty.
+PINNACLE_PROP_UNITS_BY_LEAGUE = {
+    "MLB": {
+        "Strikeouts": "pitching_strikeouts_ou",
+        "HitsAllowed": "pitching_hits_ou",
+        "EarnedRuns": "pitching_earnedRuns_ou",
+        "PitchingOuts": "pitching_outs_ou",
+        "TotalBases": "batting_totalBases_ou",
+        "HomeRuns": "batting_homeRuns_ou",
+    },
+    "WNBA": {
+        "Points": "player_points_ou",
+        "Rebounds": "player_rebounds_ou",
+        "Assists": "player_assists_ou",
+        "Threes Made": "player_threes_ou",
+    },
+    "NFL": {},
+}
+
+# league -> {pinnapi special_units -> the real suffix pinnapi appends to
+# the player's name in the "special" field, e.g. "Alanna Smith Total
+# Points"}. Verified live 2026-08-23 — NOT a uniform "Total X" pattern
+# (MLB's own units mix "Total X" and plain "X Y" forms), so this must be
+# looked up per unit per league, not derived.
+PINNACLE_PROP_SUFFIXES_BY_LEAGUE = {
+    "MLB": {
+        "Strikeouts": "Total Strikeouts",
+        "HitsAllowed": "Hits Allowed",
+        "EarnedRuns": "Earned Runs",
+        "PitchingOuts": "Pitching Outs",
+        "TotalBases": "Total Bases",
+        "HomeRuns": "Home Runs",
+    },
+    "WNBA": {
+        "Points": "Total Points",
+        "Rebounds": "Total Rebounds",
+        "Assists": "Total Assists",
+        "Threes Made": "Total Threes Made",
+    },
+    "NFL": {},
+}
+
+# league -> our game-market market_type strings, for matching Pinnacle's
+# "Game" period moneyline/spreads/totals. Baseball uses "run line"
+# naming (game_runline_ou) where NFL/WNBA use the generic "spread"
+# (game_spread_ou) — same real naming difference already handled for
+# the Odds-API game-odds fallback (src/mlb_odds_parser.py vs
+# src/nfl_odds_parser.py / src/wnba_odds_parser.py).
+PINNACLE_GAME_MARKET_TYPES_BY_LEAGUE = {
+    "MLB": {"moneyline": "game_moneyline", "spread": "game_runline_ou", "total": "game_total_ou"},
+    "NFL": {"moneyline": "game_moneyline", "spread": "game_spread_ou", "total": "game_total_ou"},
+    "WNBA": {"moneyline": "game_moneyline", "spread": "game_spread_ou", "total": "game_total_ou"},
+}
 
 # ── Confidence score weights ───────────────────────────────────────
 # These weights control the relative importance of each component

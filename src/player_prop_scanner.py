@@ -35,7 +35,10 @@ from .sports.base import build_lookup_maps
 from .api_client import SportsGameOddsClient
 from .player_prop_parser import parse_player_props
 from .player_prop_analysis import analyze_prop_group, analyze_yn_group, is_pinnacle_book
-from .pinnacle_feed import PinnacleFeedClient, build_pinnacle_lookup, inject_pinnacle_reference
+from .pinnacle_feed import (
+    PinnacleFeedClient, build_pinnacle_lookup, inject_pinnacle_reference,
+    build_pinnacle_game_lookup, inject_pinnacle_game_reference,
+)
 from .validation_constants import APPROVED_STATUSES
 from database.db_manager import get_connection, create_run, finish_run, save_player_prop_batch
 
@@ -634,33 +637,52 @@ def run_scan(
                   f"player={gd.get('player_name','?')[:20]}")
     _log_line_fragmentation(ou_groups)
 
-    # Inject Pinnacle reference prices into O/U groups so the frozen
-    # Pinnacle value model can compute a no-vig reference.  The feed
-    # client reuses a fresh disk cache (5-min TTL) and rate-limits live
-    # calls, so allow_fetch=True is safe for every scan: a fresh cache
-    # never touches the network, and a stale cache refetches sharp prices
-    # even for cached/research scans (otherwise those runs silently have
-    # no Pinnacle reference at all).
+    # Inject Pinnacle reference prices into O/U groups (both player props
+    # and game markets — moneyline/spread/total) so the frozen Pinnacle
+    # value model can compute a no-vig reference. Multi-league as of
+    # 2026-08-23: MLB, NFL, and WNBA are all live on this feed (NFL has
+    # zero specials posted yet this far before its season opener — real,
+    # not a bug). The feed client caches one raw payload per league (5-min
+    # TTL) and rate-limits live calls, so allow_fetch=True is safe for
+    # every scan: a fresh cache never touches the network, and a stale
+    # cache refetches sharp prices even for cached/research scans
+    # (otherwise those runs silently have no Pinnacle reference at all).
     pinnacle_reference_injected = 0
-    if cfg.PINNACLE_FEED_ENABLED:
+    if cfg.PINNACLE_FEED_ENABLED and league in cfg.PINNACLE_SPORT_ID_BY_LEAGUE:
+        _pinnacle_client = PinnacleFeedClient()
         try:
-            _pinnacle_props = PinnacleFeedClient().get_mlb_props(allow_fetch=True)
+            _pinnacle_props = _pinnacle_client.get_player_props(league=league, allow_fetch=True)
         except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
-            logger.warning("Pinnacle feed unavailable: %s", exc)
+            logger.warning("Pinnacle feed (props) unavailable: %s", exc)
             _pinnacle_props = None
         if _pinnacle_props:
             logger.info("PINNACLE_FEED_PROPS parsed=%d", len(_pinnacle_props))
             _pinnacle_lookup = build_pinnacle_lookup(_pinnacle_props)
-            pinnacle_reference_injected = inject_pinnacle_reference(
-                ou_groups, event_map, _pinnacle_lookup
+            pinnacle_reference_injected += inject_pinnacle_reference(
+                ou_groups, event_map, _pinnacle_lookup, league=league,
             )
-            if pinnacle_reference_injected:
-                print(
-                    f"  Pinnacle reference injected into {pinnacle_reference_injected} "
-                    f"O/U groups"
-                )
         else:
-            logger.warning("PINNACLE_FEED_PROPS parsed=0; no Pinnacle references available")
+            logger.warning("PINNACLE_FEED_PROPS parsed=0; no Pinnacle prop references available")
+
+        try:
+            _pinnacle_games = _pinnacle_client.get_game_odds(league=league, allow_fetch=True)
+        except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
+            logger.warning("Pinnacle feed (game odds) unavailable: %s", exc)
+            _pinnacle_games = None
+        if _pinnacle_games:
+            logger.info("PINNACLE_FEED_GAME_ODDS parsed=%d", len(_pinnacle_games))
+            _pinnacle_game_lookup = build_pinnacle_game_lookup(_pinnacle_games)
+            pinnacle_reference_injected += inject_pinnacle_game_reference(
+                ou_groups, event_map, _pinnacle_game_lookup,
+            )
+        else:
+            logger.warning("PINNACLE_FEED_GAME_ODDS parsed=0; no Pinnacle game-odds references available")
+
+        if pinnacle_reference_injected:
+            print(
+                f"  Pinnacle reference injected into {pinnacle_reference_injected} "
+                f"O/U groups"
+            )
 
     pinnacle_summary = _new_pinnacle_summary()
     opportunities = []
