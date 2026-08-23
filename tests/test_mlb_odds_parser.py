@@ -129,3 +129,60 @@ class TestParseMLBGameOdds:
         result = parse_mlb_game_odds([])
         assert result.odds_rows == []
         assert result.audit_rows == []
+
+
+class TestRunLineDirectionDisagreement:
+    """Regression coverage for a real bug caught live 2026-08-23: a book
+    that disagrees with the consensus on WHICH TEAM IS FAVORED for the
+    run line (e.g. draftkings has away -1.5, fanduel has away +1.5 — a
+    genuinely different real bet at the same magnitude) must not be
+    grouped with the majority. Grouping purely by abs(line) let one book's
+    row silently overwrite/blend with the opposite-direction consensus,
+    producing a nonsensical ~45% blended "EV" in a real live run.
+    """
+
+    def _disagreeing_game(self):
+        away, home = "Atlanta Braves", "Milwaukee Brewers"
+        game = _game(home_team=home, away_team=away, run_line_point=1.5)
+        # Majority (draftkings): away favored, laying -1.5.
+        game["bookmakers"][1]["markets"] = [{
+            "key": "spreads",
+            "last_update": "2026-08-22T16:58:00Z",
+            "outcomes": [
+                {"name": away, "price": 160, "point": -1.5},
+                {"name": home, "price": -190, "point": 1.5},
+            ],
+        }]
+        # fanduel (index 0, from _game()) already has away +1.5/home -1.5 —
+        # the OPPOSITE direction: away is the underdog here, not the favorite.
+        return game
+
+    def test_disagreeing_books_land_in_different_groups(self):
+        result = parse_mlb_game_odds([self._disagreeing_game()])
+        run_line_rows = [r for r in result.odds_rows if r["market_type"] == "game_runline_ou"]
+        assert len(run_line_rows) == 4
+        fanduel_away = next(r for r in run_line_rows
+                             if r["sportsbook"] == "fanduel" and r["side"] == "AWAY")
+        draftkings_away = next(r for r in run_line_rows
+                                if r["sportsbook"] == "draftkings" and r["side"] == "AWAY")
+        assert fanduel_away["raw_line"] == 1.5
+        assert draftkings_away["raw_line"] == -1.5
+        assert fanduel_away["market_group_key"] != draftkings_away["market_group_key"]
+
+    def test_agreeing_books_still_share_one_group(self):
+        """Sanity check: when books agree on direction, they must still
+        pair into the same group — the fix must not over-correct into
+        never grouping anything."""
+        game = _game(run_line_point=1.5)  # fanduel + draftkings both default-shaped, same direction
+        game["bookmakers"][1]["markets"] = [{
+            "key": "spreads",
+            "last_update": "2026-08-22T16:58:00Z",
+            "outcomes": [
+                {"name": game["away_team"], "price": 105, "point": 1.5},
+                {"name": game["home_team"], "price": -125, "point": -1.5},
+            ],
+        }]
+        result = parse_mlb_game_odds([game])
+        run_line_rows = [r for r in result.odds_rows if r["market_type"] == "game_runline_ou"]
+        group_keys = {r["market_group_key"] for r in run_line_rows}
+        assert len(group_keys) == 1

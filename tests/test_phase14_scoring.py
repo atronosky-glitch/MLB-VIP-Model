@@ -221,6 +221,23 @@ class TestModelScore:
             freshness_status="FRESH", data_source="LIVE API"))
         assert fresh.score > stale.score
 
+    def test_game_market_gets_full_confidence_without_a_confidence_score(self):
+        """Regression (2026-08-23): game-level markets (player_id=="GAME")
+        never go through player-identity name-matching, so there's no
+        real ambiguity for a missing confidence_score to represent —
+        unlike a player prop, where None genuinely means "identity
+        uncertain." Scoring it as the neutral 0.5 default penalized every
+        game-market recommendation for a form of uncertainty that
+        structurally cannot apply to it."""
+        from src.model_scoring import compute_model_score
+        game_rec = self._base_rec(player_id="GAME")
+        del game_rec["confidence_score"]
+        prop_rec = self._base_rec(player_id="ESPN_MLB_123")
+        del prop_rec["confidence_score"]
+        game_result = compute_model_score(game_rec)
+        prop_result = compute_model_score(prop_rec)
+        assert game_result.score > prop_result.score
+
     def test_needs_review_capped_at_7_5(self):
         from src.model_scoring import compute_model_score
         rec = self._base_rec(market_quality="NEEDS_REVIEW")

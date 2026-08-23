@@ -51,6 +51,13 @@ AUTO_SETTLEABLE_MARKET_TYPES = frozenset({
     "batting_stolenBases_ou", "batting_stolenBases_yn",
     "batting_hits+runs+rbi_ou", "batting_hits+runs+rbi_yn",
     "batting_runs+rbi_ou", "batting_runs+rbi_yn",
+    # Game-level markets — settled generically by src/game_settlement.py
+    # for every league (moneyline/spread-or-runline/total), not this
+    # player-prop-oriented registry's per-stat fields. Missing here meant
+    # Gate 1 in src/official_picks.py unconditionally disqualified every
+    # single game-market recommendation from Official status regardless
+    # of EV, book count, or Pinnacle approval (caught live 2026-08-23).
+    "game_moneyline", "game_spread_ou", "game_runline_ou", "game_total_ou",
 })
 
 # Extreme outlier: EV magnitude beyond this threshold triggers NEEDS_REVIEW

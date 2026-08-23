@@ -13,6 +13,7 @@ from src.game_settlement import (
     grade_spread,
     grade_total,
 )
+from src.prop_config import is_auto_settleable_market
 from src.grading import (
     SETTLEMENT_LOSS,
     SETTLEMENT_NEEDS_REVIEW,
@@ -110,6 +111,20 @@ class TestGradeGameRecommendation:
 
     def test_spread_end_to_end(self):
         rec = {"market_type": "game_spread_ou", "side": "AWAY", "line": 13.5,
+               "raw_line": 13.5, "event_id": "evt-1"}
+        event_result = {"final_status": "FINAL", "away_score": 70, "home_score": 78}
+        status, _ = grade_game_recommendation(rec, event_result)
+        assert status == SETTLEMENT_WIN  # away +13.5, lost by only 8
+
+    def test_run_line_end_to_end(self):
+        """Regression: MLB's own market_type for a spread is
+        "game_runline_ou" (src/prop_config.py::GAME_RUN_LINE), not
+        "game_spread_ou" — this module's docstring already claimed "MLB
+        run-line" support, but the dispatch only ever matched
+        "game_spread_ou", so every real MLB run-line recommendation was
+        silently unsettleable forever (caught live 2026-08-23 while
+        auditing why zero Official picks were being produced)."""
+        rec = {"market_type": "game_runline_ou", "side": "AWAY", "line": 13.5,
                "raw_line": 13.5, "event_id": "evt-1"}
         event_result = {"final_status": "FINAL", "away_score": 70, "home_score": 78}
         status, _ = grade_game_recommendation(rec, event_result)
@@ -279,3 +294,19 @@ class TestGradeAvailableGameRecommendationsIdempotency:
 
         result = grade_available_game_recommendations(conn)
         assert result["examined"] == 0
+
+
+class TestGameMarketsAreAutoSettleable:
+    """Regression: Gate 1 in src/official_picks.py::classify_recommendation
+    disqualifies any market_type that fails is_auto_settleable_market —
+    game markets were entirely missing from AUTO_SETTLEABLE_MARKET_TYPES,
+    so every game-market recommendation (moneyline/spread/runline/total,
+    all 3 leagues) was unconditionally blocked from Official status
+    regardless of EV, book count, or Pinnacle approval (caught live
+    2026-08-23 while auditing why zero Official picks were being
+    produced despite real, positive-EV opportunities existing)."""
+
+    def test_all_four_game_market_types_are_settleable(self):
+        for market_type in ("game_moneyline", "game_spread_ou",
+                             "game_runline_ou", "game_total_ou"):
+            assert is_auto_settleable_market(market_type) is True, market_type

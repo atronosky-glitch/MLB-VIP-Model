@@ -531,11 +531,16 @@ def test_parse_game_odds_moneyline_has_no_line():
     assert ml.away_decimal == 2.41
 
 
-def test_parse_game_odds_spread_line_is_abs_valued():
+def test_parse_game_odds_spread_line_is_signed_not_abs_valued():
+    """pinnapi genuinely offers both hdp directions as distinct real
+    alt-lines for the same game (confirmed live 2026-08-23) — hdp=+1.5
+    ("home receiving 1.5") and hdp=-1.5 ("home laying 1.5") are different
+    real bets, not a duplicate pair. Collapsing to abs(hdp) would let one
+    silently overwrite the other in the lookup."""
     payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
     games = parse_game_odds(payload, league="MLB")
     spreads = [g for g in games if g.market_type == "game_runline_ou"]
-    assert {g.line for g in spreads} == {1.5}  # both +1.5 and -1.5 hdp collapse to abs 1.5
+    assert {g.line for g in spreads} == {1.5, -1.5}
 
 
 def test_parse_game_odds_ignores_half_period():
@@ -572,13 +577,14 @@ def test_parse_game_odds_empty_for_league_with_no_game_market_config():
 
 
 def _make_game_group(market_type: str = "game_moneyline", line=None,
-                      event_id: str = "ev300") -> dict:
+                      event_id: str = "ev300", away_raw_line=None) -> dict:
     return {
         "over": {"draftkings": {"price": 120, "decimal_odds": 2.2, "line": line,
                                  "validation_status": "VALID"}},
         "under": {"draftkings": {"price": -140, "decimal_odds": 1.71, "line": line,
                                   "validation_status": "VALID"}},
         "line": line,
+        "side_raw_line": {"over": away_raw_line} if away_raw_line is not None else {},
         "player_id": "GAME",
         "player_name": "Moneyline",
         "event_id": event_id,
@@ -610,6 +616,45 @@ def test_inject_pinnacle_game_reference_total():
     assert n == 1
     assert groups["k1"]["over"]["pinnacle"]["decimal_odds"] == 1.909
     assert groups["k1"]["under"]["pinnacle"]["decimal_odds"] == 1.909
+
+
+def test_inject_pinnacle_game_reference_spread_away_favorite():
+    """away_raw_line=-1.5 (away favored, laying 1.5) must match Pinnacle's
+    hdp=+1.5 entry (home=1.869 receiving, away=1.943 laying) — NOT the
+    hdp=-1.5 entry (home=2.02, away=1.775), which is a different real bet.
+    This is the exact scenario that produced a bogus ~85% "EV" before the
+    signed-hdp fix (live-caught 2026-08-23)."""
+    payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
+    lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
+    groups = {"k1": _make_game_group(market_type="game_runline_ou", line=1.5, away_raw_line=-1.5)}
+    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    assert n == 1
+    assert groups["k1"]["over"]["pinnacle"]["decimal_odds"] == 1.943   # away laying 1.5
+    assert groups["k1"]["under"]["pinnacle"]["decimal_odds"] == 1.869  # home receiving 1.5
+
+
+def test_inject_pinnacle_game_reference_spread_home_favorite():
+    """away_raw_line=+1.5 (away underdog, receiving 1.5) must match
+    Pinnacle's hdp=-1.5 entry (home=2.02 laying, away=1.775 receiving) —
+    the opposite direction from the away-favorite case above."""
+    payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
+    lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
+    groups = {"k1": _make_game_group(market_type="game_runline_ou", line=1.5, away_raw_line=1.5)}
+    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    assert n == 1
+    assert groups["k1"]["over"]["pinnacle"]["decimal_odds"] == 1.775   # away receiving 1.5
+    assert groups["k1"]["under"]["pinnacle"]["decimal_odds"] == 2.02   # home laying 1.5
+
+
+def test_inject_pinnacle_game_reference_spread_without_signed_line_skips():
+    """A spread group with no side_raw_line (sign unknown) must be
+    skipped rather than guessing a direction."""
+    payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
+    lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
+    groups = {"k1": _make_game_group(market_type="game_runline_ou", line=1.5)}  # no away_raw_line
+    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    assert n == 0
+    assert "pinnacle" not in groups["k1"]["over"]
 
 
 def test_inject_pinnacle_game_reference_skips_player_props():

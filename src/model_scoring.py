@@ -150,11 +150,20 @@ def _score_freshness(rec: dict) -> float:
 def _score_confidence_component(rec: dict) -> float:
     """Confidence score component. Returns 0..1.
 
-    Uses the corrected confidence score (0-100 scale).
+    Uses the corrected confidence score (0-100 scale). Game-level markets
+    (``player_id == "GAME"``) never go through name-matching identity
+    resolution — there's no ambiguity to be uncertain about, unlike a
+    player prop where a raw book name could map to the wrong athlete —
+    so they score full confidence rather than the neutral 0.5 default.
+    Confirmed live 2026-08-23: without this, every game-market
+    recommendation lost up to 0.5 raw points here for a form of
+    uncertainty that structurally cannot apply to it, one of several
+    factors keeping real game-market picks under the Official model-score
+    threshold.
     """
     conf = rec.get("confidence_score")
     if conf is None:
-        return 0.5
+        return 1.0 if rec.get("player_id") == "GAME" else 0.5
     return min(1.0, max(0.0, conf / 100.0))
 
 

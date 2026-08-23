@@ -104,7 +104,18 @@ class PinnacleGameOdds:
     home_name: str
     away_name: str
     market_type: str          # our market_type string, e.g. "game_moneyline"
-    line: float | None        # None for moneyline (no line concept)
+    line: float | None
+    # None for moneyline (no line concept). For totals, the positive points
+    # value. For spreads, the SIGNED hdp exactly as pinnapi returns it —
+    # Pinnacle's own convention, home-team perspective (positive = home
+    # underdog/receiving, negative = home favorite/laying). NOT abs-valued:
+    # pinnapi genuinely offers both hdp=+1.5 and hdp=-1.5 as distinct real
+    # alt-lines for the same game (confirmed live 2026-08-23 — collapsing
+    # them to abs(hdp) silently let one overwrite the other in the lookup,
+    # producing nonsensical ~85% "EV" from comparing two different real
+    # bets). Callers must convert a group's own signed away-side raw_line
+    # to this same home-perspective sign (target_hdp = -away_raw_line)
+    # before looking up a spread entry — see inject_pinnacle_game_reference.
     home_decimal: float | None
     away_decimal: float | None
     over_decimal: float | None   # spread/total only
@@ -322,7 +333,7 @@ def parse_game_odds(payload: dict, league: str = "MLB") -> list[PinnacleGameOdds
                     continue
                 results.append(PinnacleGameOdds(
                     home_name=home_name, away_name=away_name,
-                    market_type=market_types["spread"], line=round(abs(float(hdp)), 2),
+                    market_type=market_types["spread"], line=round(float(hdp), 2),
                     home_decimal=float(home_p), away_decimal=float(away_p),
                     over_decimal=None, under_decimal=None,
                 ))
@@ -528,12 +539,31 @@ def inject_pinnacle_game_reference(ou_groups: dict, event_map: dict, lookup: dic
         if gdata.get("player_id") != "GAME":
             continue
         ev = event_map.get(gdata.get("event_id", "")) or {}
+        market_type = gdata.get("market_type", "")
+        is_spread = market_type != "game_moneyline" and not market_type.endswith("_total_ou")
+        if is_spread:
+            # This group's own `line` is stored unsigned (abs value), but
+            # Pinnacle's hdp is signed from the HOME team's perspective and
+            # pinnapi genuinely offers both directions as distinct real
+            # alt-lines (e.g. hdp=+1.5 AND hdp=-1.5 for the same game — not
+            # duplicates). Convert using the group's own signed away-side
+            # raw_line (negative = away favorite): target_hdp =
+            # -away_raw_line. If unavailable, skip rather than guess a
+            # direction — an unsigned lookup can silently match the WRONG
+            # entry, comparing two different real bets (caught live
+            # 2026-08-23: produced a nonsensical ~85% "EV").
+            away_raw_line = (gdata.get("side_raw_line") or {}).get("over")
+            if away_raw_line is None:
+                continue
+            lookup_line = -away_raw_line
+        else:
+            lookup_line = gdata.get("line")
         pin = match_pinnacle_game(
             lookup,
             home_name=ev.get("home_name", ""),
             away_name=ev.get("away_name", ""),
-            market_type=gdata.get("market_type", ""),
-            line=gdata.get("line"),
+            market_type=market_type,
+            line=lookup_line,
         )
         if pin is None:
             continue

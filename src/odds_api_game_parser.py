@@ -148,7 +148,18 @@ def _build_row(
         except (ZeroDivisionError, ValueError):
             issues.append("Invalid odds — could not compute decimal odds")
 
-    group_key = _build_game_group_key(event_id, market_type, line, is_alt_line=0)
+    group_key_line = line
+    if market_key == "spreads" and raw_line is not None:
+        # abs(line) alone lets two books that disagree on WHICH TEAM IS
+        # FAVORED collide into the same group even though they represent
+        # opposite real bets (e.g. one book has away -1.5 favored, another
+        # has away +1.5 as the underdog at the same magnitude) — live-caught
+        # 2026-08-23 producing a nonsensical ~45% blended "EV". Canonicalize
+        # to the away team's own signed line so books that agree on
+        # direction still group together, but a book that disagrees gets
+        # its own separate group instead of being silently merged.
+        group_key_line = raw_line if side_raw == "away" else -raw_line if side_raw == "home" else line
+    group_key = _build_game_group_key(event_id, market_type, group_key_line, is_alt_line=0)
     if not group_key:
         issues.append("Could not build market group key")
 

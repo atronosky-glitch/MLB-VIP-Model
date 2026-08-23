@@ -225,7 +225,21 @@ def _process_entry(
 
     # Build market group key
     if game_mc is not None:
-        group_key = _build_game_group_key(event_id, market_type, line, is_alt_line)
+        group_key_line = line
+        if getattr(game_mc, "cli_name", "") in ("run_line", "spread"):
+            # Spread/run-line: abs(line) alone lets two books that disagree
+            # on WHICH TEAM IS FAVORED collide into the same group, even
+            # though they represent opposite real bets (e.g. one book has
+            # away -1.5 favored, another has away +1.5 as the underdog at
+            # the same magnitude) — live-caught 2026-08-23 producing a
+            # nonsensical ~45% blended "EV". Canonicalize to the away
+            # team's own signed line so books that agree on direction still
+            # group together, but a book that disagrees on direction gets
+            # its own separate group instead of being silently merged.
+            raw = _resolve_raw_line(book_data)
+            if raw is not None:
+                group_key_line = raw if side_raw == "away" else -raw if side_raw == "home" else line
+        group_key = _build_game_group_key(event_id, market_type, group_key_line, is_alt_line)
         if not group_key:
             issues.append(REASON_INVALID_GROUP_KEY)
     else:

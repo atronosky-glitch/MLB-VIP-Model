@@ -24,7 +24,18 @@ from src.grading import (
     grade_ou,
 )
 
-GAME_MARKET_TYPES = frozenset({"game_moneyline", "game_spread_ou", "game_total_ou"})
+GAME_MARKET_TYPES = frozenset({
+    "game_moneyline", "game_spread_ou", "game_total_ou",
+    # MLB's own naming for the same spread market NFL/WNBA call
+    # "game_spread_ou" (see src/prop_config.py::GAME_RUN_LINE). Missing
+    # here was a real bug, not a deliberate scope decision: this module's
+    # own docstring already claimed "MLB run-line" support when it was
+    # built, but the dispatch below only ever matched "game_spread_ou" —
+    # every MLB run-line recommendation was silently unsettleable (caught
+    # live 2026-08-23 while auditing why zero Official picks were being
+    # produced).
+    "game_runline_ou",
+})
 
 # Status strings recognized as "the game will never produce a final score."
 # Verified field names: src/mlb_results.py reads MLB StatsAPI's
@@ -143,7 +154,7 @@ def grade_game_recommendation(rec: dict, event_result: dict | None) -> tuple[str
 
     if market_type == "game_moneyline":
         return grade_moneyline(side, side_score, opponent_score), detail
-    if market_type == "game_spread_ou":
+    if market_type in ("game_spread_ou", "game_runline_ou"):
         return grade_spread(side, side_score, opponent_score, rec.get("raw_line")), detail
     if market_type == "game_total_ou":
         return grade_total(side, away_score, home_score, rec.get("line")), detail

@@ -507,6 +507,7 @@ Do not assume project-memory files fully reflect the current branch.
 
 ## Known Unfinished Work
 
+- Reconcile a local/production `THE_ODDS_API_KEY` discrepancy found 2026-08-23: operator confirmed both use the same (recently upgraded, 20K-credit) key, but a live local call still shows quota headers consistent with the old 500-credit cap. See `docs/EV_ENGINE_AUDIT.md` §2/§11 and `TODO.md`.
 - ~~Operator confirmation needed: local `.env` key returns stale 2024 data~~ **Resolved 2026-08-20**: this was `src/api_client.py::get_events()` sending a nonexistent `date` param plus a `_parse_status()` bug, not the account/key. Fixed and live-verified — MLB/NFL both confirmed generating real current recommendations end-to-end. See `docs/SESSION_HANDOFF.md` → "SportsGameOdds investigation".
 - Alt-line scanning
 - Y/N settlement (still requires a verified numeric fact; still not automatic for every YN market)

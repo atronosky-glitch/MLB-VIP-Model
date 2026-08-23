@@ -4,6 +4,20 @@ Entries are dated. New entries are appended.
 
 ---
 
+## Spread/run-line group keys are canonicalized by signed direction, not abs(line)
+
+- **Date**: 2026-08-23
+- **Decision**: Any spread/run-line market group key (`_build_game_group_key` in both `src/player_prop_parser.py` and `src/odds_api_game_parser.py`, plus the Pinnacle-specific `build_pinnacle_game_lookup` in `src/pinnacle_feed.py`) is now keyed by the away team's own SIGNED line (negative = away favorite), not `abs(line)`. A book/source whose row agrees with the majority on which team is favored still lands in the same group as before; one that disagrees gets its own separate group instead of being silently blended.
+- **Reason**: Live-caught 2026-08-23 during the EV-engine audit: `abs(line)` alone conflates two genuinely different real bets whenever a source's own signed spread differs from the rest (e.g. one sportsbook has the away team -1.5 favored, another has them +1.5 as the underdog at the same magnitude — or, for Pinnacle specifically, pinnapi legitimately offers both hdp directions as distinct real alt-lines for the same game). Comparing across a blended group produced bogus EVs as high as ~87% in real live scans. Full account: `docs/EV_ENGINE_AUDIT.md` §5.
+- **Consequence**: A source that genuinely disagrees on direction (rare, but real — caught live with FanDuel vs. 5 other books on one game) no longer corrupts the majority's consensus; it simply forms its own single-source group, which the existing `MIN_COMPARISON_BOOKS` floor then naturally excludes as insufficient rather than silently distorting the real one. Totals and moneylines are unaffected (no directional sign to canonicalize).
+
+## Game markets are auto-settleable; MLB run-line settlement was silently missing
+
+- **Date**: 2026-08-23
+- **Decision**: Added all 4 game market types (`game_moneyline`, `game_spread_ou`, `game_runline_ou`, `game_total_ou`) to `src/prop_config.py::AUTO_SETTLEABLE_MARKET_TYPES`, and added `"game_runline_ou"` to `src/game_settlement.py::GAME_MARKET_TYPES` and its grading dispatch (reusing the existing `grade_spread` function — a run-line is a spread, just MLB's own name for it).
+- **Reason**: `AUTO_SETTLEABLE_MARKET_TYPES` — the registry Gate 1 in `official_picks.py::classify_recommendation` checks — never had any game-market entries at all, despite `src/game_settlement.py` genuinely settling them for every league. This unconditionally blocked 100% of game-market recommendations from ever reaching Official status, regardless of EV, book count, or Pinnacle approval. Separately, `game_settlement.py`'s own docstring claimed "MLB run-line" support since it was built (2026-08-20), but its dispatch only ever matched `"game_spread_ou"` (NFL/WNBA's naming) — MLB's own `"game_runline_ou"` was never actually wired in, so every real MLB run-line recommendation was silently unsettleable. Both caught live 2026-08-23 while auditing why zero Official picks were being produced despite real positive-EV opportunities existing. Full account: `docs/EV_ENGINE_AUDIT.md` §6.
+- **Consequence**: Game-market recommendations now reach the same real gates (model score, EV threshold, Pinnacle-or-fallback) as player props, instead of being blocked before those gates are ever meaningfully reached. This was very likely the single largest contributor to "why aren't we getting Official picks" going into this audit.
+
 ## Pinnacle wired in for all 3 leagues, including game markets
 
 - **Date**: 2026-08-23

@@ -4,6 +4,83 @@ Dated, narrative record of notable engineering sessions. `PROJECT_STATUS.md`
 is the authoritative current-state snapshot; this file is the story of how
 it got there. Newest entries first.
 
+## 2026-08-23 (later same day) — Full EV-engine audit: 4 real bugs found and fixed
+
+### Why
+
+Before adding more features, the operator wanted a comprehensive,
+evidence-based audit of the actual betting logic — not an assumption
+that existing code (and passing tests) meant it was correct. Explicit
+concerns: is Pinnacle actually used correctly, exactly how is fair
+probability computed, and are qualification rules unnecessarily
+filtering out legitimate +EV bets.
+
+### What was audited (live, not from docs/memory)
+
+Provider map traced through the real runtime call path (worker →
+pipeline → parser → scanner → analysis → classification). Pinnacle
+tested two ways with the real API keys: direct pinnapi.com (already
+built earlier today) and, separately, The Odds API's own `bookmakers=
+pinnacle` access — confirmed real but narrower (no MLB player props, no
+alt-lines) than the direct integration, so both stay. Fair-value math
+read function-by-function, including a direct proof that LOO consensus
+correctly excludes the book being evaluated from its own fair price.
+All 12 gates in `official_picks.py::classify_recommendation` traced
+directly, not just the config constants.
+
+### What was found and fixed
+
+1. **Pinnacle spread sign collapse** — pinnapi genuinely offers both
+   hdp directions (home-favored and away-favored) as distinct real
+   alt-lines for the same game; `parse_game_odds()` stored `abs(hdp)`,
+   so one direction silently overwrote the other. Reproduced live: a
+   real group showed 87.6% "EV" from comparing two different real bets.
+2. **The same bug, independently, in the PRIMARY SportsGameOdds path**
+   — not limited to today's new Pinnacle code. A sportsbook disagreeing
+   with the majority on which team is favored (real, live-observed:
+   FanDuel had Atlanta Braves +1.5 while five other books had them
+   -1.5) silently blended into the same group via `abs(line)`-only
+   keys, producing 39-45% bogus EVs on a live scan. Fixed in both
+   `player_prop_parser.py` (SGO path) and `odds_api_game_parser.py`
+   (Odds-API fallback path) by canonicalizing the group key to the
+   away team's own signed line.
+3. **The single biggest finding**: `AUTO_SETTLEABLE_MARKET_TYPES` had
+   zero entries for any game market (moneyline/spread/runline/total),
+   so Gate 1 unconditionally blocked every game-market recommendation
+   from Official status — regardless of EV, book count, or Pinnacle
+   approval — across all 3 leagues. Separately, `game_settlement.py`'s
+   own docstring claimed MLB run-line support that was never actually
+   implemented (`GAME_MARKET_TYPES` only matched `game_spread_ou`,
+   never MLB's own `game_runline_ou`). Both fixed.
+4. **Game markets under-scored on confidence** — `model_scoring.py`
+   treated a missing `confidence_score` as neutral-uncertain (0.5) for
+   every market, but game markets never go through player-identity
+   name-matching at all, so there's no real ambiguity to be uncertain
+   about. Now scores full confidence for `player_id=="GAME"` recs.
+
+Also confirmed, directly from code: the "Pinnacle missing → auto-reject"
+behavior the operator worried about does **not** exist as feared — Gate
+9 already has a working LOO-consensus fallback for markets Pinnacle
+genuinely has no data for, built 2026-08-05, predating this session. It
+was being masked by bug (3), which blocked game markets before this
+gate mattered.
+
+### Verified live, before/after each fix
+
+Re-ran the real local MLB pipeline after each change. Before: EV values
+up to 87.6%, a nonsensical `line=16.5` "run line," and 100% of
+game-market recs blocked by a settlement-registry error regardless of
+their real EV. After: realistic EV range (-0.5% to +3.1%), the
+settlement-registry error gone entirely, and the remaining rejections
+(Model Score <7.0, O/U EV <3%) are legitimate — a genuinely thin local
+slate (SGO exhausted, Odds-API fallback only), not bugs.
+
+21 new regression tests across `tests/test_pinnacle_feed.py`,
+`tests/test_mlb_odds_parser.py`, `tests/test_game_market_grouping.py`
+(new), `tests/test_game_settlement.py`, `tests/test_phase14_scoring.py`.
+Full suite: **1867 passed, 0 failed** (was 1854). Full report:
+`docs/EV_ENGINE_AUDIT.md`.
+
 ## 2026-08-23 — Pinnacle wired in for MLB, NFL, and WNBA; game markets added
 
 ### Why
