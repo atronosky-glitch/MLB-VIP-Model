@@ -19,10 +19,17 @@ MARKET_QUALITY_NEEDS_REVIEW = "NEEDS_REVIEW"
 MARKET_QUALITY_INSUFFICIENT = "INSUFFICIENT_MARKET"
 MARKET_QUALITY_EXCLUDED = "EXCLUDED"
 
-# Minimum number of OTHER books required for a market to be VALID
-MIN_COMPARISON_BOOKS = 4  # meaning at least 5 paired books total
+# Minimum number of OTHER books required for a market to be VALID.
+# Lowered from 4 (5 total) to 1 (2 total, the hard mathematical floor for
+# Leave-One-Out consensus at all) 2026-08-22 per operator decision — see
+# docs/DECISIONS.md "Book-count gate lowered to the LOO floor". The
+# consensus/fair-price is still computed from every book actually present,
+# however many that is; this only controls the minimum before a group is
+# considered at all, not how many books must individually agree.
+MIN_COMPARISON_BOOKS = 1  # meaning at least 2 paired books total
 # EV is not treated as reliable unless its inputs pass this independent gate.
-RELIABLE_EV_MIN_BOOKS = 4
+# Same 2026-08-22 decision — see docs/DECISIONS.md.
+RELIABLE_EV_MIN_BOOKS = 1
 RELIABLE_EV_TOLERANCE_PP = 0.15
 RELIABLE_EV_MAX_PCT = 20.0
 RELIABLE_EV_MIN_DECIMAL_ODDS = 1.05
@@ -81,8 +88,9 @@ YN_MARGINAL_OUTLIER_THRESHOLD = 0.02 # >= 2% advantage
 # < 2% but >= 0% → IN_LINE_WITH_MARKET
 # < 0% → WORSE_THAN_MARKET
 
-# Minimum books required for a YN market reference to be valid
-YN_MIN_COMPARISON_BOOKS = 3
+# Minimum books required for a YN market reference to be valid. Same
+# 2026-08-22 decision as MIN_COMPARISON_BOOKS above — see docs/DECISIONS.md.
+YN_MIN_COMPARISON_BOOKS = 1
 
 # ── Scanner defaults ───────────────────────────────────────────────
 # Minimum EV for actionable-mode scan (above MARGINAL threshold)

@@ -124,10 +124,21 @@ class TestHitsAllowed:
         assert result["market_quality"] == MARKET_QUALITY_EXCLUDED
 
     def test_insufficient_books(self):
+        """MIN_COMPARISON_BOOKS lowered to 1 (2 books total) 2026-08-22 —
+        see docs/DECISIONS.md "Book-count gate lowered to the LOO floor".
+        Only a single book (no comparison book at all -- the hard
+        "fewer than 2 books" EXCLUDED floor, not INSUFFICIENT) is
+        excluded now; 4 books is comfortably valid."""
+        over = {"b0": {"price": -110, "decimal_odds": 1.9091, "line": 5.5}}
+        under = {"b0": {"price": -110, "decimal_odds": 1.9091, "line": 5.5}}
+        result = analyze_prop_group("test", over, under)
+        assert result["market_quality"] == MARKET_QUALITY_EXCLUDED
+
+    def test_two_books_now_sufficient(self):
         over = {f"b{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(4)}
         under = {f"b{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(4)}
         result = analyze_prop_group("test", over, under)
-        assert result["market_quality"] == MARKET_QUALITY_INSUFFICIENT
+        assert result["market_quality"] != MARKET_QUALITY_INSUFFICIENT
 
     def test_no_yn_variant(self):
         assert PITCHER_HITS_ALLOWED.supports_yn is False

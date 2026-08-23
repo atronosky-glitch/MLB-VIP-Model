@@ -196,14 +196,17 @@ def test_invalid_mappings_excluded():
 
 
 def test_insufficient_markets_excluded():
-    """Markets with <5 paired books get INSUFFICIENT_MARKET and not rec-eligible."""
+    """Markets with <2 paired books get EXCLUDED (the hard floor) and not
+    rec-eligible. MIN_COMPARISON_BOOKS lowered from 4 to 1 2026-08-22 --
+    see docs/DECISIONS.md "Book-count gate lowered to the LOO floor" --
+    only a single book (no comparison book at all) is excluded now."""
     from src.player_prop_analysis import analyze_prop_group
-    over = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(3)}
-    under = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(3)}
+    over = {"book0": {"price": -110, "decimal_odds": 1.9091, "line": 5.5}}
+    under = {"book0": {"price": -110, "decimal_odds": 1.9091, "line": 5.5}}
     result = analyze_prop_group("test", over, under)
-    assert result["market_quality"] == MARKET_QUALITY_INSUFFICIENT
+    assert result["market_quality"] == MARKET_QUALITY_EXCLUDED
     # Scanner should mark this as not rec-eligible
-    assert MARKET_QUALITY_INSUFFICIENT != MARKET_QUALITY_VALID
+    assert MARKET_QUALITY_EXCLUDED != MARKET_QUALITY_VALID
 
 
 def test_alt_lines_separate():

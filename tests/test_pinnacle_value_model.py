@@ -471,14 +471,24 @@ class TestScannerPinnacleDiagnostics:
         assert s["fallback_lean"] == 1
 
     def test_accumulate_summary_fallback_lean_excludes_insufficient_books(self):
+        """_accumulate_pinnacle_summary's counter logic must never count a
+        group toward fallback_lean when its rejection_reason is
+        insufficient_comparison_books, even if fallback pricing was
+        separately computed for it. Constructed directly against the
+        diagnostics dict (rather than via analyze_prop_group) because
+        MIN_COMPARISON_BOOKS was lowered to 1 (2 books total) 2026-08-22 --
+        see docs/DECISIONS.md "Book-count gate lowered to the LOO floor" --
+        which made this exact real-data combination (fallback_used=True
+        together with an insufficient-books rejection) unreachable at the
+        O/U analysis stage; the counter logic itself is still real and
+        still needs covering."""
         from src.player_prop_scanner import (
             _new_pinnacle_summary, _accumulate_pinnacle_summary,
         )
-        over = {"b0": _price(120), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110)}
-        under = {"b0": _price(-110), "b1": _price(-110), "b2": _price(-110), "b3": _price(-110)}
-        r = analyze_prop_group("e|p1|total_bases|game|5.5", over, under)
-        assert r["diagnostics"]["fallback_used"] is True
-        assert r["diagnostics"]["rejection_reason"] == "insufficient_comparison_books"
+        r = {
+            "market_quality": cfg.MARKET_QUALITY_INSUFFICIENT,
+            "diagnostics": {"fallback_used": True, "rejection_reason": "insufficient_comparison_books"},
+        }
 
         s = _new_pinnacle_summary()
         _accumulate_pinnacle_summary(s, r)

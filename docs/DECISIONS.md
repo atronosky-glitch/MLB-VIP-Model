@@ -4,6 +4,13 @@ Entries are dated. New entries are appended.
 
 ---
 
+## Book-count gate lowered to the LOO floor
+
+- **Date**: 2026-08-22
+- **Decision**: `MIN_COMPARISON_BOOKS` (O/U) and `YN_MIN_COMPARISON_BOOKS` lowered from 4/3 to 1, and `RELIABLE_EV_MIN_BOOKS` (the separate "reliable EV" gate that independently blocked Official status for O/U picks) lowered from 4 to 1 — all three now require only the absolute mathematical floor (2 total books: the book being evaluated plus at least one other to build the Leave-One-Out consensus/fair-price from). The consensus itself still uses every book actually present, however many that is; this only changes the minimum before a group is considered at all.
+- **Reason**: Operator directive, made with the tradeoff explained first. Live production data (2026-08-22) showed `insufficient_comparison_books`/`insufficient_books` was by far the dominant rejection reason — 326 of 367 real MLB groups in one scan — meaning most real opportunities were being excluded purely on book-count volume, not on lack of edge. The 4/5-book requirement was protecting against a single stale/mispriced book looking like value (an outlier vs. many peers is more likely a data error than real edge) — a real, explained risk, not a made-up one. Operator's explicit call: use whatever books are actually present to compute the average, and let each individual book's own EV/model-score/other-guideline checks (unchanged: 2%+ EV, model score ≥ 7.0 for Official, etc.) decide whether it qualifies, rather than excluding the whole group on book count alone.
+- **Consequence**: More opportunities will reach the point of being evaluated for EV/qualification, including from thin markets (2-4 books) that were previously excluded outright — this is expected and intended. The real tradeoff (a 2-book consensus is far noisier than a 5-book one; a single stale/wrong peer book is more likely to look like an edge) was explained and accepted, not overlooked. `official_min_books = 2` in `src/official_picks.py`'s `OfficialPickConfig` (the final Official-tier book-count check) already matched this floor and needed no change. Every other Official-tier gate (model score ≥ 7.0, O/U EV ≥ 3%, YN price advantage ≥ 3%, daily/per-game/per-player limits, the Pinnacle requirement for O/U) is unchanged.
+
 ## Automatic grading requires verified result facts
 
 - **Date**: 2026-08-06

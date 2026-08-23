@@ -1,9 +1,40 @@
 """Tests for reliable-EV input validation and realized-EV summaries."""
 
+from src import prop_config as cfg
 from src.reliable_ev import (
     assess_reliable_ev, summarize_realized_ev, summarize_realized_ev_segments,
 )
 from src.official_picks import TIER_OFFICIAL, classify_recommendation
+
+
+class TestBookCountGateLoweredToLOOFloor:
+    """MIN_COMPARISON_BOOKS / YN_MIN_COMPARISON_BOOKS / RELIABLE_EV_MIN_BOOKS
+    all lowered from 4/3/4 to 1 2026-08-22 -- operator decision, see
+    docs/DECISIONS.md "Book-count gate lowered to the LOO floor". The
+    consensus is still built from every book actually present; this only
+    changes the minimum before a group is considered at all."""
+
+    def test_config_values_are_the_loo_floor(self):
+        assert cfg.MIN_COMPARISON_BOOKS == 1
+        assert cfg.YN_MIN_COMPARISON_BOOKS == 1
+        assert cfg.RELIABLE_EV_MIN_BOOKS == 1
+
+    def test_reliable_ev_with_the_real_configured_threshold_accepts_one_comparison_book(self):
+        """Using the actual prop_config value (as daily_pipeline.py does,
+        not the module's own unrelated default) -- a single comparison
+        book (n_consensus_books=2: the bet book + one other) is enough."""
+        rec = {
+            "market_form": "ou",
+            "fair_prob": 0.55,
+            "offered_decimal_odds": 1.9090909,
+            "ev_pct": 4.999995,
+            "n_consensus_books": 2,
+            "market_quality": "VALID_MARKET",
+            "freshness_status": "FRESH",
+        }
+        result = assess_reliable_ev(rec, min_books=cfg.RELIABLE_EV_MIN_BOOKS)
+        assert result["reliable_ev"] is True
+        assert "insufficient_independent_books" not in result["reliable_ev_reasons"]
 
 
 def _rec(**overrides):

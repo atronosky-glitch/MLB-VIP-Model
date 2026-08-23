@@ -387,16 +387,29 @@ def test_analyze_one_book_is_excluded():
     assert result["market_quality"] == MARKET_QUALITY_EXCLUDED
 
 
-def test_analyze_four_books_insufficient():
-    """4 paired books = INSUFFICIENT_MARKET (need 5 total = 4 comparison)."""
-    over = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(4)}
-    under = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(4)}
+def test_analyze_one_book_insufficient():
+    """1 paired book = EXCLUDED (the hard "fewer than 2 books" floor, not
+    the now-unreachable-at-1-book INSUFFICIENT branch) -- MIN_COMPARISON_BOOKS
+    lowered from 4 to 1 2026-08-22, see docs/DECISIONS.md "Book-count gate
+    lowered to the LOO floor". A single book has no comparison book at
+    all -- there's no LOO consensus possible with zero peers."""
+    over = {"book0": {"price": -110, "decimal_odds": 1.9091, "line": 5.5}}
+    under = {"book0": {"price": -110, "decimal_odds": 1.9091, "line": 5.5}}
     result = analyze_prop_group("test", over, under)
-    assert result["market_quality"] == MARKET_QUALITY_INSUFFICIENT
+    assert result["market_quality"] == MARKET_QUALITY_EXCLUDED
 
 
-def test_analyze_five_books_valid_market():
-    """5 paired books (4+ comparison) = VALID_MARKET."""
+def test_analyze_two_books_valid_market():
+    """2 paired books (1+ comparison) = VALID_MARKET."""
+    over = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(2)}
+    under = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(2)}
+    result = analyze_prop_group("test", over, under)
+    assert result["market_quality"] == MARKET_QUALITY_VALID
+    assert result["n_paired_books"] == 2
+
+
+def test_analyze_five_books_still_valid_market():
+    """A market with more books than the new floor is still comfortably valid."""
     over = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(5)}
     under = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 5.5} for i in range(5)}
     result = analyze_prop_group("test", over, under)
@@ -916,15 +929,27 @@ def test_yn_recommendation_eligible_only_outliers(flaherty_event):
 
 
 def test_yn_insufficient_books():
+    """YN_MIN_COMPARISON_BOOKS lowered from 3 to 1 2026-08-22, see
+    docs/DECISIONS.md "Book-count gate lowered to the LOO floor" -- only a
+    single book (no comparison book at all) is insufficient now."""
+    from src.player_prop_analysis import analyze_yn_group
+    yes_prices = {
+        "book_a": {"price": -500, "decimal_odds": 1.2, "validation_status": "VALID"},
+    }
+    analysis = analyze_yn_group("test_key", yes_prices)
+    assert analysis["market_quality"] == MARKET_QUALITY_INSUFFICIENT
+    assert analysis["n_books"] == 1
+    assert not analysis["recommendation_eligible"]
+
+
+def test_yn_two_books_now_sufficient():
     from src.player_prop_analysis import analyze_yn_group
     yes_prices = {
         "book_a": {"price": -500, "decimal_odds": 1.2, "validation_status": "VALID"},
         "book_b": {"price": -550, "decimal_odds": 1.1818, "validation_status": "VALID"},
     }
     analysis = analyze_yn_group("test_key", yes_prices)
-    assert analysis["market_quality"] == MARKET_QUALITY_INSUFFICIENT
-    assert analysis["n_books"] == 2
-    assert not analysis["recommendation_eligible"]
+    assert analysis["market_quality"] != MARKET_QUALITY_INSUFFICIENT
 
 
 def test_yn_empty_prices():
