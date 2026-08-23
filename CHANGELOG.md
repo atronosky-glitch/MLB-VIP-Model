@@ -4,6 +4,52 @@ Dated, narrative record of notable engineering sessions. `PROJECT_STATUS.md`
 is the authoritative current-state snapshot; this file is the story of how
 it got there. Newest entries first.
 
+## 2026-08-22 (verification pass) — Live end-to-end test caught a real unbounded-events bug in the new props fetch
+
+### Why
+
+Operator asked to actually verify the new MLB/NFL props build works,
+not just trust the unit tests — the same "let's make sure" discipline
+that's caught real bugs earlier in this session.
+
+### What was found and fixed
+
+Ran a real live `run_scan(league="MLB", fetch_props=True)`: worked
+correctly end-to-end — real player identity resolution
+(`ESPN_MLB_5123768` etc.), real market mapping, and 3 real ranked
+opportunities in the new markets (e.g. "Blake Snell OVER 8.5
+strikeouts"). Running the same thing for NFL, however, hung for
+several minutes. Root cause: `fetch_player_props()` (the shared fetch
+loop in `src/odds_api_props_fetch.py`) called `get_events()` with no
+time filter at all — for a full-season sport like NFL that returns
+**every** game currently listed (272 games, months out), and the loop
+then worked through them one by one, each with its own credit-budget
+check and (until the budget ran out) a real API call. This is the exact
+same class of bug already found and fixed for the game-odds fetch
+earlier the same day (`fetch_game_odds_via_odds_api`'s missing
+`-6h/+42h` window) — missed here because the new props path was a
+separate code path, and WNBA's own unbounded call happens to already be
+near-term-only in practice, which is what let it slip through review
+and the initial test suite.
+
+Fixed by filtering discovered events to a `-6h/+42h` window before the
+credit-checked fetch loop (applied to all three leagues for
+consistency, though only NFL was actually affected in practice). An
+explicit `event_id` request still always bypasses the filter, matching
+the existing dedup-bypass behavior. Re-ran the NFL scan after the fix:
+returned immediately, 0 events (correct — the real next NFL game is
+2026-09-10, genuinely outside any near-term window right now, not a
+bug). One WNBA test fixture had to be updated to include a realistic
+`commence_time` since it had none before and was now (correctly) being
+filtered out.
+
+Side benefit: the full test suite dropped from 5-7 minutes back to its
+normal ~35 seconds — the same unbounded-loop bug had been silently
+inflating test runtime the whole time it was live, not just NFL's real
+usage.
+
+Full suite: **1833 passed, 0 failed**.
+
 ## 2026-08-22 (later) — MLB/NFL supplemental player props via The Odds API
 
 ### Why

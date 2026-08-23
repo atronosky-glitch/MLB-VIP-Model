@@ -330,3 +330,72 @@ class TestRunScanMergesSupplementalPropsForSGOLeagues:
             )
 
         assert result["n_events"] == 1
+
+
+class TestFetchPlayerPropsFiltersToNearTermEvents:
+    """Real bug, found live 2026-08-22 testing NFL props end-to-end:
+    get_events() returns EVERY event currently listed for the sport --
+    for NFL that's the entire season (272 games), not the near-term
+    slate. Without a filter, fetch_player_props() would spend
+    credit-budget-check cycles and real API calls working through games
+    months away. Reproduced live (multi-minute hang before the fix,
+    finished immediately after) and now covered here with a fast,
+    deterministic mock."""
+
+    def test_far_future_events_excluded_from_the_fetch_loop(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import init_db, get_connection
+        from src.odds_api_props_fetch import fetch_player_props
+
+        db_path = tmp_path / "props_window.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+
+        now = datetime.now(timezone.utc)
+        near_term = {"id": "evt-near", "commence_time": (now + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        far_future = {"id": "evt-far", "commence_time": (now + timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = ([near_term, far_future], False)
+        fake_client.get_event_odds.return_value = ({"id": "evt-near", "bookmakers": []}, False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client), \
+             mock.patch("src.player_identity.ESPNRosterClient"):
+            fetch_player_props(
+                conn, sport_key="americanfootball_nfl", prop_market_keys="player_pass_yds",
+                parse_fn=lambda *a, **k: mock.MagicMock(odds_rows=[], audit_rows=[]), league="NFL",
+            )
+
+        fake_client.get_event_odds.assert_called_once()
+        called_event_id = fake_client.get_event_odds.call_args[0][0]
+        assert called_event_id == "evt-near"
+
+    def test_explicit_event_id_bypasses_the_window_filter(self, tmp_path):
+        """A manual/targeted re-check for a specific event must always
+        fetch it, even if it's outside the near-term window (mirrors the
+        existing dedup-bypass behavior for explicit event_id requests)."""
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import init_db, get_connection
+        from src.odds_api_props_fetch import fetch_player_props
+
+        db_path = tmp_path / "props_window2.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+
+        now = datetime.now(timezone.utc)
+        far_future = {"id": "evt-far", "commence_time": (now + timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = ([far_future], False)
+        fake_client.get_event_odds.return_value = ({"id": "evt-far", "bookmakers": []}, False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client):
+            fetch_player_props(
+                conn, sport_key="americanfootball_nfl", prop_market_keys="player_pass_yds",
+                parse_fn=lambda *a, **k: mock.MagicMock(odds_rows=[], audit_rows=[]), league="NFL",
+                event_id="evt-far",
+            )
+
+        fake_client.get_event_odds.assert_called_once()

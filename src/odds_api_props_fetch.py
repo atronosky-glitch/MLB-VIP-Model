@@ -13,6 +13,15 @@ from datetime import datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 
+def _parse_commence_time(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 def _recently_captured_prop_event_ids(conn, event_ids: list[str], within_hours: float = 0.5) -> set[str]:
     """Event IDs that already have a player_prop_odds row captured within
     the last *within_hours* — used to avoid re-spending props credits on
@@ -61,6 +70,33 @@ def fetch_player_props(
     events, events_from_cache = client.get_events(sport_key=sport_key)
     record_client_quota(conn, client, endpoint="events", job_type=f"{league.lower()}_props_discovery",
                          cache_hit=events_from_cache)
+
+    # Real bug, found live 2026-08-22 testing NFL props end-to-end:
+    # get_events() returns EVERY event currently listed for the sport --
+    # for a full-season sport like NFL that's the entire season (272
+    # games), not "the near-term slate". Without this filter, the loop
+    # below would spend credit-budget-check cycles and real API calls
+    # working through games months away, none of which are pregame-
+    # relevant right now -- the exact same class of bug already found
+    # and fixed for the game-odds fetch (fetch_game_odds_via_odds_api's
+    # -6h/+42h window). WNBA never hit this in practice (its unbounded
+    # response happens to already be near-term-only), but the filter is
+    # harmless and defensive there too.
+    if not event_id:
+        now = datetime.now(timezone.utc)
+        window_start, window_end = now - timedelta(hours=6), now + timedelta(hours=42)
+        before_filter = len(events)
+        events = [
+            e for e in events
+            if (dt := _parse_commence_time(e.get("commence_time"))) is not None
+            and window_start <= dt <= window_end
+        ]
+        if before_filter != len(events):
+            logger.info(
+                "%s props: %d/%d discovered events are outside the near-term "
+                "pregame window, skipped", league, before_filter - len(events), before_filter,
+            )
+
     if event_id:
         events = [e for e in events if e.get("id") == event_id]
     else:

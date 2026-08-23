@@ -169,11 +169,17 @@ of this continuation).
   only 1-3 books on a single-game sample (`batter_home_runs`,
   `batter_rbis`, `pitcher_earned_runs`, etc.) — not registered without a
   broader liquidity check across multiple games first.
-- No live end-to-end verification of the new MLB/NFL props path against
-  a real production run yet (this build was verified via live API
-  liquidity checks + a full regression test suite, not a live pipeline
-  run start-to-finish) — worth doing once real games are available to
-  scan against.
+- ~~No live end-to-end verification of the new MLB/NFL props path~~
+  **Done immediately after this entry was written** — operator asked to
+  actually verify it, which caught a real bug (NFL's fetch had no
+  near-term date filter, so `get_events()`'s unbounded response for a
+  full-season sport made it loop through the entire 272-game season one
+  event at a time — a multi-minute hang, and the hidden reason the full
+  test suite had quietly grown from ~35s to 5-7 minutes). Fixed with the
+  same `-6h/+42h` window filter used elsewhere in
+  `src/odds_api_props_fetch.py`. MLB's live run worked correctly:
+  real player identity resolution, real ranked opportunities (e.g.
+  "Blake Snell OVER 8.5 strikeouts"). Full suite: **1833 passed, 0 failed**.
 
 ## Session: 2026-08-21 to 2026-08-22 — Website redesign, a real production crash chain on the Multi-League Health tab, a permanent settlement backlog, two morning-run scheduling bugs, and a genuine SportsGameOdds quota exhaustion resolved with a tested fallback
 

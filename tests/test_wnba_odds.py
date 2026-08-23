@@ -583,7 +583,7 @@ class TestFetchAndParsePropsIntelligentPrioritization:
         db_path = tmp_path / "props_dedup.db"
         init_db(str(db_path))
         conn = get_connection(str(db_path))
-        from datetime import datetime, timezone
+        from datetime import datetime, timedelta, timezone
         conn.execute(
             """INSERT INTO player_prop_odds
                (event_id, odd_id, sportsbook, player_id, market_type,
@@ -594,7 +594,11 @@ class TestFetchAndParsePropsIntelligentPrioritization:
         )
         conn.commit()
 
-        events = [{"id": "evt-already-fetched"}, {"id": "evt-fresh"}]
+        near_term = (datetime.now(timezone.utc) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        events = [
+            {"id": "evt-already-fetched", "commence_time": near_term},
+            {"id": "evt-fresh", "commence_time": near_term},
+        ]
         fake_client = mock.MagicMock()
         fake_client.get_events.return_value = (events, False)
         fake_client.get_event_odds.return_value = ({"id": "evt-fresh", "bookmakers": []}, False)
