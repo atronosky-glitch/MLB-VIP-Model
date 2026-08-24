@@ -833,9 +833,17 @@ def run_scan(
     pinnacle_summary["pinnacle_props_status"] = pinnacle_props_status
     pinnacle_summary["pinnacle_props_fetched"] = pinnacle_props_fetched
     pinnacle_summary["pinnacle_props_matched"] = pinnacle_props_matched
+    pinnacle_summary["pinnacle_props_stale_rejected"] = pinnacle_props_stale
+    pinnacle_summary["pinnacle_props_unmatched"] = max(
+        0, pinnacle_props_fetched - pinnacle_props_matched - pinnacle_props_stale
+    )
     pinnacle_summary["pinnacle_game_odds_status"] = pinnacle_game_odds_status
     pinnacle_summary["pinnacle_game_odds_fetched"] = pinnacle_game_odds_fetched
     pinnacle_summary["pinnacle_game_odds_matched"] = pinnacle_game_odds_matched
+    pinnacle_summary["pinnacle_game_odds_stale_rejected"] = pinnacle_game_odds_stale
+    pinnacle_summary["pinnacle_game_odds_unmatched"] = max(
+        0, pinnacle_game_odds_fetched - pinnacle_game_odds_matched - pinnacle_game_odds_stale
+    )
     _log_pinnacle_summary(pinnacle_summary)
 
     # YN groups formed (debug)
