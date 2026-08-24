@@ -175,6 +175,18 @@ PINNACLE_FEED_MIN_INTERVAL_SECONDS = 10.0      # min gap between live calls
 # reference. Re-verify if pinnapi's real refresh cadence changes.
 PINNACLE_MAX_STALENESS_SECONDS = 900
 
+# Shorter effective cache TTL (seconds) applied specifically when the
+# cached raw payload had ZERO Player Props specials for a league —
+# added 2026-08-23 per operator directive: a genuinely-empty props
+# response must not be cached as long as a normal one, or we risk
+# missing props that get posted a few minutes later, closer to game
+# time. 120s (2 min) vs. the normal 300s (5 min) — still well above the
+# 10s min-fetch-interval floor, short enough that a scan running near
+# game time (the existing pregame-check cadence already re-scans at
+# start-60min and start-15min) picks up newly-posted props promptly
+# rather than serving a stale "nothing here" cache entry.
+PINNACLE_PROPS_EMPTY_RECHECK_SECONDS = 120
+
 # league -> pinnapi sport_id, verified live 2026-08-23 (see module
 # docstring above).
 PINNACLE_SPORT_ID_BY_LEAGUE = {

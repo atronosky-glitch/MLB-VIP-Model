@@ -268,12 +268,82 @@ def _check_wnba_credits(conn) -> HealthCheck:
     )
 
 
+# Fetch-status values that represent a genuine problem with the Pinnacle
+# props feed itself, as opposed to Pinnacle legitimately having nothing
+# posted right now (PINNACLE_STATUS_OK / PINNACLE_STATUS_NO_PROPS_POSTED
+# are both healthy — see src/pinnacle_feed.py's PINNACLE_STATUS_* constants).
+_PINNACLE_PROPS_FAILURE_STATUSES = frozenset({
+    "no_api_key", "auth_failure", "http_error", "network_error",
+    "parse_error", "league_not_configured",
+})
+
+
+def _check_pinnacle_props_health(conn, league: str) -> HealthCheck:
+    """Warn if the Pinnacle player-props fetch itself has been failing
+    (auth/network/parse/rate-limit) across recent scans — added
+    2026-08-23 per operator directive. Deliberately does NOT warn on
+    "no_props_currently_posted" — that's Pinnacle legitimately having
+    nothing posted yet (real and expected, especially for NFL this far
+    pre-season, or any league between slates), not a health problem.
+    """
+    import json
+    rows = conn.execute(
+        "SELECT metadata_json FROM scan_runs "
+        "WHERE run_type = 'scan' AND metadata_json IS NOT NULL "
+        "ORDER BY started_at DESC LIMIT 30"
+    ).fetchall()
+
+    statuses: list[str] = []
+    for row in rows:
+        try:
+            meta = json.loads(row["metadata_json"])
+        except (TypeError, ValueError):
+            continue
+        funnel = meta.get("pinnacle_funnel") or {}
+        if funnel.get("league") != league:
+            continue
+        status = funnel.get("pinnacle_props_status")
+        if status is not None:
+            statuses.append(status)
+        if len(statuses) >= 5:
+            break
+
+    if not statuses:
+        return HealthCheck(
+            name=f"{league}: Pinnacle props fetch", status="ok",
+            message="no recent scan data yet (feature added 2026-08-23, or league not yet scanned)",
+        )
+
+    n_failures = sum(1 for s in statuses if s in _PINNACLE_PROPS_FAILURE_STATUSES)
+    latest = statuses[0]
+    if n_failures == len(statuses) and n_failures >= 3:
+        return HealthCheck(
+            name=f"{league}: Pinnacle props fetch", status="error",
+            message=f"last {len(statuses)} scans all failed to fetch Pinnacle props "
+                    f"(latest reason: {latest}) — feed may be down, key may be invalid, "
+                    f"or rate limits may be persistently exhausted",
+            details={"recent_statuses": statuses},
+        )
+    if latest in _PINNACLE_PROPS_FAILURE_STATUSES:
+        return HealthCheck(
+            name=f"{league}: Pinnacle props fetch", status="warning",
+            message=f"most recent scan failed to fetch Pinnacle props (reason: {latest})",
+            details={"recent_statuses": statuses},
+        )
+    return HealthCheck(
+        name=f"{league}: Pinnacle props fetch", status="ok",
+        message=f"latest status: {latest}",
+        details={"recent_statuses": statuses},
+    )
+
+
 def run_league_health_checks(conn, league: str) -> HealthReport:
     """Full data-pipeline health report for one league.
 
     Covers: last recommendation, last settlement, unresolved identities,
     stale markets, event-date sanity, qualified-opportunity count, job
-    activity/duration, and (WNBA only) API credit budget state.
+    activity/duration, Pinnacle player-props fetch health, and (WNBA
+    only) API credit budget state.
     """
     now = datetime.now(timezone.utc)
     report = HealthReport(overall_status="healthy", timestamp=now.isoformat())
@@ -284,6 +354,12 @@ def run_league_health_checks(conn, league: str) -> HealthReport:
     report.add(_check_event_date_sanity(conn, league, now))
     report.add(_check_qualified_opportunities(conn, league))
     report.add(_check_job_activity(conn, league, now))
+    try:
+        report.add(_check_pinnacle_props_health(conn, league))
+    except Exception:
+        logger.exception("[%s] Pinnacle props health check failed", league)
+        report.add(HealthCheck(name=f"{league}: Pinnacle props fetch", status="warning",
+                                message="could not evaluate Pinnacle props health"))
     if league == "WNBA":
         report.add(_check_unresolved_identities(conn, league))
         try:

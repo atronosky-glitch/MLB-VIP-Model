@@ -190,6 +190,108 @@ class TestWNBACreditHealthCheck:
         assert credit_check.status in {"ok", "warning", "error"}
 
 
+_scan_seq = [0]
+
+
+def _insert_scan_run_with_pinnacle_status(conn, run_id, league, status):
+    """Each call gets a strictly-increasing started_at (explicit, not
+    relying on real clock resolution between fast sequential calls) so
+    "most recent scan" ordering in the health check is deterministic."""
+    from database.db_manager import create_run
+    _scan_seq[0] += 1
+    real_run_id = create_run(conn, run_type="scan", metadata={
+        "pinnacle_funnel": {"league": league, "pinnacle_props_status": status},
+    })
+    started_at = (datetime(2026, 8, 23, tzinfo=timezone.utc)
+                  + timedelta(seconds=_scan_seq[0])).isoformat()
+    conn.execute(
+        "UPDATE scan_runs SET started_at = ? WHERE run_id = ?",
+        (started_at, real_run_id),
+    )
+    conn.commit()
+    return real_run_id
+
+
+def _pinnacle_health_conn(tmp_path, name="pinnacle_health.db"):
+    """db_conn (the shared fixture used elsewhere in this file) doesn't
+    include scan_runs — this check's data source — so these tests use a
+    real full-schema DB via init_db() instead, matching the pattern
+    tests/test_game_settlement.py already uses for the same reason."""
+    from database.db_manager import init_db, get_connection
+    db_path = tmp_path / name
+    init_db(str(db_path))
+    return get_connection(str(db_path))
+
+
+class TestPinnacleFeedHealthCheck:
+    def test_no_data_reports_ok_not_error(self, tmp_path):
+        from src.league_health import _check_pinnacle_props_health
+        conn = _pinnacle_health_conn(tmp_path)
+        check = _check_pinnacle_props_health(conn, "MLB")
+        assert check.status == "ok"
+
+    def test_healthy_ok_status_reports_ok(self, tmp_path):
+        from src.league_health import _check_pinnacle_props_health
+        conn = _pinnacle_health_conn(tmp_path)
+        _insert_scan_run_with_pinnacle_status(conn, "r1", "MLB", "ok")
+        check = _check_pinnacle_props_health(conn, "MLB")
+        assert check.status == "ok"
+
+    def test_no_props_posted_is_healthy_not_a_warning(self, tmp_path):
+        """The exact distinction the operator asked for: genuinely
+        nothing posted must never be treated as a health problem."""
+        from src.league_health import _check_pinnacle_props_health
+        conn = _pinnacle_health_conn(tmp_path)
+        for i in range(5):
+            _insert_scan_run_with_pinnacle_status(conn, f"r{i}", "NFL", "no_props_currently_posted")
+        check = _check_pinnacle_props_health(conn, "NFL")
+        assert check.status == "ok"
+
+    def test_persistent_failure_reports_error(self, tmp_path):
+        from src.league_health import _check_pinnacle_props_health
+        conn = _pinnacle_health_conn(tmp_path)
+        for i in range(5):
+            _insert_scan_run_with_pinnacle_status(conn, f"r{i}", "MLB", "auth_failure")
+        check = _check_pinnacle_props_health(conn, "MLB")
+        assert check.status == "error"
+
+    def test_single_recent_failure_reports_warning_not_error(self, tmp_path):
+        from src.league_health import _check_pinnacle_props_health
+        conn = _pinnacle_health_conn(tmp_path)
+        _insert_scan_run_with_pinnacle_status(conn, "r1", "MLB", "network_error")
+        _insert_scan_run_with_pinnacle_status(conn, "r2", "MLB", "ok")
+        # r2 is the most recent (created after r1) -> latest status is "ok"
+        check = _check_pinnacle_props_health(conn, "MLB")
+        assert check.status == "ok"
+
+    def test_mixed_recent_history_uses_most_recent_status(self, tmp_path):
+        from src.league_health import _check_pinnacle_props_health
+        conn = _pinnacle_health_conn(tmp_path)
+        _insert_scan_run_with_pinnacle_status(conn, "r1", "MLB", "ok")
+        _insert_scan_run_with_pinnacle_status(conn, "r2", "MLB", "auth_failure")
+        # r2 is most recent -> should warn even though r1 (older) was fine
+        check = _check_pinnacle_props_health(conn, "MLB")
+        assert check.status == "warning"
+
+    def test_league_isolation(self, tmp_path):
+        """A different league's failures must never bleed into this
+        league's health status."""
+        from src.league_health import _check_pinnacle_props_health
+        conn = _pinnacle_health_conn(tmp_path)
+        for i in range(5):
+            _insert_scan_run_with_pinnacle_status(conn, f"wnba{i}", "WNBA", "auth_failure")
+        _insert_scan_run_with_pinnacle_status(conn, "mlb1", "MLB", "ok")
+        mlb_check = _check_pinnacle_props_health(conn, "MLB")
+        assert mlb_check.status == "ok"
+        wnba_check = _check_pinnacle_props_health(conn, "WNBA")
+        assert wnba_check.status == "error"
+
+    def test_wired_into_full_league_health_report(self, db_conn):
+        report = run_league_health_checks(db_conn, "MLB")
+        names = {c.name for c in report.checks}
+        assert any("Pinnacle props fetch" in n for n in names)
+
+
 class TestRunAllLeaguesHealthChecks:
     def test_returns_all_three_by_default(self, db_conn):
         reports = run_all_leagues_health_checks(db_conn)

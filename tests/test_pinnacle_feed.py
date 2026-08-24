@@ -365,9 +365,10 @@ def test_client_returns_none_on_fetch_failure(tmp_path, monkeypatch):
     client = PinnacleFeedClient(
         api_key="test-key", cache_path=tmp_path / "cache.json", ttl_seconds=300
     )
-    monkeypatch.setattr(client, "_fetch_raw", lambda sport_id: None)
+    monkeypatch.setattr(client, "_fetch_raw", lambda sport_id: (None, "network_error"))
     got = client.get_mlb_props(allow_fetch=True)
     assert got is None
+    assert client.last_props_status["MLB"] == "network_error"
 
 
 def test_props_and_game_odds_share_one_raw_fetch(tmp_path, monkeypatch):
@@ -383,7 +384,7 @@ def test_props_and_game_odds_share_one_raw_fetch(tmp_path, monkeypatch):
 
     def _fake_fetch_raw(sport_id):
         call_count["n"] += 1
-        return _sample_payload()
+        return _sample_payload(), "ok"
 
     monkeypatch.setattr(client, "_fetch_raw", _fake_fetch_raw)
     props = client.get_player_props(league="MLB", allow_fetch=True)
@@ -755,3 +756,111 @@ def test_missing_last_updated_is_never_treated_as_stale():
     stance."""
     from src.pinnacle_feed import _is_stale
     assert _is_stale(None) is False
+
+
+# ==================================================================
+# Fetch-status classification (added 2026-08-23)
+# ==================================================================
+
+def test_no_api_key_status(tmp_path):
+    """PinnacleFeedClient(api_key="") falls through to the real
+    PINNAPI_API_KEY env var if one is configured (`api_key or getenv(...)`
+    — an empty string is falsy) — by design, not a bug. Setting
+    client.api_key directly after construction is the correct way to
+    exercise the genuinely-no-key path regardless of the real
+    environment."""
+    from src.pinnacle_feed import PinnacleFeedClient, PINNACLE_STATUS_NO_API_KEY
+    client = PinnacleFeedClient(cache_path=tmp_path / "cache.json", min_interval_seconds=0.0)
+    client.api_key = ""
+    props = client.get_player_props(league="MLB", allow_fetch=True)
+    assert props is None
+    assert client.last_props_status["MLB"] == PINNACLE_STATUS_NO_API_KEY
+
+
+def test_auth_failure_status(monkeypatch, tmp_path):
+    from src.pinnacle_feed import PinnacleFeedClient, PINNACLE_STATUS_AUTH_FAILURE
+    client = PinnacleFeedClient(api_key="bad-key", cache_path=tmp_path / "cache.json", min_interval_seconds=0.0)
+    monkeypatch.setattr(client, "_fetch_raw", lambda sport_id: (None, PINNACLE_STATUS_AUTH_FAILURE))
+    props = client.get_player_props(league="MLB", allow_fetch=True)
+    assert props is None
+    assert client.last_props_status["MLB"] == PINNACLE_STATUS_AUTH_FAILURE
+
+
+def test_no_props_posted_is_distinct_from_fetch_failure(tmp_path):
+    """A successful fetch with genuinely zero Player Props specials must
+    report NO_PROPS_POSTED (an empty list), not the same "None" a real
+    failure returns — this is the exact distinction the operator asked
+    for so a temporary props=0 isn't mistaken for a broken integration."""
+    from src.pinnacle_feed import PinnacleFeedClient, PINNACLE_STATUS_NO_PROPS_POSTED, PINNACLE_STATUS_OK
+    payload = _sample_payload()
+    payload["events"] = [ev for ev in payload["events"] if not ev.get("parent_id")]  # strip all specials
+    client = PinnacleFeedClient(api_key="test-key", cache_path=tmp_path / "cache.json", min_interval_seconds=0.0)
+    import unittest.mock as mock
+    with mock.patch.object(client, "_fetch_raw", return_value=(payload, PINNACLE_STATUS_OK)):
+        props = client.get_player_props(league="MLB", allow_fetch=True)
+    assert props == []
+    assert client.last_props_status["MLB"] == PINNACLE_STATUS_NO_PROPS_POSTED
+
+
+def test_league_not_configured_status(tmp_path):
+    from src.pinnacle_feed import PinnacleFeedClient, PINNACLE_STATUS_LEAGUE_NOT_CONFIGURED
+    client = PinnacleFeedClient(api_key="test-key", cache_path=tmp_path / "cache.json", min_interval_seconds=0.0)
+    props = client.get_player_props(league="NOT_A_REAL_LEAGUE", allow_fetch=True)
+    assert props is None
+    assert client.last_props_status["NOT_A_REAL_LEAGUE"] == PINNACLE_STATUS_LEAGUE_NOT_CONFIGURED
+
+
+def test_empty_props_cache_uses_shorter_recheck_ttl(tmp_path, monkeypatch):
+    """A cached payload with zero Player Props specials must be treated
+    as stale sooner than a normal 300s cache — evidence-based per
+    operator directive: don't let a temporary props=0 linger in cache
+    long enough to miss props posted a few minutes later."""
+    import time
+    from src.pinnacle_feed import PinnacleFeedClient
+    import src.prop_config as cfg
+
+    payload = _sample_payload()
+    payload["events"] = [ev for ev in payload["events"] if not ev.get("parent_id")]  # no specials
+    cache_path = tmp_path / "cache.json"
+    client = PinnacleFeedClient(
+        api_key="test-key", cache_path=cache_path, ttl_seconds=300, min_interval_seconds=0.0,
+    )
+    client._save_raw_cache(cache_path, payload)
+    # Backdate the cache to just past the short recheck window but still
+    # well inside the normal 300s TTL.
+    stored = json.loads(cache_path.read_text(encoding="utf-8"))
+    stored["fetched_at"] = time.time() - (cfg.PINNACLE_PROPS_EMPTY_RECHECK_SECONDS + 5)
+    cache_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    called = {"n": 0}
+
+    def _fake_fetch_raw(sport_id):
+        called["n"] += 1
+        return _sample_payload(), "ok"  # this time WITH real props
+
+    monkeypatch.setattr(client, "_fetch_raw", _fake_fetch_raw)
+    props = client.get_player_props(league="MLB", allow_fetch=True)
+    assert called["n"] == 1, "should have re-fetched instead of serving the stale empty cache"
+    assert props and len(props) == 3
+
+
+def test_nonempty_props_cache_uses_normal_full_ttl(tmp_path, monkeypatch):
+    """A cache with real props must NOT be treated as stale early —
+    only an empty-props cache gets the shorter recheck window."""
+    import time
+    from src.pinnacle_feed import PinnacleFeedClient
+    import src.prop_config as cfg
+
+    cache_path = tmp_path / "cache.json"
+    client = PinnacleFeedClient(api_key="test-key", cache_path=cache_path, ttl_seconds=300)
+    client._save_raw_cache(cache_path, _sample_payload())  # has real props
+    stored = json.loads(cache_path.read_text(encoding="utf-8"))
+    stored["fetched_at"] = time.time() - (cfg.PINNACLE_PROPS_EMPTY_RECHECK_SECONDS + 5)
+    cache_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("should not have re-fetched — cache is still fresh under the normal 300s TTL")
+
+    monkeypatch.setattr(client, "_fetch_raw", _explode)
+    props = client.get_player_props(league="MLB", allow_fetch=True)
+    assert props is not None and len(props) == 3

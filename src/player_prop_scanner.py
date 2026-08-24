@@ -38,6 +38,7 @@ from .player_prop_analysis import analyze_prop_group, analyze_yn_group, is_pinna
 from .pinnacle_feed import (
     PinnacleFeedClient, build_pinnacle_lookup, inject_pinnacle_reference,
     build_pinnacle_game_lookup, inject_pinnacle_game_reference,
+    PINNACLE_STATUS_NO_PROPS_POSTED,
 )
 from .validation_constants import APPROVED_STATUSES
 from database.db_manager import get_connection, create_run, finish_run, save_player_prop_batch
@@ -649,6 +650,19 @@ def run_scan(
     # (otherwise those runs silently have no Pinnacle reference at all).
     pinnacle_reference_injected = 0
     pinnacle_stale_skipped = 0
+    # Per-data-type fetch/match funnel, surfaced in PINNACLE_PROPS_STATUS/
+    # PINNACLE_GAME_ODDS_STATUS below (added 2026-08-23, requirement:
+    # distinguish "genuinely nothing posted" from an actual fetch/parse/
+    # auth/rate-limit failure, and log fetched/matched/stale/unmatched
+    # counts rather than a single collapsed "parsed=0").
+    pinnacle_props_status = "disabled"
+    pinnacle_props_fetched = 0
+    pinnacle_props_matched = 0
+    pinnacle_props_stale = 0
+    pinnacle_game_odds_status = "disabled"
+    pinnacle_game_odds_fetched = 0
+    pinnacle_game_odds_matched = 0
+    pinnacle_game_odds_stale = 0
     if cfg.PINNACLE_FEED_ENABLED and league in cfg.PINNACLE_SPORT_ID_BY_LEAGUE:
         _pinnacle_client = PinnacleFeedClient()
         try:
@@ -656,32 +670,65 @@ def run_scan(
         except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
             logger.warning("Pinnacle feed (props) unavailable: %s", exc)
             _pinnacle_props = None
+        pinnacle_props_status = _pinnacle_client.last_props_status.get(league, "unknown")
         if _pinnacle_props:
-            logger.info("PINNACLE_FEED_PROPS parsed=%d", len(_pinnacle_props))
+            pinnacle_props_fetched = len(_pinnacle_props)
             _pinnacle_lookup = build_pinnacle_lookup(_pinnacle_props)
-            _injected, _stale = inject_pinnacle_reference(
+            pinnacle_props_matched, _stale = inject_pinnacle_reference(
                 ou_groups, event_map, _pinnacle_lookup, league=league,
             )
-            pinnacle_reference_injected += _injected
+            pinnacle_reference_injected += pinnacle_props_matched
             pinnacle_stale_skipped += _stale
+            pinnacle_props_stale = _stale
+        elif pinnacle_props_status == PINNACLE_STATUS_NO_PROPS_POSTED:
+            logger.info(
+                "PINNACLE_PROPS_STATUS league=%s status=no_props_currently_posted "
+                "(real — Pinnacle has not posted player-prop specials for this "
+                "league right now; not a failure, will re-check sooner via the "
+                "shorter empty-cache TTL)", league,
+            )
         else:
-            logger.warning("PINNACLE_FEED_PROPS parsed=0; no Pinnacle prop references available")
+            logger.warning(
+                "PINNACLE_PROPS_STATUS league=%s status=%s (fetch/parse failure — "
+                "falling back to LOO consensus for props)",
+                league, pinnacle_props_status,
+            )
 
         try:
             _pinnacle_games = _pinnacle_client.get_game_odds(league=league, allow_fetch=True)
         except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
             logger.warning("Pinnacle feed (game odds) unavailable: %s", exc)
             _pinnacle_games = None
+        pinnacle_game_odds_status = _pinnacle_client.last_fetch_status.get(league, "unknown")
         if _pinnacle_games:
-            logger.info("PINNACLE_FEED_GAME_ODDS parsed=%d", len(_pinnacle_games))
+            pinnacle_game_odds_fetched = len(_pinnacle_games)
             _pinnacle_game_lookup = build_pinnacle_game_lookup(_pinnacle_games)
-            _injected, _stale = inject_pinnacle_game_reference(
+            pinnacle_game_odds_matched, _stale = inject_pinnacle_game_reference(
                 ou_groups, event_map, _pinnacle_game_lookup,
             )
-            pinnacle_reference_injected += _injected
+            pinnacle_reference_injected += pinnacle_game_odds_matched
             pinnacle_stale_skipped += _stale
+            pinnacle_game_odds_stale = _stale
         else:
-            logger.warning("PINNACLE_FEED_GAME_ODDS parsed=0; no Pinnacle game-odds references available")
+            logger.warning(
+                "PINNACLE_GAME_ODDS_STATUS league=%s status=%s",
+                league, pinnacle_game_odds_status,
+            )
+
+        logger.info(
+            "PINNACLE_PROPS_FUNNEL league=%s status=%s fetched=%d matched=%d "
+            "stale_rejected=%d unmatched=%d",
+            league, pinnacle_props_status, pinnacle_props_fetched,
+            pinnacle_props_matched, pinnacle_props_stale,
+            max(0, pinnacle_props_fetched - pinnacle_props_matched - pinnacle_props_stale),
+        )
+        logger.info(
+            "PINNACLE_GAME_ODDS_FUNNEL league=%s status=%s fetched=%d matched=%d "
+            "stale_rejected=%d unmatched=%d",
+            league, pinnacle_game_odds_status, pinnacle_game_odds_fetched,
+            pinnacle_game_odds_matched, pinnacle_game_odds_stale,
+            max(0, pinnacle_game_odds_fetched - pinnacle_game_odds_matched - pinnacle_game_odds_stale),
+        )
 
         if pinnacle_reference_injected:
             print(
@@ -778,6 +825,17 @@ def run_scan(
     pinnacle_summary["pinnacle_reference_injected"] = pinnacle_reference_injected
     pinnacle_summary["pinnacle_stale_skipped"] = pinnacle_stale_skipped
     pinnacle_summary["league"] = league
+    # Props-specific fetch/match funnel — persisted here (not just logged)
+    # so src/league_health.py can query real recent history rather than
+    # only ever seeing the current instant (added 2026-08-23, requirement:
+    # warn if Pinnacle props are expected near game time but haven't been
+    # successfully fetched for an unusual amount of time).
+    pinnacle_summary["pinnacle_props_status"] = pinnacle_props_status
+    pinnacle_summary["pinnacle_props_fetched"] = pinnacle_props_fetched
+    pinnacle_summary["pinnacle_props_matched"] = pinnacle_props_matched
+    pinnacle_summary["pinnacle_game_odds_status"] = pinnacle_game_odds_status
+    pinnacle_summary["pinnacle_game_odds_fetched"] = pinnacle_game_odds_fetched
+    pinnacle_summary["pinnacle_game_odds_matched"] = pinnacle_game_odds_matched
     _log_pinnacle_summary(pinnacle_summary)
 
     # YN groups formed (debug)

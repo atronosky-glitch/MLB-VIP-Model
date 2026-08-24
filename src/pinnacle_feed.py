@@ -79,6 +79,33 @@ def _cache_path_for(league: str, kind: str) -> Path:
     return _CACHE_DIR / f"_pinnacle_feed_cache_{league.lower()}_{kind}.json"
 
 
+# ======================================================================
+# Fetch-status classification (added 2026-08-23)
+# ======================================================================
+# The raw-payload fetch used to collapse every failure mode into a bare
+# None, on the theory that the caller only ever needed "did it work or
+# not" to decide on the LOO-consensus fallback. That's still true for the
+# fallback decision itself, but it made "Pinnacle genuinely has no props
+# posted yet" indistinguishable from "the feed is down"/"rate limited"/
+# "auth failed"/"parse error" in logs and health checks — exactly the
+# ambiguity that made a real, temporary props=0 response look alarming.
+# PinnacleFeedClient now tracks the LAST raw-fetch outcome as an instance
+# attribute (self.last_fetch_status) rather than changing get_player_props/
+# get_game_odds's return type, so every existing caller/test keeps working
+# unchanged; only callers that care about the distinction read the attribute.
+
+PINNACLE_STATUS_OK = "ok"                                  # fresh live fetch succeeded
+PINNACLE_STATUS_CACHED = "cached"                           # served from a fresh disk cache, no live call made
+PINNACLE_STATUS_NO_API_KEY = "no_api_key"
+PINNACLE_STATUS_RATE_LIMITED_LOCAL = "rate_limited_local"   # our own min-interval throttle, not pinnapi's
+PINNACLE_STATUS_AUTH_FAILURE = "auth_failure"               # HTTP 401/403
+PINNACLE_STATUS_HTTP_ERROR = "http_error"                   # any other non-200 (429, 5xx, ...)
+PINNACLE_STATUS_NETWORK_ERROR = "network_error"             # timeout / connection failure
+PINNACLE_STATUS_PARSE_ERROR = "parse_error"                 # unparseable JSON or a parser exception
+PINNACLE_STATUS_LEAGUE_NOT_CONFIGURED = "league_not_configured"
+PINNACLE_STATUS_NO_PROPS_POSTED = "no_props_currently_posted"  # raw fetch OK; zero Player Props specials right now
+
+
 @dataclass(frozen=True)
 class PinnacleProp:
     """One Pinnacle Over/Under player prop at a single line."""
@@ -243,6 +270,25 @@ def _extract_total_market(markets: dict) -> dict | None:
                 continue
             return {"line": line, "over": over.get("price"), "under": under.get("price")}
     return None
+
+
+def _payload_has_player_prop_specials(payload: dict, league: str) -> bool:
+    """Cheap existence check — does this raw payload contain ANY "Player
+    Props" sub-event for *league*, without fully parsing them? Used only
+    to decide the cache's effective TTL (see
+    PinnacleFeedClient._get_raw_payload); a full parse still happens via
+    parse_player_props for the real prop objects. Filters by the PARENT
+    (main) event's league, same as parse_player_props itself — a
+    special's own league_name field is not what real filtering uses."""
+    events = payload.get("events") or []
+    mains = _parse_main_events(events, league)
+    for ev in events:
+        parent_id = ev.get("parent_id")
+        if not parent_id or parent_id not in mains:
+            continue
+        if (ev.get("special_category") or "") == "Player Props":
+            return True
+    return False
 
 
 def parse_player_props(payload: dict, league: str = "MLB") -> list[PinnacleProp]:
@@ -688,6 +734,15 @@ class PinnacleFeedClient:
         )
         self.session = requests.Session()
         self.session.headers.update({"x-portal-apikey": self.api_key})
+        # Last raw-fetch outcome, per league — read after calling
+        # get_player_props/get_game_odds to distinguish WHY a call
+        # returned nothing (see the PINNACLE_STATUS_* constants above).
+        self.last_fetch_status: dict[str, str] = {}
+        # Last player-props-specific outcome, per league — PINNACLE_STATUS_OK
+        # or PINNACLE_STATUS_NO_PROPS_POSTED when the raw fetch itself
+        # succeeded but zero Player Props specials exist right now, or
+        # whatever last_fetch_status holds when the raw fetch itself failed.
+        self.last_props_status: dict[str, str] = {}
 
     # -- cache --------------------------------------------------------
 
@@ -727,13 +782,19 @@ class PinnacleFeedClient:
             _last_fetch_time = now
             return True
 
-    def _fetch_raw(self, sport_id: int) -> dict | None:
+    def _fetch_raw(self, sport_id: int) -> tuple[dict | None, str]:
+        """Returns ``(payload_or_None, status)`` — status is one of the
+        ``PINNACLE_STATUS_*`` constants, always set even on failure, so
+        callers can distinguish auth/rate-limit/network/parse failures
+        from each other and from "genuinely nothing posted" (added
+        2026-08-23 — this used to collapse every failure into a bare
+        None with only a log line differentiating them)."""
         if not self.api_key:
             logger.warning(
                 "Pinnacle feed disabled: %s env var not set",
                 cfg.PINNACLE_FEED_API_KEY_ENV,
             )
-            return None
+            return None, PINNACLE_STATUS_NO_API_KEY
         url = f"{cfg.PINNACLE_FEED_BASE_URL}/kit/v1/prematch/fixtures"
         try:
             resp = self.session.get(
@@ -743,17 +804,22 @@ class PinnacleFeedClient:
             )
         except requests.RequestException as exc:
             logger.warning("Pinnacle feed request failed: %s", exc)
-            return None
+            return None, PINNACLE_STATUS_NETWORK_ERROR
+        if resp.status_code in (401, 403):
+            logger.warning(
+                "Pinnacle feed auth failure HTTP %s (body=%.200s)", resp.status_code, resp.text
+            )
+            return None, PINNACLE_STATUS_AUTH_FAILURE
         if resp.status_code != 200:
             logger.warning(
                 "Pinnacle feed HTTP %s (body=%.200s)", resp.status_code, resp.text
             )
-            return None
+            return None, PINNACLE_STATUS_HTTP_ERROR
         try:
-            return json.loads(resp.content.decode("utf-8", errors="replace"))
+            return json.loads(resp.content.decode("utf-8", errors="replace")), PINNACLE_STATUS_OK
         except ValueError:
             logger.warning("Pinnacle feed returned unparseable JSON")
-            return None
+            return None, PINNACLE_STATUS_PARSE_ERROR
 
     # -- public API ----------------------------------------------------
 
@@ -769,25 +835,49 @@ class PinnacleFeedClient:
         two separate live calls would hit the same global rate limiter
         back-to-back, and the second call would almost always be
         silently rate-limited into returning nothing.
+
+        Sets ``self.last_fetch_status[league]`` to a PINNACLE_STATUS_*
+        constant on every call, including cache hits (added 2026-08-23).
+        A cached payload with zero player-prop specials for *league* uses
+        a shorter effective TTL (``cfg.PINNACLE_PROPS_EMPTY_RECHECK_SECONDS``)
+        than a normal payload, so a genuinely-empty props response doesn't
+        block us from noticing newly-posted props for up to the full
+        cache window — real props appearing closer to game time get
+        picked up promptly instead of waiting out a stale "nothing here"
+        cache entry.
         """
         cache_path = self._resolve_cache_path(league, "raw")
         cache = self._load_cache(cache_path)
-        if cache is not None and time.time() - cache["fetched_at"] < self.ttl:
-            return cache.get("raw")
+        if cache is not None:
+            age = time.time() - cache["fetched_at"]
+            effective_ttl = self.ttl
+            if age >= cfg.PINNACLE_PROPS_EMPTY_RECHECK_SECONDS and not _payload_has_player_prop_specials(
+                cache.get("raw") or {}, league
+            ):
+                effective_ttl = cfg.PINNACLE_PROPS_EMPTY_RECHECK_SECONDS
+            if age < effective_ttl:
+                self.last_fetch_status[league] = PINNACLE_STATUS_CACHED
+                return cache.get("raw")
 
         if not allow_fetch:
-            return None
+            self.last_fetch_status[league] = PINNACLE_STATUS_CACHED if cache else PINNACLE_STATUS_HTTP_ERROR
+            return cache.get("raw") if cache else None
 
         sport_id = cfg.PINNACLE_SPORT_ID_BY_LEAGUE.get(league)
         if sport_id is None:
             logger.warning("Pinnacle feed: no sport_id configured for league %r", league)
+            self.last_fetch_status[league] = PINNACLE_STATUS_LEAGUE_NOT_CONFIGURED
             return None
 
         if not self._respect_rate_limit():
             logger.info("Pinnacle feed rate-limited (min interval); skipping fetch")
-            return None
+            self.last_fetch_status[league] = PINNACLE_STATUS_RATE_LIMITED_LOCAL
+            # Serve a stale cache rather than nothing if one exists — a
+            # locally-throttled call is not the same as "no data at all".
+            return cache.get("raw") if cache else None
 
-        raw = self._fetch_raw(sport_id)
+        raw, status = self._fetch_raw(sport_id)
+        self.last_fetch_status[league] = status
         if raw is None:
             return None
         try:
@@ -800,19 +890,30 @@ class PinnacleFeedClient:
         """Return parsed Pinnacle player props for *league*.
 
         Uses a fresh disk cache when available.  Triggers a live fetch
-        only when ``allow_fetch`` is True.  Returns None on any failure
-        (including "no key configured", "rate limited", or "genuinely
-        nothing posted yet") so callers can fall back to the
-        market-median model rather than distinguish those cases.
+        only when ``allow_fetch`` is True.  Returns None on a genuine
+        fetch/parse FAILURE, and an empty list ``[]`` when the fetch
+        itself succeeded but Pinnacle simply has no player-prop specials
+        posted for this league right now — these are deliberately
+        different return shapes (added 2026-08-23) so a caller that wants
+        to distinguish "broken" from "genuinely nothing yet" can, without
+        needing to know pinnapi's response shape; either way, callers
+        that only care about "do I have real data" can keep treating both
+        as falsy exactly as before. Read ``self.last_props_status`` right
+        after this call for the specific PINNACLE_STATUS_* reason.
         """
         raw = self._get_raw_payload(league, allow_fetch)
         if raw is None:
+            self.last_props_status[league] = self.last_fetch_status.get(league, PINNACLE_STATUS_HTTP_ERROR)
             return None
         try:
             props = parse_player_props(raw, league)
         except Exception:
             logger.exception("Pinnacle feed parse error")
+            self.last_props_status[league] = PINNACLE_STATUS_PARSE_ERROR
             return None
+        self.last_props_status[league] = (
+            PINNACLE_STATUS_OK if props else PINNACLE_STATUS_NO_PROPS_POSTED
+        )
         logger.info("Pinnacle feed: %d %s props parsed", len(props), league)
         return props
 
@@ -825,7 +926,9 @@ class PinnacleFeedClient:
         for *league*. Shares the same cached raw payload as
         ``get_player_props`` (see ``_get_raw_payload``) — one real fetch
         per league covers both, since pinnapi's single fixtures response
-        already carries both data types."""
+        already carries both data types. Read
+        ``self.last_fetch_status`` right after this call for the
+        specific PINNACLE_STATUS_* reason on a None/empty result."""
         raw = self._get_raw_payload(league, allow_fetch)
         if raw is None:
             return None
@@ -833,6 +936,7 @@ class PinnacleFeedClient:
             games = parse_game_odds(raw, league)
         except Exception:
             logger.exception("Pinnacle feed parse error")
+            self.last_fetch_status[league] = PINNACLE_STATUS_PARSE_ERROR
             return None
         logger.info("Pinnacle feed: %d %s game-odds entries parsed", len(games), league)
         return games
