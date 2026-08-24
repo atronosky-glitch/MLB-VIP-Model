@@ -370,6 +370,43 @@ class TestRunTracking:
         finally:
             conn.close()
 
+    def test_finish_run_merges_metadata_without_overwriting_create_run_metadata(self):
+        """Regression (2026-08-23): finish_run's metadata param must
+        JSON-merge into whatever create_run already wrote, not overwrite
+        it — the scanner's own qualification-funnel diagnostics
+        (total groups, insufficient-books/EV-threshold counts, etc.) are
+        only known at finish time, after create_run's initial metadata
+        (e.g. league/mode) was already persisted."""
+        conn = _create_in_memory_db()
+        try:
+            run_id = create_run(conn, run_type="scan", metadata={"league": "MLB"})
+            finish_run(
+                conn, run_id, n_events=5,
+                metadata={"pinnacle_funnel": {"total_groups": 40, "official_approved": 0}},
+            )
+            row = conn.execute(
+                "SELECT metadata_json FROM scan_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            stored = json.loads(row["metadata_json"])
+            assert stored["league"] == "MLB"  # preserved from create_run
+            assert stored["pinnacle_funnel"]["total_groups"] == 40
+            assert stored["pinnacle_funnel"]["official_approved"] == 0
+        finally:
+            conn.close()
+
+    def test_finish_run_without_metadata_leaves_existing_metadata_untouched(self):
+        conn = _create_in_memory_db()
+        try:
+            run_id = create_run(conn, run_type="scan", metadata={"league": "NFL"})
+            finish_run(conn, run_id, n_events=1)  # no metadata param at all
+            row = conn.execute(
+                "SELECT metadata_json FROM scan_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            stored = json.loads(row["metadata_json"])
+            assert stored["league"] == "NFL"
+        finally:
+            conn.close()
+
     def test_ingestion_log_records_event(self):
         conn = _create_in_memory_db()
         try:

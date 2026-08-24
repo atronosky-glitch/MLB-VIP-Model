@@ -1434,18 +1434,55 @@ def finish_run(
     data_source: str = "",
     research_only: bool = False,
     error_message: str | None = None,
+    metadata: dict | None = None,
 ) -> None:
-    """Mark a scan run as finished with summary stats."""
-    conn.execute(
-        """UPDATE scan_runs SET
-           finished_at = ?, n_events = ?, n_markets = ?,
-           n_opportunities = ?, n_yn_opps = ?, data_source = ?,
-           research_only = ?, error_message = ?
-           WHERE run_id = ?""",
-        (datetime.now(timezone.utc).isoformat(), n_events, n_markets,
-         n_opportunities, n_yn_opps, data_source,
-         1 if research_only else 0, error_message, run_id),
-    )
+    """Mark a scan run as finished with summary stats.
+
+    *metadata*, when given, is JSON-merged into the row's existing
+    ``metadata_json`` (set at ``create_run`` time, if any) rather than
+    overwriting it outright — added 2026-08-23 so the scanner's own
+    per-run Pinnacle/qualification-funnel diagnostics (total groups,
+    insufficient-books/EV-threshold/no-edge counts, official_approved,
+    stale-Pinnacle-skipped) become queryable per scan_run for ongoing
+    funnel visibility, not just a printed log line.
+    """
+    import json
+    merged_metadata = None
+    if metadata is not None:
+        existing = conn.execute(
+            "SELECT metadata_json FROM scan_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        existing_meta = {}
+        if existing and existing["metadata_json"]:
+            try:
+                existing_meta = json.loads(existing["metadata_json"])
+            except (TypeError, ValueError):
+                existing_meta = {}
+        existing_meta.update(metadata)
+        merged_metadata = json.dumps(existing_meta, default=str)
+
+    if merged_metadata is not None:
+        conn.execute(
+            """UPDATE scan_runs SET
+               finished_at = ?, n_events = ?, n_markets = ?,
+               n_opportunities = ?, n_yn_opps = ?, data_source = ?,
+               research_only = ?, error_message = ?, metadata_json = ?
+               WHERE run_id = ?""",
+            (datetime.now(timezone.utc).isoformat(), n_events, n_markets,
+             n_opportunities, n_yn_opps, data_source,
+             1 if research_only else 0, error_message, merged_metadata, run_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE scan_runs SET
+               finished_at = ?, n_events = ?, n_markets = ?,
+               n_opportunities = ?, n_yn_opps = ?, data_source = ?,
+               research_only = ?, error_message = ?
+               WHERE run_id = ?""",
+            (datetime.now(timezone.utc).isoformat(), n_events, n_markets,
+             n_opportunities, n_yn_opps, data_source,
+             1 if research_only else 0, error_message, run_id),
+        )
     conn.commit()
     logger.info("Finished run %s: %d events, %d+%d opps",
                 run_id[:8], n_events, n_opportunities, n_yn_opps)

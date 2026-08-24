@@ -775,6 +775,9 @@ def run_scan(
         n_ou_opps = len(opportunities)
         print(f"  O/U opportunities from scan: {n_ou_opps}")
 
+    pinnacle_summary["pinnacle_reference_injected"] = pinnacle_reference_injected
+    pinnacle_summary["pinnacle_stale_skipped"] = pinnacle_stale_skipped
+    pinnacle_summary["league"] = league
     _log_pinnacle_summary(pinnacle_summary)
 
     # YN groups formed (debug)
@@ -973,6 +976,7 @@ def run_scan(
                     n_yn_opps=len(yn_opportunities),
                     data_source=data_source,
                     research_only=research_only,
+                    metadata={"pinnacle_funnel": pinnacle_summary},
                 )
             finally:
                 _conn.close()
