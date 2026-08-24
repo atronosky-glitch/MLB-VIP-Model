@@ -323,6 +323,34 @@ class TestMorningRunCatchUpWindow:
         ).fetchone()["c"]
         assert count == 1
 
+    def test_does_not_duplicate_across_the_utc_midnight_crossover(self, db_conn):
+        """Regression: a real bug, not just a test artifact. The dedup
+        check computes "today" from local (ET) time, but the job insert
+        used to call an independent, unmocked datetime.now(timezone.utc)
+        — during the ET-evening/UTC-midnight crossover window (~7-8 PM ET
+        onward, well within this function's normal 8:30 AM-11:59 PM ET
+        active window), those two clock reads can land on different
+        calendar dates, breaking the dedup match and letting a real
+        duplicate morning-run job get scheduled the same ET business day.
+        Caught live 2026-08-23 when the real wall clock happened to be in
+        this exact window."""
+        morning = worker._now_local().replace(hour=9, minute=0, second=0, microsecond=0)
+        # 9 PM ET is 1-2 AM UTC the *next* calendar date (EDT/EST) — safely
+        # inside the crossover window, same real ET calendar day as `morning`.
+        evening = morning.replace(hour=21)
+        assert evening.astimezone(timezone.utc).date() != morning.astimezone(timezone.utc).date(), (
+            "test setup assumption broken: 9 PM ET should already be a "
+            "different UTC calendar date than 9 AM ET"
+        )
+        with patch.object(worker, "_now_local", return_value=morning):
+            worker._check_and_schedule_morning_run(db_conn)
+        with patch.object(worker, "_now_local", return_value=evening):
+            worker._check_and_schedule_morning_run(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'morning-run'"
+        ).fetchone()["c"]
+        assert count == 1
+
     def _insert_finished_job(self, db_conn, status: str, scheduled_at, completed_at):
         """Directly insert a scheduled_jobs row with an explicit
         completed_at, rather than going through update_job_status (which

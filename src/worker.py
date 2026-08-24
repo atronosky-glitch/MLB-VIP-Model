@@ -985,7 +985,20 @@ def _check_and_schedule_morning_run(conn: DB) -> None:
                 should_schedule = elapsed_minutes >= MORNING_RUN_RETRY_COOLDOWN_MINUTES
 
     if should_schedule:
-        job_id = create_job(conn, job_type="morning-run", scheduled_at=datetime.now(timezone.utc).isoformat())
+        # Reuse the same `now` (from _now_local()) the dedup check above
+        # already derived `today` from, converted to UTC for storage —
+        # NOT an independent datetime.now(timezone.utc) call. A real bug,
+        # not just a test artifact: the dedup check's "today" is a local
+        # (ET) calendar date, but an independent UTC `now()` call can land
+        # on a DIFFERENT calendar date during the ET-evening/UTC-midnight
+        # crossover window (~7-8 PM ET onward, well within this
+        # function's normal 8:30 AM-11:59 PM ET active window) — letting
+        # a later same-ET-day call miss the LIKE-date match against the
+        # job it just created and schedule a real duplicate. Caught live
+        # 2026-08-23 (reproduced via the test below, not merely a mocked
+        # scenario — the real wall clock was in this exact crossover
+        # window when it was found).
+        job_id = create_job(conn, job_type="morning-run", scheduled_at=now.astimezone(timezone.utc).isoformat())
         logger.info("Auto-scheduled morning run: %s", job_id[:8])
 
 
