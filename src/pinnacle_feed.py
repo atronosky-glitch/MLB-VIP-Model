@@ -92,6 +92,13 @@ class PinnacleProp:
     under_decimal: float
     over_american: int
     under_american: int
+    # Unix epoch seconds from pinnapi's own "last" field on the special
+    # sub-event — when PINNACLE's own backend last updated this specific
+    # prop. Live-verified 2026-08-23: every event in one payload shares
+    # the same value (a payload-wide refresh timestamp, not a genuine
+    # per-price one), consistently under ~30s old in normal operation.
+    # None if pinnapi omits the field (never guessed/reconstructed).
+    last_updated: float | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,10 @@ class PinnacleGameOdds:
     away_decimal: float | None
     over_decimal: float | None   # spread/total only
     under_decimal: float | None  # spread/total only
+    # Unix epoch seconds from pinnapi's own "last" field on the main
+    # event — see PinnacleProp.last_updated for the same field's meaning
+    # and caveats (payload-wide, not genuinely per-price).
+    last_updated: float | None = None
 
 
 # ======================================================================
@@ -166,6 +177,17 @@ def _token_overlap(a: str, b: str) -> float:
 # Kept for backward compatibility (existing callers reference this
 # directly) — now just MLB's slice of cfg.PINNACLE_PROP_SUFFIXES_BY_LEAGUE.
 _PLAYER_PROP_SUFFIXES = dict(cfg.PINNACLE_PROP_SUFFIXES_BY_LEAGUE["MLB"])
+
+
+def _parse_last(value) -> float | None:
+    """Parse pinnapi's "last" field (Unix epoch seconds) into a float,
+    never guessing when it's absent or malformed."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_player_name(special: str, unit: str | None = None, league: str = "MLB") -> str:
@@ -264,6 +286,7 @@ def parse_player_props(payload: dict, league: str = "MLB") -> list[PinnacleProp]
                     under_decimal=under_dec,
                     over_american=decimal_to_american(over_dec),
                     under_american=decimal_to_american(under_dec),
+                    last_updated=_parse_last(ev.get("last")),
                 )
             )
         except ValueError:
@@ -313,6 +336,7 @@ def parse_game_odds(payload: dict, league: str = "MLB") -> list[PinnacleGameOdds
         period = _extract_game_period(ev)
         if period is None:
             continue
+        event_last = _parse_last(ev.get("last"))
 
         ml = period.get("money_line") or {}
         home_ml, away_ml = ml.get("home"), ml.get("away")
@@ -322,6 +346,7 @@ def parse_game_odds(payload: dict, league: str = "MLB") -> list[PinnacleGameOdds
                 market_type=market_types["moneyline"], line=None,
                 home_decimal=float(home_ml), away_decimal=float(away_ml),
                 over_decimal=None, under_decimal=None,
+                last_updated=event_last,
             ))
 
         for entry in (period.get("spreads") or {}).values():
@@ -336,6 +361,7 @@ def parse_game_odds(payload: dict, league: str = "MLB") -> list[PinnacleGameOdds
                     market_type=market_types["spread"], line=round(float(hdp), 2),
                     home_decimal=float(home_p), away_decimal=float(away_p),
                     over_decimal=None, under_decimal=None,
+                    last_updated=event_last,
                 ))
             except (TypeError, ValueError):
                 continue
@@ -352,6 +378,7 @@ def parse_game_odds(payload: dict, league: str = "MLB") -> list[PinnacleGameOdds
                     market_type=market_types["total"], line=round(float(points), 2),
                     home_decimal=None, away_decimal=None,
                     over_decimal=float(over_p), under_decimal=float(under_p),
+                    last_updated=event_last,
                 ))
             except (TypeError, ValueError):
                 continue
@@ -375,6 +402,18 @@ def build_pinnacle_lookup(props: list[PinnacleProp]) -> dict:
         # Prefer the most recently seen prop for a duplicate key.
         lookup[key] = p
     return lookup
+
+
+def _is_stale(last_updated: float | None) -> bool:
+    """Whether a Pinnacle quote's own "last" timestamp is older than
+    ``cfg.PINNACLE_MAX_STALENESS_SECONDS``. A missing timestamp is NOT
+    treated as stale (pinnapi may omit it; conservative default is to
+    still use the quote — the same "graceful degradation" stance the
+    rest of this feed already takes, never inventing a reason to distrust
+    real data that lacks a field)."""
+    if last_updated is None:
+        return False
+    return (time.time() - last_updated) > cfg.PINNACLE_MAX_STALENESS_SECONDS
 
 
 def _match_teams(sgo_teams: frozenset, pinn_teams: frozenset) -> bool:
@@ -443,13 +482,21 @@ def match_pinnacle(
 
 def inject_pinnacle_reference(
     ou_groups: dict, event_map: dict, lookup: dict, league: str = "MLB",
-) -> int:
+) -> tuple[int, int]:
     """Inject a 'pinnacle' book entry into matching player-prop O/U
     groups. Groups whose line has no Pinnacle counterpart are left
-    untouched (they keep the market-median fallback). Returns the
-    number of groups that received a Pinnacle reference.
+    untouched (they keep the market-median fallback). A match whose own
+    "last" timestamp is older than ``cfg.PINNACLE_MAX_STALENESS_SECONDS``
+    is treated the same as no match at all — never injected, so the group
+    falls back to LOO consensus rather than anchoring on a stale sharp
+    price (added 2026-08-23, per operator directive: a stale Pinnacle
+    quote must never override fresher multi-book consensus).
+
+    Returns ``(injected, stale_skipped)`` — groups that received a real
+    reference, and groups where a match existed but was too old to use.
     """
     injected = 0
+    stale_skipped = 0
     for gdata in ou_groups.values():
         ev = event_map.get(gdata.get("event_id", "")) or {}
         pin = match_pinnacle(
@@ -462,6 +509,14 @@ def inject_pinnacle_reference(
             league=league,
         )
         if pin is None:
+            continue
+        if _is_stale(pin.last_updated):
+            stale_skipped += 1
+            logger.warning(
+                "PINNACLE_STALE_SKIPPED player=%s market=%s line=%s age_s=%.0f",
+                gdata.get("player_name", ""), gdata.get("market_type", ""),
+                gdata.get("line"), time.time() - pin.last_updated,
+            )
             continue
         sides = (
             ("over", pin.over_american, pin.over_decimal),
@@ -477,7 +532,7 @@ def inject_pinnacle_reference(
                 "validation_status": "VALID",
             }
         injected += 1
-    return injected
+    return injected, stale_skipped
 
 
 # ======================================================================
@@ -524,13 +579,21 @@ def match_pinnacle_game(
     return None
 
 
-def inject_pinnacle_game_reference(ou_groups: dict, event_map: dict, lookup: dict) -> int:
+def inject_pinnacle_game_reference(
+    ou_groups: dict, event_map: dict, lookup: dict,
+) -> tuple[int, int]:
     """Inject a 'pinnacle' book entry into matching game-market O/U
     groups (moneyline/spread/total — grouped the same way player props
     are, with AWAY mapped to the 'over' slot and HOME to 'under', per
-    each league's MarketConfig.internal_side_map). Returns the number
-    of groups that received a Pinnacle reference."""
+    each league's MarketConfig.internal_side_map). A match whose own
+    "last" timestamp is older than ``cfg.PINNACLE_MAX_STALENESS_SECONDS``
+    is treated the same as no match — never injected, so the group falls
+    back to LOO consensus instead of a stale sharp price (2026-08-23).
+
+    Returns ``(injected, stale_skipped)``.
+    """
     injected = 0
+    stale_skipped = 0
     for gdata in ou_groups.values():
         # Game-level markets always carry player_id="GAME" (set in
         # src/player_prop_parser.py and src/odds_api_game_parser.py,
@@ -567,6 +630,13 @@ def inject_pinnacle_game_reference(ou_groups: dict, event_map: dict, lookup: dic
         )
         if pin is None:
             continue
+        if _is_stale(pin.last_updated):
+            stale_skipped += 1
+            logger.warning(
+                "PINNACLE_STALE_SKIPPED player=GAME market=%s line=%s age_s=%.0f",
+                market_type, gdata.get("line"), time.time() - pin.last_updated,
+            )
+            continue
         if pin.line is None:  # moneyline
             over_dec, under_dec = pin.away_decimal, pin.home_decimal
         elif pin.market_type.endswith("_total_ou"):
@@ -583,7 +653,7 @@ def inject_pinnacle_game_reference(ou_groups: dict, event_map: dict, lookup: dic
                 "validation_status": "VALID",
             }
         injected += 1
-    return injected
+    return injected, stale_skipped
 
 
 # ======================================================================

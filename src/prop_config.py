@@ -160,6 +160,21 @@ PINNACLE_FEED_TIMEOUT_SECONDS = 30
 PINNACLE_FEED_CACHE_TTL_SECONDS = 300          # reuse a feed for this long
 PINNACLE_FEED_MIN_INTERVAL_SECONDS = 10.0      # min gap between live calls
 
+# Max age (seconds) of pinnapi's own "last" timestamp before a Pinnacle
+# quote is treated as stale and skipped (falls back to LOO consensus,
+# same as if Pinnacle had no data at all — see
+# inject_pinnacle_reference/inject_pinnacle_game_reference in
+# src/pinnacle_feed.py). Evidence-based, not arbitrary: live-checked
+# 2026-08-23 against the real feed, "last" was consistently 9-22 seconds
+# old across multiple real calls (it's a payload-wide refresh timestamp,
+# not a genuinely per-price one — see PinnacleProp.last_updated). 900s
+# (15 min) gives ~40-100x headroom over observed normal operation —
+# generous enough to never false-positive on the 5-min cache TTL plus
+# request latency, tight enough to catch a genuinely stuck/dead feed
+# rather than silently using hours-old sharp prices as the sole
+# reference. Re-verify if pinnapi's real refresh cadence changes.
+PINNACLE_MAX_STALENESS_SECONDS = 900
+
 # league -> pinnapi sport_id, verified live 2026-08-23 (see module
 # docstring above).
 PINNACLE_SPORT_ID_BY_LEAGUE = {

@@ -4,6 +4,13 @@ Entries are dated. New entries are appended.
 
 ---
 
+## Pinnacle staleness safeguard: 900s threshold, evidence-based
+
+- **Date**: 2026-08-23
+- **Decision**: A Pinnacle quote is now checked against `PINNACLE_MAX_STALENESS_SECONDS=900` (15 min) before it's allowed to serve as the sole fair-value reference. `PinnacleProp`/`PinnacleGameOdds` carry pinnapi's own `"last"` Unix-epoch timestamp; `inject_pinnacle_reference`/`inject_pinnacle_game_reference` skip injection entirely for a stale match, so the group falls back to LOO consensus — the exact same code path already used when Pinnacle has no data for a market at all (Gate 9's existing fallback).
+- **Reason**: Operator directive: a stale Pinnacle quote must never override fresher multi-book consensus. The 900s threshold is not arbitrary — live-checked against the real feed 2026-08-23, pinnapi's own `"last"` field was consistently 9-30 seconds old across multiple real calls (it's a payload-wide refresh timestamp, not a genuinely per-price one — every event in one fetch shares the same value). 900s gives roughly 40-100x headroom over observed normal operation, comfortably absorbing the existing 5-min client cache TTL plus request latency, while still catching a genuinely stuck or dead feed rather than silently anchoring the value model on hours-old sharp prices.
+- **Consequence**: A missing `last` timestamp is NOT treated as stale (conservative default — pinnapi may omit the field; the rest of this feed already takes a "never invent a reason to distrust real data" stance, and this stays consistent with it). `inject_pinnacle_reference`/`inject_pinnacle_game_reference`'s return signature changed from `int` to `(injected, stale_skipped)` — the one caller (`player_prop_scanner.py`) was updated; any future caller must unpack the tuple.
+
 ## Spread/run-line group keys are canonicalized by signed direction, not abs(line)
 
 - **Date**: 2026-08-23

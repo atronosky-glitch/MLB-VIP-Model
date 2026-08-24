@@ -299,7 +299,7 @@ def _make_event_map() -> dict:
 def test_inject_pinnacle_reference():
     groups = {"k1": _make_group()}
     lookup = build_pinnacle_lookup(parse_mlb_props(_sample_payload()))
-    n = inject_pinnacle_reference(groups, _make_event_map(), lookup)
+    n, _ = inject_pinnacle_reference(groups, _make_event_map(), lookup)
     assert n == 1
     pinn_over = groups["k1"]["over"]["pinnacle"]
     pinn_under = groups["k1"]["under"]["pinnacle"]
@@ -313,7 +313,7 @@ def test_inject_pinnacle_reference():
 def test_inject_skips_line_mismatch():
     groups = {"k1": _make_group(line=7.5)}
     lookup = build_pinnacle_lookup(parse_mlb_props(_sample_payload()))
-    n = inject_pinnacle_reference(groups, _make_event_map(), lookup)
+    n, _ = inject_pinnacle_reference(groups, _make_event_map(), lookup)
     assert n == 0
     assert "pinnacle" not in groups["k1"]["over"]
 
@@ -330,7 +330,7 @@ def test_inject_does_not_overwrite_existing_pinnacle():
 def test_inject_uncovered_market_untouched():
     groups = {"k1": _make_group(market_type="pitching_walks_ou")}
     lookup = build_pinnacle_lookup(parse_mlb_props(_sample_payload()))
-    n = inject_pinnacle_reference(groups, _make_event_map(), lookup)
+    n, _ = inject_pinnacle_reference(groups, _make_event_map(), lookup)
     assert n == 0
     assert "pinnacle" not in groups["k1"]["over"]
 
@@ -601,7 +601,7 @@ def test_inject_pinnacle_game_reference_moneyline():
     payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
     lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
     groups = {"k1": _make_game_group(market_type="game_moneyline", line=None)}
-    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    n, _ = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
     assert n == 1
     # AWAY=over/HOME=under convention: over gets away_decimal, under gets home_decimal.
     assert groups["k1"]["over"]["pinnacle"]["decimal_odds"] == 2.41
@@ -612,7 +612,7 @@ def test_inject_pinnacle_game_reference_total():
     payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
     lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
     groups = {"k1": _make_game_group(market_type="game_total_ou", line=8.5)}
-    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    n, _ = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
     assert n == 1
     assert groups["k1"]["over"]["pinnacle"]["decimal_odds"] == 1.909
     assert groups["k1"]["under"]["pinnacle"]["decimal_odds"] == 1.909
@@ -627,7 +627,7 @@ def test_inject_pinnacle_game_reference_spread_away_favorite():
     payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
     lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
     groups = {"k1": _make_game_group(market_type="game_runline_ou", line=1.5, away_raw_line=-1.5)}
-    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    n, _ = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
     assert n == 1
     assert groups["k1"]["over"]["pinnacle"]["decimal_odds"] == 1.943   # away laying 1.5
     assert groups["k1"]["under"]["pinnacle"]["decimal_odds"] == 1.869  # home receiving 1.5
@@ -640,7 +640,7 @@ def test_inject_pinnacle_game_reference_spread_home_favorite():
     payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
     lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
     groups = {"k1": _make_game_group(market_type="game_runline_ou", line=1.5, away_raw_line=1.5)}
-    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    n, _ = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
     assert n == 1
     assert groups["k1"]["over"]["pinnacle"]["decimal_odds"] == 1.775   # away receiving 1.5
     assert groups["k1"]["under"]["pinnacle"]["decimal_odds"] == 2.02   # home laying 1.5
@@ -652,7 +652,7 @@ def test_inject_pinnacle_game_reference_spread_without_signed_line_skips():
     payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
     lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
     groups = {"k1": _make_game_group(market_type="game_runline_ou", line=1.5)}  # no away_raw_line
-    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    n, _ = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
     assert n == 0
     assert "pinnacle" not in groups["k1"]["over"]
 
@@ -664,7 +664,7 @@ def test_inject_pinnacle_game_reference_skips_player_props():
     payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
     lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
     groups = {"k1": _make_group(event_id="ev300")}  # a real player-prop group, player_id="PLAYER_1_MLB"
-    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    n, _ = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
     assert n == 0
     assert "pinnacle" not in groups["k1"]["over"]
 
@@ -673,5 +673,85 @@ def test_inject_pinnacle_game_reference_no_match_leaves_group_untouched():
     payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
     lookup = build_pinnacle_game_lookup(parse_game_odds(payload, league="MLB"))
     groups = {"k1": _make_game_group(market_type="game_total_ou", line=99.5)}  # no such line
-    n = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    n, _ = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
     assert n == 0
+
+
+# ==================================================================
+# Freshness / staleness safeguard (added 2026-08-23)
+# ==================================================================
+
+def test_last_field_flows_through_from_raw_payload_to_props():
+    """parse_player_props must capture pinnapi's own "last" timestamp
+    from the special sub-event, not invent or omit it."""
+    payload = _sample_payload()
+    for ev in payload["events"]:
+        if ev.get("parent_id") == 100:
+            ev["last"] = 1787529050.0
+    props = parse_mlb_props(payload)
+    assert all(p.last_updated == 1787529050.0 for p in props)
+
+
+def test_last_field_flows_through_from_raw_payload_to_game_odds():
+    payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
+    payload["events"][0]["last"] = 1787529050.0
+    games = parse_game_odds(payload, league="MLB")
+    assert games and all(g.last_updated == 1787529050.0 for g in games)
+
+
+def test_missing_last_field_parses_as_none():
+    props = parse_mlb_props(_sample_payload())  # no "last" key in the fixture
+    assert all(p.last_updated is None for p in props)
+
+
+def test_fresh_pinnacle_prop_is_injected():
+    import time
+    from dataclasses import replace
+    props = parse_mlb_props(_sample_payload())
+    fresh = [replace(p, last_updated=time.time() - 10) for p in props]
+    lookup = build_pinnacle_lookup(fresh)
+    groups = {"k1": _make_group()}
+    injected, stale = inject_pinnacle_reference(groups, _make_event_map(), lookup)
+    assert injected == 1
+    assert stale == 0
+    assert "pinnacle" in groups["k1"]["over"]
+
+
+def test_stale_pinnacle_prop_is_skipped_not_injected():
+    """A Pinnacle quote older than PINNACLE_MAX_STALENESS_SECONDS must
+    never be injected — the group falls back to LOO consensus instead,
+    per the operator's explicit 2026-08-23 directive that stale Pinnacle
+    can never override fresher multi-book consensus."""
+    import time
+    from dataclasses import replace
+    props = parse_mlb_props(_sample_payload())
+    stale = [replace(p, last_updated=time.time() - 100000) for p in props]
+    lookup = build_pinnacle_lookup(stale)
+    groups = {"k1": _make_group()}
+    injected, stale_count = inject_pinnacle_reference(groups, _make_event_map(), lookup)
+    assert injected == 0
+    assert stale_count == 1
+    assert "pinnacle" not in groups["k1"]["over"]
+
+
+def test_stale_pinnacle_game_odds_is_skipped_not_injected():
+    import time
+    from dataclasses import replace
+    payload = _game_period_payload("MLB", 6, "Miami Marlins", "Washington Nationals")
+    games = parse_game_odds(payload, league="MLB")
+    stale_games = [replace(g, last_updated=time.time() - 100000) for g in games]
+    lookup = build_pinnacle_game_lookup(stale_games)
+    groups = {"k1": _make_game_group(market_type="game_moneyline", line=None)}
+    injected, stale_count = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    assert injected == 0
+    assert stale_count == 1
+    assert "pinnacle" not in groups["k1"]["over"]
+
+
+def test_missing_last_updated_is_never_treated_as_stale():
+    """A quote with no timestamp at all (pinnapi omitted the field) must
+    still be used — absence isn't evidence of staleness, matching the
+    feed's existing 'never invent a reason to distrust real data'
+    stance."""
+    from src.pinnacle_feed import _is_stale
+    assert _is_stale(None) is False

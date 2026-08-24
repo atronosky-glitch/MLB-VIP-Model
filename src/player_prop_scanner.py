@@ -648,6 +648,7 @@ def run_scan(
     # cache refetches sharp prices even for cached/research scans
     # (otherwise those runs silently have no Pinnacle reference at all).
     pinnacle_reference_injected = 0
+    pinnacle_stale_skipped = 0
     if cfg.PINNACLE_FEED_ENABLED and league in cfg.PINNACLE_SPORT_ID_BY_LEAGUE:
         _pinnacle_client = PinnacleFeedClient()
         try:
@@ -658,9 +659,11 @@ def run_scan(
         if _pinnacle_props:
             logger.info("PINNACLE_FEED_PROPS parsed=%d", len(_pinnacle_props))
             _pinnacle_lookup = build_pinnacle_lookup(_pinnacle_props)
-            pinnacle_reference_injected += inject_pinnacle_reference(
+            _injected, _stale = inject_pinnacle_reference(
                 ou_groups, event_map, _pinnacle_lookup, league=league,
             )
+            pinnacle_reference_injected += _injected
+            pinnacle_stale_skipped += _stale
         else:
             logger.warning("PINNACLE_FEED_PROPS parsed=0; no Pinnacle prop references available")
 
@@ -672,9 +675,11 @@ def run_scan(
         if _pinnacle_games:
             logger.info("PINNACLE_FEED_GAME_ODDS parsed=%d", len(_pinnacle_games))
             _pinnacle_game_lookup = build_pinnacle_game_lookup(_pinnacle_games)
-            pinnacle_reference_injected += inject_pinnacle_game_reference(
+            _injected, _stale = inject_pinnacle_game_reference(
                 ou_groups, event_map, _pinnacle_game_lookup,
             )
+            pinnacle_reference_injected += _injected
+            pinnacle_stale_skipped += _stale
         else:
             logger.warning("PINNACLE_FEED_GAME_ODDS parsed=0; no Pinnacle game-odds references available")
 
@@ -682,6 +687,11 @@ def run_scan(
             print(
                 f"  Pinnacle reference injected into {pinnacle_reference_injected} "
                 f"O/U groups"
+            )
+        if pinnacle_stale_skipped:
+            logger.warning(
+                "PINNACLE_STALE_TOTAL league=%s skipped=%d (older than %ds, fell back to LOO consensus)",
+                league, pinnacle_stale_skipped, cfg.PINNACLE_MAX_STALENESS_SECONDS,
             )
 
     pinnacle_summary = _new_pinnacle_summary()
