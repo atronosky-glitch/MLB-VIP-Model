@@ -4,6 +4,28 @@ Dated, narrative record of notable engineering sessions. `PROJECT_STATUS.md`
 is the authoritative current-state snapshot; this file is the story of how
 it got there. Newest entries first.
 
+## 2026-08-25 — 3-day production save-failure outage fixed; NFL schedule-discovery fallback added
+
+### Why
+
+Operator asked for a full production audit first ("did today's run find few edges, or did it find good bets our gates rejected?"), which surfaced that zero recommendations had saved anywhere since 2026-08-22. Operator then directed a prioritized fix: never let a save failure be silently indistinguishable from an intentional skip, find the real root cause (not just add logging), fix it, prove the fix with real production data, then move to NFL's scheduling failure and Pinnacle production auth — explicitly without touching any EV/model-score threshold or qualification rule.
+
+### What was found and fixed
+
+1. **The save-failure root cause**: `database/db_manager.py::save_recommendation()`'s bare `except Exception: conn.rollback(); return None` was masking a 100%-reproducible `psycopg2.errors.DatatypeMismatch`. `_persist_recommendation_evidence()` bound raw Python `bool`s for `pinnacle_found`/`pinnacle_reference_used`/`pinnacle_approved` against `integer`-typed PostgreSQL columns — SQLite accepts this silently; PostgreSQL does not. `tests/test_phase17b_postgres.py`'s own docstring notes CI only runs against SQLite, so this was structurally invisible to the test suite. Reproduced live against the real production schema (via explicitly-rolled-back transactions with `conn.commit` monkey-patched to a no-op) before touching any fix code, per the operator's explicit "find the actual root cause" instruction. Fixed with a new `_bool_to_int_or_none()` helper.
+2. **Duplicate-vs-error ambiguity**: split the old single-return `save_recommendation()` into `save_recommendation_result()`, returning a `SaveRecommendationResult` with `.status` ∈ `saved`/`duplicate`/`error` (plus `.error_type`/`.error_message`), and kept `save_recommendation()` as a thin backward-compatible wrapper. `daily_pipeline.py::_stage_freeze` now tracks `saved`/`duplicates`/`save_errors` as three separate real counters (previously `duplicates` was inferred by subtraction) and surfaces save errors into `state.errors` with the failing recommendation's identifiers, never secrets.
+3. **NFL scheduling silence**: `_discover_nfl_game_times()` caught every exception — including a real, currently-ongoing SportsGameOdds 429 — and returned `[]`, and `_check_and_schedule_nfl()` returns immediately on an empty list, so no NFL job had been queued since 2026-08-22. Added a fallback specifically on a real 429 (mirroring `daily_pipeline.py`'s existing `except requests.exceptions.HTTPError` + `status == 429` pattern) to The Odds API's free `/events` endpoint, reusing `src/sports/nfl.py`'s existing `ODDS_API_SPORT_KEY` — the same already-integrated provider the game-odds 429 fallback already uses, not a new architecture. Any other failure still degrades to `[]` exactly as before.
+
+### Verification
+
+Reproduced the exact `DatatypeMismatch` live against production before fixing it (`git stash` on the fix, confirmed the new regression test fails with the raw psycopg2 error; `git stash pop`, confirmed it passes). Live-verified the NFL fallback the same way: real SGO 429 in production right now, fallback correctly recovers 272 real NFL game times via The Odds API. After deploying, waited for and inspected a real post-deploy scheduled scan (not a manual trigger): 28 events, 1152 markets, 25 opportunities → 15 newly-saved recommendations (10 `OFFICIAL_TRACKED`, 5 `DISCOVERY_TRACKED`) → 3 brand-new `official_picks` rows, the first since 2026-08-21 — confirming the full save → qualify → official-pick chain end-to-end. Confirmed zero duplicate fingerprints anywhere in `historical_recommendations`. Pinnacle auth in production is still failing (`pinnacle_found=0` across the board) — separate from this fix, root cause blocked on the operator checking Render's actual configured key value.
+
+### A mistake made and disclosed in the same session
+
+An earlier reproduction script (`repro_save_bug2.py`) called the real `save_recommendation()` against production wrapped in `raw_conn.rollback()` for safety, but `save_recommendation()` commits partway through its own body — the rollback ran after the commit had already landed, so 25 real test rows were written to production `historical_recommendations` (+50 `recommendation_lifecycle_events` rows), tagged with a `scan_run_id` that only ever existed in the local dev database. Confirmed isolated — zero rows reached `official_picks` or any other downstream table. Disclosed immediately on discovery; left in place at the operator's instruction pending a later decision.
+
+5 new regression tests for the NFL fallback (confirmed to fail on the pre-fix code), plus the save-failure regression tests (5 new tests, including a dialect-aware guard using a mocked `postgresql` connection that asserts no raw `bool` is ever bound as a parameter). Full suite: **1914 passed, 0 failed** (was 1909).
+
 ## 2026-08-23 (later same day) — Full EV-engine audit: 4 real bugs found and fixed
 
 ### Why
