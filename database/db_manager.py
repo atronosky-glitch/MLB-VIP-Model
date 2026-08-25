@@ -1740,13 +1740,33 @@ def record_grading_completed(
     )
 
 
+def _bool_to_int_or_none(value) -> int | None:
+    """Convert a real Python bool to the 0/1 an `integer` column expects,
+    preserving None (genuinely unknown/not-applicable) rather than
+    collapsing it to 0. Postgres does NOT implicitly cast a bound
+    `boolean` parameter to `integer` in an UPDATE ... SET clause the way
+    SQLite silently would — passing a raw True/False here raises
+    ``psycopg2.errors.DatatypeMismatch``."""
+    if value is None:
+        return None
+    return 1 if value else 0
+
+
 def _persist_recommendation_evidence(conn: DB, recommendation_id: str, rec: dict) -> None:
     """Persist optional score/Pinnacle fields without breaking legacy schemas."""
     fields = {
         "market_quality_score": rec.get("market_quality_score"),
-        "pinnacle_found": rec.get("pinnacle_found"),
-        "pinnacle_reference_used": rec.get("pinnacle_reference_used"),
-        "pinnacle_approved": rec.get("pinnacle_approved"),
+        # Real root cause of a 2026-08-22 to 2026-08-24 production outage
+        # (traced 2026-08-24, reproduced against the real prod schema):
+        # these three carry a genuine Python bool (True/False) whenever
+        # Pinnacle was actually checked — not just None — and a bool
+        # bound against an `integer` column raises DatatypeMismatch on
+        # PostgreSQL, silently swallowed by save_recommendation's bare
+        # `except Exception`. is_official/reliable_ev_checked/reliable_ev
+        # below were already correctly cast; these three were missed.
+        "pinnacle_found": _bool_to_int_or_none(rec.get("pinnacle_found")),
+        "pinnacle_reference_used": _bool_to_int_or_none(rec.get("pinnacle_reference_used")),
+        "pinnacle_approved": _bool_to_int_or_none(rec.get("pinnacle_approved")),
         "pinnacle_book": rec.get("pinnacle_book"),
         "pinnacle_line": rec.get("pinnacle_line"),
         "pinnacle_over_price": rec.get("pinnacle_over_price"),
@@ -1780,11 +1800,76 @@ def _persist_recommendation_evidence(conn: DB, recommendation_id: str, rec: dict
     )
 
 
-def save_recommendation(conn: DB, rec: dict) -> str | None:
-    """Insert a recommendation snapshot. Idempotent via fingerprint UNIQUE.
+SAVE_STATUS_SAVED = "saved"
+SAVE_STATUS_DUPLICATE = "duplicate"
+SAVE_STATUS_ERROR = "error"
 
-    Returns the recommendation_id if inserted, or None if the exact
-    fingerprint already exists (deduplicated).
+
+class SaveRecommendationResult:
+    """Outcome of save_recommendation_result() — distinguishes a real
+    persistence ERROR from a legitimate intentional DUPLICATE skip,
+    added 2026-08-24 after a production outage (2026-08-22 to
+    2026-08-24) where both cases returned an indistinguishable None and
+    a real DatatypeMismatch was silently swallowed for three days. See
+    save_recommendation_result's docstring."""
+
+    __slots__ = ("recommendation_id", "status", "error_type", "error_message")
+
+    def __init__(self, recommendation_id: str | None, status: str,
+                 error_type: str | None = None, error_message: str | None = None):
+        self.recommendation_id = recommendation_id
+        self.status = status
+        self.error_type = error_type
+        self.error_message = error_message
+
+    @property
+    def ok(self) -> bool:
+        """True for either a real save or a legitimate duplicate — i.e.
+        "the pipeline doesn't need to treat this as a failure", as
+        opposed to status == SAVE_STATUS_ERROR."""
+        return self.status in (SAVE_STATUS_SAVED, SAVE_STATUS_DUPLICATE)
+
+
+def _safe_rec_identifiers(rec: dict) -> dict:
+    """The subset of a rec dict safe to put in logs/error messages —
+    identifiers only, never odds/prices/scores (not secret, just noise)
+    and never anything resembling a credential (a rec dict never
+    contains one, but this stays intentionally narrow regardless)."""
+    return {
+        "event_id": rec.get("event_id"),
+        "player_id": rec.get("player_id"),
+        "market_type": rec.get("market_type"),
+        "side": rec.get("side"),
+        "sportsbook": rec.get("sportsbook"),
+        "line": rec.get("line"),
+        "league": rec.get("league"),
+    }
+
+
+def save_recommendation_result(conn: DB, rec: dict) -> SaveRecommendationResult:
+    """Insert a recommendation snapshot and report exactly what happened.
+
+    Added 2026-08-24 following a real production outage: save_recommendation's
+    bare `except Exception: return None` made a genuine DATABASE ERROR
+    (a real psycopg2.errors.DatatypeMismatch, see
+    _persist_recommendation_evidence) completely indistinguishable from a
+    legitimate DUPLICATE (fingerprint already exists) — both returned
+    None, silently, with no log line anywhere. Every recommendation for
+    three straight days was the former, not the latter, and nothing
+    noticed. This function still does the exact same work as
+    save_recommendation, but:
+
+    - logs any real exception (type, message, safe identifiers,
+      traceback) via logger.error before rolling back — never silently
+      swallowed again.
+    - returns a SaveRecommendationResult whose `.status` is exactly one
+      of "saved" / "duplicate" / "error", so a caller (see
+      daily_pipeline.py::_stage_freeze) can count and surface real
+      failures separately from intentional skips, instead of treating
+      both as an identical no-op.
+
+    save_recommendation() (below) remains the plain str|None wrapper for
+    every existing caller that only needs the id.
     """
     rec_id = rec.get("recommendation_id") or generate_recommendation_id()
     fingerprint = compute_fingerprint(rec)
@@ -1862,14 +1947,53 @@ def save_recommendation(conn: DB, rec: dict) -> str | None:
                 rec_with_id = dict(rec)
                 rec_with_id["recommendation_id"] = existing["recommendation_id"]
                 record_recommendation_created(conn, rec_with_id)
-            return None
+                return SaveRecommendationResult(existing["recommendation_id"], SAVE_STATUS_DUPLICATE)
+            # rowcount==0 with no matching fingerprint row is a genuine
+            # anomaly (the ON CONFLICT target didn't fire, but nothing
+            # was found either) — surface it as an error, not a silent
+            # duplicate-shaped None, so it isn't mistaken for the
+            # expected/common case.
+            logger.error(
+                "save_recommendation: INSERT affected 0 rows but no existing "
+                "row matches fingerprint=%s — unexpected. identifiers=%s",
+                fingerprint, _safe_rec_identifiers(rec),
+            )
+            return SaveRecommendationResult(
+                None, SAVE_STATUS_ERROR, error_type="AnomalousZeroRowcount",
+                error_message="INSERT affected 0 rows but no matching fingerprint was found",
+            )
         rec_with_id = dict(rec)
         rec_with_id["recommendation_id"] = rec_id
         record_recommendation_created(conn, rec_with_id)
-        return rec_id
-    except Exception:
+        return SaveRecommendationResult(rec_id, SAVE_STATUS_SAVED)
+    except Exception as exc:
         conn.rollback()
-        return None
+        logger.error(
+            "save_recommendation FAILED: %s: %s | identifiers=%s",
+            type(exc).__name__, exc, _safe_rec_identifiers(rec),
+            exc_info=True,
+        )
+        return SaveRecommendationResult(
+            None, SAVE_STATUS_ERROR,
+            error_type=type(exc).__name__, error_message=str(exc),
+        )
+
+
+def save_recommendation(conn: DB, rec: dict) -> str | None:
+    """Insert a recommendation snapshot. Idempotent via fingerprint UNIQUE.
+
+    Thin backward-compatible wrapper around save_recommendation_result()
+    for every existing caller that only needs the id (or None for "did
+    not insert", for any reason — duplicate or error, indistinguishably,
+    exactly as before: a fresh insert returns its own new id, anything
+    else returns None, even though save_recommendation_result's
+    .recommendation_id is populated for the duplicate case too). Callers
+    that need to tell a real persistence error apart from an intentional
+    duplicate skip — chiefly daily_pipeline.py::_stage_freeze — should
+    call save_recommendation_result() directly instead.
+    """
+    result = save_recommendation_result(conn, rec)
+    return result.recommendation_id if result.status == SAVE_STATUS_SAVED else None
 
 
 def freeze_official_pick(

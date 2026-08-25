@@ -47,7 +47,9 @@ from src.prop_config import validate_config, MARKET_REGISTRY
 from database.db_manager import (
     DB_PATH, get_connection, create_run, finish_run, log_ingestion,
     save_game, save_raw_response, save_odds_batch, record_pull,
-    save_recommendation, persist_scan_error, capture_closing_prices,
+    save_recommendation, save_recommendation_result, SAVE_STATUS_SAVED,
+    SAVE_STATUS_DUPLICATE, SAVE_STATUS_ERROR,
+    persist_scan_error, capture_closing_prices,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,6 +179,11 @@ class PipelineState:
     n_ou_opportunities: int = 0
     n_yn_opportunities: int = 0
     n_recommendations_saved: int = 0
+    # Real persistence failures during freeze, distinct from intentional
+    # duplicate skips — added 2026-08-24 after a 3-day production outage
+    # where both were silently indistinguishable (see
+    # database/db_manager.py::save_recommendation_result).
+    n_recommendation_save_errors: int = 0
     n_errors: int = 0
     n_warnings: int = 0
     errors: list[str] = field(default_factory=list)
@@ -719,6 +726,8 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
 
             scan_ts = datetime.now(timezone.utc).isoformat()
             saved = 0
+            duplicates = 0
+            save_errors = 0
             now_utc = datetime.now(timezone.utc)
 
             # Track unique games at GAME level, not opportunity level
@@ -945,14 +954,35 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     rec["model_score_threshold"] = 8.0
                     rec["qualification_rules_version"] = ""
 
-                result_id = save_recommendation(conn, rec)
-                if result_id is not None:
+                save_result = save_recommendation_result(conn, rec)
+                if save_result.status == SAVE_STATUS_SAVED:
                     saved += 1
+                elif save_result.status == SAVE_STATUS_DUPLICATE:
+                    duplicates += 1
+                else:
+                    # A real persistence failure — never silently
+                    # indistinguishable from a duplicate skip again (see
+                    # database/db_manager.py::save_recommendation_result,
+                    # added 2026-08-24 after a 3-day production outage
+                    # where this exact case went unnoticed). The
+                    # exception itself was already logged inside
+                    # save_recommendation_result; this surfaces it at
+                    # the pipeline level too, where run_summary.json and
+                    # the operator-facing output can see it.
+                    save_errors += 1
+                    state.errors.append(
+                        f"save_recommendation failed for {rec.get('market_type', '?')} "
+                        f"({rec.get('event_id', '?')}/{rec.get('player_id', '?')}): "
+                        f"{save_result.error_type}: {save_result.error_message}"
+                    )
+                    state.n_errors += 1
 
             state.n_recommendations_saved = saved
+            state.n_recommendation_save_errors = save_errors
             state.n_games_skipped = len(skipped_event_ids)
-            deduped = len(all_opps) - skipped_opp_count - saved
-            print(f"  Saved: {saved}  |  Skipped (live/completed): {state.n_games_skipped} game(s) ({skipped_opp_count} opps)  |  Deduplicated: {deduped}")
+            print(f"  Saved: {saved}  |  Skipped (live/completed): {state.n_games_skipped} game(s) ({skipped_opp_count} opps)  |  "
+                  f"Deduplicated: {duplicates}"
+                  + (f"  |  SAVE ERRORS: {save_errors}" if save_errors else ""))
 
             if state.skipped_games:
                 print("  Skipped games:")
@@ -1201,6 +1231,7 @@ def _build_run_summary(state: PipelineState) -> dict:
             "n_ou_opportunities": state.n_ou_opportunities,
             "n_yn_opportunities": state.n_yn_opportunities,
             "n_recommendations_saved": state.n_recommendations_saved,
+            "n_recommendation_save_errors": state.n_recommendation_save_errors,
             "n_total_games": state.n_total_games,
             "n_games_analyzed": state.n_games_analyzed,
             "n_games_skipped": state.n_games_skipped,

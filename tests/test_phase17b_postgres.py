@@ -302,6 +302,187 @@ class TestDBManagerDualMode:
             if os.path.exists(tmp):
                 os.unlink(tmp)
 
+    def test_save_recommendation_result_distinguishes_saved_vs_duplicate(self):
+        """Regression (2026-08-24): save_recommendation_result's .status
+        must be SAVED for a fresh insert and DUPLICATE for a repeat of
+        the same fingerprint — the two must never collapse into the
+        same indistinguishable outcome the way save_recommendation's
+        plain None return necessarily does."""
+        import database.db_manager as dbm
+        import tempfile, os
+        tmp = tempfile.mktemp(suffix=".db")
+        orig_path = dbm.DB_PATH
+        try:
+            dbm.DB_PATH = tmp
+            conn = dbm.get_connection()
+            dbm.init_db()
+            rec = {
+                "event_id": "E1", "player_id": "P1", "player_name": "Test",
+                "market_type": "batter_hits", "side": "over", "line": 1.5,
+                "sportsbook": "FanDuel", "offered_american_odds": -110,
+                "offered_decimal_odds": 1.909, "offered_implied_prob": 0.524,
+                "rec_status": "VALID", "scan_timestamp": "2026-01-01T00:00:00Z",
+            }
+            r1 = dbm.save_recommendation_result(conn, rec)
+            assert r1.status == dbm.SAVE_STATUS_SAVED
+            assert r1.recommendation_id is not None
+            assert r1.ok is True
+
+            r2 = dbm.save_recommendation_result(conn, rec)
+            assert r2.status == dbm.SAVE_STATUS_DUPLICATE
+            assert r2.recommendation_id == r1.recommendation_id  # points at the original row
+            assert r2.ok is True  # a duplicate is not a failure
+            conn.close()
+        finally:
+            dbm.DB_PATH = orig_path
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    def test_save_recommendation_result_reports_real_errors_distinctly(self):
+        """Regression (2026-08-24): a genuine persistence error must
+        report status=ERROR with a populated error_type/error_message —
+        not the same silent None a duplicate produces. This is what a
+        real production outage looked like for 3 days: every save
+        failed with a real psycopg2.errors.DatatypeMismatch that was
+        indistinguishable from a normal duplicate skip."""
+        import database.db_manager as dbm
+        import tempfile, os
+        tmp = tempfile.mktemp(suffix=".db")
+        orig_path = dbm.DB_PATH
+        try:
+            dbm.DB_PATH = tmp
+            conn = dbm.get_connection()
+            dbm.init_db()
+            # Missing required keys (event_id etc.) raises a real
+            # KeyError inside the function — must be caught, logged, and
+            # reported as ERROR, not silently returned as None.
+            broken_rec = {"scan_timestamp": "2026-01-01T00:00:00Z"}
+            result = dbm.save_recommendation_result(conn, broken_rec)
+            assert result.status == dbm.SAVE_STATUS_ERROR
+            assert result.recommendation_id is None
+            assert result.ok is False
+            assert result.error_type == "KeyError"
+            assert result.error_message
+            conn.close()
+        finally:
+            dbm.DB_PATH = orig_path
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    def test_bool_to_int_or_none_conversion(self):
+        """Direct unit coverage for the exact bug: a real Python bool
+        must convert to 1/0, and None must stay None (not collapse to
+        0 — None means "not applicable/unknown", 0 means "checked and
+        false", a real semantic difference for pinnacle_found)."""
+        from database.db_manager import _bool_to_int_or_none
+        assert _bool_to_int_or_none(True) == 1
+        assert _bool_to_int_or_none(False) == 0
+        assert _bool_to_int_or_none(None) is None
+
+    def test_persist_recommendation_evidence_never_passes_raw_bool_for_int_columns(self):
+        """Regression (2026-08-24): the real production bug.
+        pinnacle_found/pinnacle_reference_used/pinnacle_approved are
+        genuine Python bools whenever Pinnacle was actually checked —
+        _persist_recommendation_evidence must cast them to 0/1/None
+        before binding, or PostgreSQL raises DatatypeMismatch on an
+        `integer` column (SQLite accepts a bare bool silently, which is
+        exactly why this was invisible in this SQLite-only test suite
+        until reproduced directly against the real prod schema)."""
+        import database.db_manager as dbm
+        import tempfile, os
+        tmp = tempfile.mktemp(suffix=".db")
+        orig_path = dbm.DB_PATH
+        try:
+            dbm.DB_PATH = tmp
+            conn = dbm.get_connection()
+            dbm.init_db()
+            rec = {
+                "event_id": "E1", "player_id": "GAME", "player_name": "Moneyline",
+                "market_type": "game_moneyline", "side": "HOME", "line": None,
+                "sportsbook": "draftkings", "offered_american_odds": 200,
+                "offered_decimal_odds": 3.0, "offered_implied_prob": 0.333,
+                "rec_status": "STRONG_EDGE", "scan_timestamp": "2026-01-01T00:00:00Z",
+                # The exact real shape that broke production: genuine bools,
+                # not None and not pre-cast ints.
+                "pinnacle_found": True,
+                "pinnacle_reference_used": True,
+                "pinnacle_approved": False,
+            }
+            result = dbm.save_recommendation_result(conn, rec)
+            assert result.status == dbm.SAVE_STATUS_SAVED, (
+                f"expected a clean save, got {result.status}: {result.error_message}"
+            )
+            row = conn.execute(
+                "SELECT pinnacle_found, pinnacle_reference_used, pinnacle_approved "
+                "FROM historical_recommendations WHERE recommendation_id = ?",
+                (result.recommendation_id,),
+            ).fetchone()
+            assert row["pinnacle_found"] in (1, True)
+            assert row["pinnacle_reference_used"] in (1, True)
+            assert row["pinnacle_approved"] in (0, False)
+            conn.close()
+        finally:
+            dbm.DB_PATH = orig_path
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    def test_persist_recommendation_evidence_binds_only_ints_on_postgres_dialect(self):
+        """The dialect-aware guard against the real bug: a mock
+        conn.dialect=="postgresql" (SQLite alone never would have caught
+        this — it silently accepts a bare Python bool where Postgres
+        raises DatatypeMismatch on an `integer` column). Asserts the
+        UPDATE's bound parameters for pinnacle_found/
+        pinnacle_reference_used/pinnacle_approved are never a raw
+        True/False, regardless of what SQLite would tolerate."""
+        import database.db_manager as dbm
+
+        columns_result = MagicMock()
+        columns_result.fetchall.return_value = [
+            {"name": "market_quality_score"}, {"name": "pinnacle_found"},
+            {"name": "pinnacle_reference_used"}, {"name": "pinnacle_approved"},
+            {"name": "pinnacle_book"}, {"name": "pinnacle_line"},
+            {"name": "pinnacle_over_price"}, {"name": "pinnacle_under_price"},
+            {"name": "pinnacle_fair_prob"}, {"name": "pinnacle_ev"},
+            {"name": "pinnacle_prob_edge"}, {"name": "is_official"},
+            {"name": "confidence_score"}, {"name": "reliable_ev_checked"},
+            {"name": "reliable_ev"}, {"name": "reliable_ev_status"},
+            {"name": "reliable_ev_reasons"}, {"name": "reliable_ev_calculated_pct"},
+            {"name": "reliable_ev_version"}, {"name": "challenger_expected_strikeouts"},
+            {"name": "challenger_over_probability"}, {"name": "challenger_under_probability"},
+            {"name": "challenger_push_probability"}, {"name": "challenger_fair_probability"},
+            {"name": "challenger_version"},
+        ]
+
+        captured = {}
+
+        def _fake_execute(sql, params=()):
+            if "information_schema.columns" in sql:
+                return columns_result
+            if sql.strip().startswith("UPDATE"):
+                captured["params"] = params
+            return MagicMock()
+
+        mock_conn = MagicMock()
+        mock_conn.dialect = "postgresql"
+        mock_conn.execute.side_effect = _fake_execute
+
+        rec = {
+            "pinnacle_found": True,
+            "pinnacle_reference_used": True,
+            "pinnacle_approved": False,
+            "is_official": True,
+            "reliable_ev_checked": True,
+            "reliable_ev": False,
+        }
+        dbm._persist_recommendation_evidence(mock_conn, "rec-1", rec)
+
+        assert "params" in captured, "UPDATE was never issued"
+        for value in captured["params"]:
+            assert not isinstance(value, bool), (
+                f"a raw Python bool ({value!r}) was bound as a parameter — "
+                "PostgreSQL would reject this against an `integer` column"
+            )
+
     def test_freeze_official_pick_idempotent(self):
         """freeze_official_pick is idempotent."""
         import database.db_manager as dbm
