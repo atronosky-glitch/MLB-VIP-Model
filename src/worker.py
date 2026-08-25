@@ -683,12 +683,26 @@ def _discover_nfl_game_times() -> list:
     an arbitrary default page, not "this week's games". A 9-day window
     (1 day back, 8 ahead) is wide enough to always see the full current
     NFL week regardless of which day this check runs on.
+
+    On a real SportsGameOdds 429 (quota/rate-limit — confirmed live in
+    production 2026-08-2x, the underlying cause of NFL scheduling going
+    silent for days since an empty return here means _check_and_schedule_nfl
+    never queues a job at all) falls back to The Odds API's free /events
+    endpoint (0 credits), the same already-integrated provider
+    src/sports/nfl.py's ODDS_API_SPORT_KEY / fetch_game_odds_via_odds_api
+    quota-exhaustion fallback uses for game odds, and the identical
+    "except requests.exceptions.HTTPError, check status == 429" pattern
+    src/daily_pipeline.py already uses there — not a new architecture.
+    Any other exception (network error, parse error, non-429 HTTP error)
+    still degrades to "no games discovered" rather than raising, same as
+    before.
     """
+    import requests
     from src.api_client import SportsGameOddsClient
     from src.league_schedule import extract_game_start_times
+    now = _now_local().astimezone(timezone.utc)
     try:
         client = SportsGameOddsClient(max_cache_age=900.0)
-        now = _now_local().astimezone(timezone.utc)
         data, _from_cache = client.get_events(
             league="NFL", odds_available=False,
             starts_after=(now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -696,6 +710,26 @@ def _discover_nfl_game_times() -> list:
         )
         events = data.get("data", data.get("events", [])) or []
         return extract_game_start_times(events)
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status != 429:
+            logger.warning("[NFL] Could not discover game schedule", exc_info=True)
+            return []
+        logger.warning(
+            "[NFL] SportsGameOdds returned 429 (quota/rate-limit) — "
+            "falling back to The Odds API for schedule discovery"
+        )
+        try:
+            from src.odds_api_client import OddsAPIClient, OddsAPIKeyError, EVENTS_CACHE_TTL_SECONDS
+            from src.sports.nfl import ODDS_API_SPORT_KEY
+            fb_client = OddsAPIClient(max_cache_age=EVENTS_CACHE_TTL_SECONDS)
+            fb_events, _from_cache = fb_client.get_events(sport_key=ODDS_API_SPORT_KEY)
+            return extract_game_start_times(fb_events)
+        except OddsAPIKeyError:
+            return []  # no Odds API key configured — silently unavailable, not an error
+        except Exception:
+            logger.warning("[NFL] Odds API fallback also failed", exc_info=True)
+            return []
     except Exception:
         logger.warning("[NFL] Could not discover game schedule", exc_info=True)
         return []

@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
+
 import src.worker as worker
 from src.automation import (
     create_job,
@@ -627,6 +629,100 @@ class TestWNBADiscoveryCacheTTL:
 
         _, kwargs = MockClient.call_args
         assert kwargs.get("max_cache_age") == EVENTS_CACHE_TTL_SECONDS
+
+
+class TestNFLScheduleDiscoveryFallback:
+    """Real bug: _discover_nfl_game_times() used to swallow EVERY
+    exception (including a genuine SportsGameOdds 429) and return [],
+    which means _check_and_schedule_nfl never queues a job at all --
+    NFL scheduling went silent for days in production because of this.
+    On a real 429 specifically, it must now fall back to The Odds API's
+    free /events endpoint (the same already-integrated provider
+    src/sports/nfl.py's game-odds quota fallback already uses), mirroring
+    the existing "except requests.exceptions.HTTPError, check status ==
+    429" pattern from src/daily_pipeline.py. Any other failure still
+    degrades to []."""
+
+    @staticmethod
+    def _http_429_error():
+        resp = MagicMock()
+        resp.status_code = 429
+        err = requests.exceptions.HTTPError("429 rate limit exceeded")
+        err.response = resp
+        return err
+
+    @staticmethod
+    def _http_500_error():
+        resp = MagicMock()
+        resp.status_code = 500
+        err = requests.exceptions.HTTPError("500 server error")
+        err.response = resp
+        return err
+
+    def test_sgo_healthy_uses_normal_path_no_fallback(self):
+        kickoff = "2026-09-10T17:00:00Z"
+        fake_sgo = MagicMock()
+        fake_sgo.get_events.return_value = ({"data": [{"status": {"startsAt": kickoff}}]}, False)
+        with patch("src.api_client.SportsGameOddsClient", return_value=fake_sgo), \
+             patch("src.odds_api_client.OddsAPIClient") as MockOddsAPI:
+            result = worker._discover_nfl_game_times()
+
+        assert len(result) == 1
+        MockOddsAPI.assert_not_called()
+
+    def test_sgo_429_falls_back_to_odds_api(self):
+        fake_sgo = MagicMock()
+        fake_sgo.get_events.side_effect = self._http_429_error()
+        fb_kickoff = "2026-09-10T17:00:00Z"
+        fake_odds_api = MagicMock()
+        fake_odds_api.get_events.return_value = ([{"commence_time": fb_kickoff}], False)
+
+        with patch("src.api_client.SportsGameOddsClient", return_value=fake_sgo), \
+             patch("src.odds_api_client.OddsAPIClient", return_value=fake_odds_api) as MockOddsAPI:
+            result = worker._discover_nfl_game_times()
+
+        assert len(result) == 1
+        from src.sports.nfl import ODDS_API_SPORT_KEY
+        _, kwargs = fake_odds_api.get_events.call_args
+        assert kwargs.get("sport_key") == ODDS_API_SPORT_KEY
+        MockOddsAPI.assert_called_once()
+
+    def test_sgo_non_429_http_error_does_not_fall_back(self):
+        fake_sgo = MagicMock()
+        fake_sgo.get_events.side_effect = self._http_500_error()
+        with patch("src.api_client.SportsGameOddsClient", return_value=fake_sgo), \
+             patch("src.odds_api_client.OddsAPIClient") as MockOddsAPI:
+            result = worker._discover_nfl_game_times()
+
+        assert result == []
+        MockOddsAPI.assert_not_called()
+
+    def test_odds_api_fallback_also_failing_returns_empty_not_raise(self):
+        fake_sgo = MagicMock()
+        fake_sgo.get_events.side_effect = self._http_429_error()
+        with patch("src.api_client.SportsGameOddsClient", return_value=fake_sgo), \
+             patch("src.odds_api_client.OddsAPIClient", side_effect=RuntimeError("boom")):
+            result = worker._discover_nfl_game_times()
+
+        assert result == []
+
+    def test_fallback_does_not_duplicate_or_invent_games(self):
+        """The fallback returns exactly the real events The Odds API
+        reports -- no merging with a partial/stale SGO result, no
+        synthesized entries."""
+        fake_sgo = MagicMock()
+        fake_sgo.get_events.side_effect = self._http_429_error()
+        real_times = ["2026-09-10T17:00:00Z", "2026-09-14T20:00:00Z"]
+        fake_odds_api = MagicMock()
+        fake_odds_api.get_events.return_value = (
+            [{"commence_time": t} for t in real_times], False,
+        )
+        with patch("src.api_client.SportsGameOddsClient", return_value=fake_sgo), \
+             patch("src.odds_api_client.OddsAPIClient", return_value=fake_odds_api):
+            result = worker._discover_nfl_game_times()
+
+        assert len(result) == len(real_times)
+        assert len(result) == len(set(result))
 
 
 class TestLastCompletedJobAt:
