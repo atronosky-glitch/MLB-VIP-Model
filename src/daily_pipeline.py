@@ -1032,6 +1032,62 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     state.n_official_picks = 0
                     print(f"  Official picks selection failed: {e}")
 
+            # Persist this scan's full save/qualification/Pinnacle funnel onto
+            # its own scan_runs row so it's durably queryable per-run (not
+            # just printed to stdout/a report file that may not survive a
+            # container restart) — operator asked to never have to guess
+            # whether the automated runner found opportunities. Best-effort:
+            # a failure here must never break the pipeline itself.
+            if state.scan_run_id:
+                try:
+                    from database.db_manager import update_run_metadata
+                    tier_rows = conn.execute(
+                        "SELECT recommendation_tier, qualification_passed, "
+                        "pinnacle_found, pinnacle_reference_used, pinnacle_approved, "
+                        "disqualification_reasons FROM historical_recommendations "
+                        "WHERE scan_run_id = ?",
+                        (state.scan_run_id,),
+                    ).fetchall()
+                    tier_counts = {"RESEARCH_ONLY": 0, "DISCOVERY_TRACKED": 0, "OFFICIAL_TRACKED": 0}
+                    pinnacle_found = pinnacle_ref_used = pinnacle_approved = 0
+                    gate_rejections: dict[str, int] = {}
+                    for row in tier_rows:
+                        r = dict(row)
+                        tier = r.get("recommendation_tier") or "RESEARCH_ONLY"
+                        tier_counts[tier] = tier_counts.get(tier, 0) + 1
+                        if r.get("pinnacle_found"):
+                            pinnacle_found += 1
+                        if r.get("pinnacle_reference_used"):
+                            pinnacle_ref_used += 1
+                        if r.get("pinnacle_approved"):
+                            pinnacle_approved += 1
+                        for reason in (r.get("disqualification_reasons") or "").split("; "):
+                            reason = reason.strip()
+                            if reason:
+                                gate_rejections[reason] = gate_rejections.get(reason, 0) + 1
+                    published_row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM official_picks o "
+                        "JOIN historical_recommendations r ON o.recommendation_id = r.recommendation_id "
+                        "WHERE r.scan_run_id = ?",
+                        (state.scan_run_id,),
+                    ).fetchone()
+                    n_published = dict(published_row).get("cnt", 0) if published_row else 0
+
+                    update_run_metadata(conn, state.scan_run_id, {"save_funnel": {
+                        "n_opportunities": len(all_opps),
+                        "n_saved": saved,
+                        "n_duplicates": duplicates,
+                        "n_save_errors": save_errors,
+                        "tier_counts": tier_counts,
+                        "n_official_picks_published": n_published,
+                        "pinnacle_found": pinnacle_found,
+                        "pinnacle_reference_used": pinnacle_ref_used,
+                        "pinnacle_approved": pinnacle_approved,
+                        "gate_rejections": gate_rejections,
+                    }})
+                except Exception:
+                    logger.debug("Could not persist save_funnel metadata", exc_info=True)
+
             # Capture pregame evidence for current and existing recommendations
             # on the scanned events. Selection deduplication must not erase the
             # final valid pre-start observation opportunity.

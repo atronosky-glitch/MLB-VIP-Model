@@ -1488,6 +1488,37 @@ def finish_run(
                 run_id[:8], n_events, n_opportunities, n_yn_opps)
 
 
+def update_run_metadata(conn: DB, run_id: str, metadata: dict) -> None:
+    """JSON-merge *metadata* into a scan_runs row's ``metadata_json``,
+    touching no other column.
+
+    ``finish_run(..., metadata=...)`` also merges, but it unconditionally
+    rewrites ``n_events``/``n_markets``/``n_opportunities``/``n_yn_opps``/
+    ``data_source``/``research_only``/``error_message`` to their call's
+    values (defaulting to 0/""/False/None) — safe when called once at the
+    natural end of a run, but a second, later caller (e.g. the freeze
+    stage merging in save/tier/Pinnacle counts after the scan stage has
+    already finished the row) would silently zero those out. This does
+    only the metadata merge, safe to call any number of times.
+    """
+    import json
+    existing = conn.execute(
+        "SELECT metadata_json FROM scan_runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    existing_meta = {}
+    if existing and existing["metadata_json"]:
+        try:
+            existing_meta = json.loads(existing["metadata_json"])
+        except (TypeError, ValueError):
+            existing_meta = {}
+    existing_meta.update(metadata)
+    conn.execute(
+        "UPDATE scan_runs SET metadata_json = ? WHERE run_id = ?",
+        (json.dumps(existing_meta, default=str), run_id),
+    )
+    conn.commit()
+
+
 def log_ingestion(
     conn: DB,
     run_id: str | None,

@@ -2480,6 +2480,75 @@ with tabs[8]:
                     st.caption("No job activity recorded yet.")
             except Exception as job_exc:
                 st.error(f"Recent Job Activity unavailable: {job_exc}")
+
+            st.divider()
+            st.markdown("##### Scan Run History — full funnel per automated run")
+            st.caption(
+                "Every scan's real outcome, end to end: opportunities found → "
+                "recommendations saved/duplicated/errored → tier breakdown → "
+                "Pinnacle usage → gate rejections → Official picks actually "
+                "published. No guessing whether the automated runner found anything."
+            )
+            try:
+                run_rows = _conn_lh.execute(
+                    "SELECT run_id, started_at, finished_at, n_events, n_markets, "
+                    "n_opportunities, metadata_json FROM scan_runs "
+                    "WHERE run_type = 'scan' ORDER BY started_at DESC LIMIT 15"
+                ).fetchall()
+                summary_rows = []
+                detail_by_run = {}
+                for r in run_rows:
+                    r = dict(r)
+                    meta = {}
+                    if r.get("metadata_json"):
+                        try:
+                            meta = json.loads(r["metadata_json"])
+                        except (TypeError, ValueError):
+                            meta = {}
+                    funnel = meta.get("save_funnel") or {}
+                    pin = meta.get("pinnacle_funnel") or {}
+                    tiers = funnel.get("tier_counts", {})
+                    league_row = _conn_lh.execute(
+                        "SELECT league, COUNT(*) c FROM historical_recommendations "
+                        "WHERE scan_run_id = ? GROUP BY league ORDER BY c DESC LIMIT 1",
+                        (r["run_id"],),
+                    ).fetchone()
+                    league = dict(league_row)["league"] if league_row else "—"
+                    summary_rows.append({
+                        "Run": r["run_id"][:8],
+                        "League": league,
+                        "Started": (r["started_at"] or "")[:19],
+                        "Events": r["n_events"], "Markets": r["n_markets"],
+                        "+EV Opps": r["n_opportunities"],
+                        "Saved": funnel.get("n_saved", "—"),
+                        "Dupes": funnel.get("n_duplicates", "—"),
+                        "Save Errs": funnel.get("n_save_errors", "—"),
+                        "Research": tiers.get("RESEARCH_ONLY", "—"),
+                        "Discovery": tiers.get("DISCOVERY_TRACKED", "—"),
+                        "Official-tier": tiers.get("OFFICIAL_TRACKED", "—"),
+                        "Published": funnel.get("n_official_picks_published", "—"),
+                        "Pin. Found": funnel.get("pinnacle_found", "—"),
+                        "Pin. Used": funnel.get("pinnacle_reference_used", "—"),
+                        "LOO Fallback": pin.get("fallback_lean", "—"),
+                    })
+                    detail_by_run[r["run_id"][:8]] = {
+                        "gate_rejections": funnel.get("gate_rejections", {}),
+                        "pinnacle_funnel": pin,
+                    }
+                if summary_rows:
+                    st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+                    with st.expander("Gate rejection reasons / full Pinnacle funnel (per run)"):
+                        for run_short, detail in detail_by_run.items():
+                            if detail["gate_rejections"] or detail["pinnacle_funnel"]:
+                                st.markdown(f"**{run_short}**")
+                                if detail["gate_rejections"]:
+                                    st.json(detail["gate_rejections"])
+                                if detail["pinnacle_funnel"]:
+                                    st.json(detail["pinnacle_funnel"])
+                else:
+                    st.caption("No scan runs recorded yet.")
+            except Exception as scan_exc:
+                st.error(f"Scan Run History unavailable: {scan_exc}")
         finally:
             _conn_lh.close()
     except Exception as e:

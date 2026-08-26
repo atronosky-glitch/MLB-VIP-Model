@@ -1219,6 +1219,101 @@ class TestStageFreezeConfidence:
         assert row["confidence_score"] is not None
 
 
+class TestStageFreezeSaveFunnelMetadata:
+    """Operator asked for permanent, durable per-scan visibility (games,
+    opportunities, saved/duplicate/error counts, tier breakdown, Pinnacle
+    usage, gate rejections, published Official picks) so an automated run's
+    real outcome is never a guess. _stage_freeze now persists this as
+    metadata_json['save_funnel'] on the scan's own scan_runs row via
+    database.db_manager.update_run_metadata — durable in the database,
+    not just a printed log line or an ephemeral report file."""
+
+    def test_save_funnel_metadata_persisted_on_scan_run(self, tmp_path, sample_opps):
+        from database.db_manager import init_db, get_connection, create_run
+
+        db_path = tmp_path / "freeze_funnel.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+        conn.execute(
+            """INSERT INTO games (event_id, away_team, home_team, start_time, status)
+               VALUES ('EVT_001', 'NYY', 'BOS', '2099-01-01T19:00:00Z', 'scheduled')"""
+        )
+        conn.commit()
+        run_id = create_run(conn, run_type="scan", mode="actionable")
+        conn.close()
+
+        config = PipelineConfig(dry_run=False, output_dir=str(tmp_path / "output"))
+        state = PipelineState()
+        state.scan_run_id = run_id
+        state.scan_result = {"opportunities": sample_opps, "yn_opportunities": []}
+
+        with patch("src.daily_pipeline.get_connection",
+                   lambda *a, **kw: get_connection(str(db_path))):
+            assert _stage_freeze(config, state) is True
+
+        conn = get_connection(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT metadata_json FROM scan_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row is not None and row["metadata_json"]
+        meta = json.loads(row["metadata_json"])
+        funnel = meta["save_funnel"]
+        assert funnel["n_opportunities"] == len(sample_opps)
+        assert funnel["n_saved"] + funnel["n_duplicates"] + funnel["n_save_errors"] == len(sample_opps)
+        assert set(funnel["tier_counts"]) == {"RESEARCH_ONLY", "DISCOVERY_TRACKED", "OFFICIAL_TRACKED"}
+        assert sum(funnel["tier_counts"].values()) == funnel["n_saved"]
+        assert isinstance(funnel["gate_rejections"], dict)
+        assert funnel["n_official_picks_published"] >= 0
+
+    def test_save_funnel_metadata_merges_without_erasing_pinnacle_funnel(self, tmp_path, sample_opps):
+        """The scan stage already writes metadata_json['pinnacle_funnel']
+        via finish_run() before the freeze stage runs. The freeze stage's
+        own metadata write must merge alongside it, not clobber it —
+        update_run_metadata (unlike calling finish_run a second time) never
+        touches unrelated metadata keys or the row's other columns."""
+        from database.db_manager import init_db, get_connection, create_run, finish_run
+
+        db_path = tmp_path / "freeze_funnel2.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+        conn.execute(
+            """INSERT INTO games (event_id, away_team, home_team, start_time, status)
+               VALUES ('EVT_001', 'NYY', 'BOS', '2099-01-01T19:00:00Z', 'scheduled')"""
+        )
+        conn.commit()
+        run_id = create_run(conn, run_type="scan", mode="actionable")
+        finish_run(conn, run_id, n_events=1, n_opportunities=len(sample_opps),
+                   metadata={"pinnacle_funnel": {"fallback_lean": 3}})
+        conn.close()
+
+        config = PipelineConfig(dry_run=False, output_dir=str(tmp_path / "output"))
+        state = PipelineState()
+        state.scan_run_id = run_id
+        state.scan_result = {"opportunities": sample_opps, "yn_opportunities": []}
+
+        with patch("src.daily_pipeline.get_connection",
+                   lambda *a, **kw: get_connection(str(db_path))):
+            assert _stage_freeze(config, state) is True
+
+        conn = get_connection(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT n_events, n_opportunities, metadata_json FROM scan_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        meta = json.loads(row["metadata_json"])
+        assert meta["pinnacle_funnel"] == {"fallback_lean": 3}
+        assert "save_funnel" in meta
+        assert row["n_events"] == 1
+        assert row["n_opportunities"] == len(sample_opps)
+
+
 # ── Pipeline summary ──────────────────────────────────────────────
 
 class TestPipelineSummary:
