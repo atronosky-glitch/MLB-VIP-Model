@@ -426,6 +426,47 @@ class TestDBManagerDualMode:
             if os.path.exists(tmp):
                 os.unlink(tmp)
 
+    def test_pinnacle_source_and_quote_timestamp_persist(self):
+        """Real methodological requirement (2026-08-26): the offered
+        sportsbook quote and its Pinnacle reference must be verifiably
+        close in time. pinnacle_source (which real feed produced the
+        quote) and pinnacle_quote_timestamp (converted from the
+        provider's epoch-seconds "last updated" field to ISO 8601) must
+        both round-trip through save_recommendation_result."""
+        import database.db_manager as dbm
+        import tempfile, os
+        tmp = tempfile.mktemp(suffix=".db")
+        orig_path = dbm.DB_PATH
+        try:
+            dbm.DB_PATH = tmp
+            conn = dbm.get_connection()
+            dbm.init_db()
+            rec = {
+                "event_id": "E1", "player_id": "GAME", "player_name": "Moneyline",
+                "market_type": "game_moneyline", "side": "HOME", "line": None,
+                "sportsbook": "draftkings", "offered_american_odds": 200,
+                "offered_decimal_odds": 3.0, "offered_implied_prob": 0.333,
+                "rec_status": "STRONG_EDGE", "scan_timestamp": "2026-01-01T00:00:00Z",
+                "pinnacle_found": True, "pinnacle_reference_used": True,
+                "pinnacle_source": "odds_api_pinnacle",
+                "pinnacle_quote_timestamp": 1787759406.0,  # a real epoch value from a live test
+            }
+            result = dbm.save_recommendation_result(conn, rec)
+            assert result.status == dbm.SAVE_STATUS_SAVED
+
+            row = conn.execute(
+                "SELECT pinnacle_source, pinnacle_quote_timestamp "
+                "FROM historical_recommendations WHERE recommendation_id = ?",
+                (result.recommendation_id,),
+            ).fetchone()
+            assert row["pinnacle_source"] == "odds_api_pinnacle"
+            assert row["pinnacle_quote_timestamp"] == "2026-08-26T15:50:06+00:00"
+            conn.close()
+        finally:
+            dbm.DB_PATH = orig_path
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
     def test_persist_recommendation_evidence_binds_only_ints_on_postgres_dialect(self):
         """The dialect-aware guard against the real bug: a mock
         conn.dialect=="postgresql" (SQLite alone never would have caught

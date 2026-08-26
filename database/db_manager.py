@@ -899,6 +899,13 @@ def init_db(db_path: str | None = None) -> None:
         # source). NULL for rows saved before this column existed or
         # where pinnacle_found is False.
         ("pinnacle_source", "TEXT"),
+        # Real methodological requirement (2026-08-26): the offered
+        # sportsbook quote (observation_timestamp, already existed) and
+        # this Pinnacle quote must be verifiably close in time, not just
+        # assumed to be. ISO 8601 string, converted from the provider's
+        # own epoch-seconds "last updated" field — NULL when no Pinnacle
+        # reference was used (pinnacle_reference_used = 0).
+        ("pinnacle_quote_timestamp", "TEXT"),
         ("is_official", "INTEGER DEFAULT 0"),
         ("confidence_score", "REAL"),
         ("reliable_ev_checked", "INTEGER DEFAULT 0"),
@@ -1789,6 +1796,21 @@ def _bool_to_int_or_none(value) -> int | None:
     return 1 if value else 0
 
 
+def _epoch_to_iso_or_none(value) -> str | None:
+    """Convert a Unix epoch-seconds float (a Pinnacle quote's own "last
+    updated" field — see src/pinnacle_feed.py's PinnacleProp/
+    PinnacleGameOdds.last_updated) to an ISO 8601 string, matching every
+    other persisted timestamp column. None passes through unchanged
+    (no Pinnacle reference was used)."""
+    if value is None:
+        return None
+    try:
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
 def _persist_recommendation_evidence(conn: DB, recommendation_id: str, rec: dict) -> None:
     """Persist optional score/Pinnacle fields without breaking legacy schemas."""
     fields = {
@@ -1812,6 +1834,7 @@ def _persist_recommendation_evidence(conn: DB, recommendation_id: str, rec: dict
         "pinnacle_ev": rec.get("pinnacle_ev"),
         "pinnacle_prob_edge": rec.get("pinnacle_prob_edge"),
         "pinnacle_source": rec.get("pinnacle_source"),
+        "pinnacle_quote_timestamp": _epoch_to_iso_or_none(rec.get("pinnacle_quote_timestamp")),
         "is_official": 1 if rec.get("is_official") else 0,
         "confidence_score": rec.get("confidence_score"),
         "reliable_ev_checked": 1 if rec.get("reliable_ev_checked") else 0,

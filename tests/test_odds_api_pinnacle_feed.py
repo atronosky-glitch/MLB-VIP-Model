@@ -237,6 +237,37 @@ class TestOddsAPIPinnacleClientStatusHandling:
         assert client.last_fetch_status["MLB"] == "ok"
 
 
+class TestOddsAPIPinnacleGameOddsCreditBudget:
+    """Game-odds Pinnacle is cheap (3 credits/call) and unthrottled by
+    cadence, but must still respect the shared monthly budget's reserve
+    — the same real safety net the props fetch already has — so it can
+    never itself be the thing that pushes total spend over budget."""
+
+    def test_game_odds_skipped_when_budget_check_fails(self, monkeypatch):
+        client = OddsAPIPinnacleClient()
+        get_odds_mock = mock.Mock(return_value=([_game_odds_event()], False))
+        monkeypatch.setattr(client._client, "get_odds", get_odds_mock)
+        monkeypatch.setattr(
+            "src.odds_api_credits.credit_budget_check",
+            mock.Mock(return_value=(False, "out of budget")),
+        )
+        result = client.get_game_odds("MLB", conn=mock.MagicMock())
+        assert result is None
+        get_odds_mock.assert_not_called()
+
+    def test_game_odds_fetched_when_budget_check_passes(self, monkeypatch):
+        client = OddsAPIPinnacleClient()
+        get_odds_mock = mock.Mock(return_value=([_game_odds_event()], False))
+        monkeypatch.setattr(client._client, "get_odds", get_odds_mock)
+        monkeypatch.setattr(
+            "src.odds_api_credits.credit_budget_check",
+            mock.Mock(return_value=(True, "ok")),
+        )
+        result = client.get_game_odds("MLB", conn=mock.MagicMock())
+        assert result is not None
+        get_odds_mock.assert_called_once()
+
+
 class TestOddsAPIPinnacleClientCreditBudget:
     def test_props_fetch_stops_when_budget_exhausted(self, monkeypatch):
         client = OddsAPIPinnacleClient()
@@ -264,48 +295,33 @@ class TestOddsAPIPinnacleClientCreditBudget:
         assert props is not None and len(props) == 1
 
 
-class TestOddsAPIPinnacleRefreshThrottle:
-    """Real cost problem found live 2026-08-26: fetching Pinnacle props
-    on every scan (matching real production scan cadence) works out to
-    roughly 2-3x the entire monthly Odds-API budget for MLB props alone.
-    This throttle (independent of both scan cadence and the short
-    per-request cache) tracks the last REAL fetch per (league, data-type)
-    in the existing odds_api_credits usage log and skips the attempt
-    entirely when it's too recent — the actual cost control."""
+class TestOddsAPIPinnacleClientHasNoStandaloneThrottle:
+    """Real methodological requirement (2026-08-26, operator directive):
+    the offered sportsbook price and its Pinnacle reference must come
+    from approximately the same point in time, or the resulting "edge"
+    can be an artifact of the two prices moving apart, not a real
+    inefficiency. A standalone multi-hour Pinnacle-specific throttle
+    (tried, then reverted the same day) violated this directly. This
+    client must never independently decide "too soon, skip" — the only
+    thing that gates how often it's called is now the CALLER
+    (src/player_prop_scanner.py gates props on fetch_props, matching
+    the already-budget-tuned props-scan schedule; game odds are fetched
+    on every scan, unthrottled, since that's cheap and matches when the
+    comparison books themselves are fetched)."""
 
-    def _conn_with_last_fetch(self, tmp_path, job_type, minutes_ago, cache_hit=0):
+    def test_game_odds_is_fetched_fresh_even_with_a_very_recent_prior_fetch_on_record(self, tmp_path, monkeypatch):
         from database.db_manager import init_db, get_connection
-        from datetime import datetime, timedelta, timezone
-        db_path = tmp_path / "throttle.db"
+        from datetime import datetime, timezone
+        db_path = tmp_path / "no_throttle.db"
         init_db(str(db_path))
         conn = get_connection(str(db_path))
-        recorded_at = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
         conn.execute(
             "INSERT INTO odds_api_credits (recorded_at, endpoint, job_type, cache_hit) "
-            "VALUES (?, 'odds_pinnacle_game', ?, ?)",
-            (recorded_at, job_type, cache_hit),
+            "VALUES (?, 'odds_pinnacle_game', 'mlb_pinnacle_game_odds', 0)",
+            (datetime.now(timezone.utc).isoformat(),),
         )
         conn.commit()
-        return conn
 
-    def test_game_odds_skipped_when_recently_fetched(self, tmp_path, monkeypatch):
-        conn = self._conn_with_last_fetch(tmp_path, "mlb_pinnacle_game_odds", minutes_ago=10)
-        client = OddsAPIPinnacleClient()
-        get_odds_mock = mock.Mock(return_value=([_game_odds_event()], False))
-        monkeypatch.setattr(client._client, "get_odds", get_odds_mock)
-
-        result = client.get_game_odds("MLB", conn=conn)
-
-        assert result is None
-        assert client.last_fetch_status["MLB"] == "throttled"
-        get_odds_mock.assert_not_called()
-
-    def test_game_odds_fetched_when_throttle_window_has_elapsed(self, tmp_path, monkeypatch):
-        from src import prop_config as cfg
-        conn = self._conn_with_last_fetch(
-            tmp_path, "mlb_pinnacle_game_odds",
-            minutes_ago=cfg.ODDS_API_PINNACLE_REFRESH_THROTTLE_MINUTES + 5,
-        )
         client = OddsAPIPinnacleClient()
         get_odds_mock = mock.Mock(return_value=([_game_odds_event()], False))
         monkeypatch.setattr(client._client, "get_odds", get_odds_mock)
@@ -315,44 +331,25 @@ class TestOddsAPIPinnacleRefreshThrottle:
         assert result is not None
         get_odds_mock.assert_called_once()
 
-    def test_a_cache_hit_row_does_not_reset_the_throttle_clock(self, tmp_path, monkeypatch):
-        """Only a REAL fetch (cache_hit=0) should count toward "recently
-        fetched" — a cache-hit row from the short per-request cache must
-        not make the throttle think a real refresh just happened."""
-        conn = self._conn_with_last_fetch(
-            tmp_path, "mlb_pinnacle_game_odds", minutes_ago=1, cache_hit=1,
-        )
-        client = OddsAPIPinnacleClient()
-        get_odds_mock = mock.Mock(return_value=([_game_odds_event()], False))
-        monkeypatch.setattr(client._client, "get_odds", get_odds_mock)
-
-        result = client.get_game_odds("MLB", conn=conn)
-
-        assert result is not None
-        get_odds_mock.assert_called_once()
-
-    def test_no_prior_fetch_record_is_not_throttled(self, tmp_path, monkeypatch):
+    def test_props_is_fetched_fresh_even_with_a_very_recent_prior_fetch_on_record(self, tmp_path, monkeypatch):
         from database.db_manager import init_db, get_connection
-        db_path = tmp_path / "throttle_empty.db"
+        from datetime import datetime, timezone
+        db_path = tmp_path / "no_throttle2.db"
         init_db(str(db_path))
         conn = get_connection(str(db_path))
-        client = OddsAPIPinnacleClient()
-        get_odds_mock = mock.Mock(return_value=([_game_odds_event()], False))
-        monkeypatch.setattr(client._client, "get_odds", get_odds_mock)
+        conn.execute(
+            "INSERT INTO odds_api_credits (recorded_at, endpoint, job_type, cache_hit) "
+            "VALUES (?, 'odds_pinnacle_props', 'mlb_pinnacle_props', 0)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.commit()
 
-        result = client.get_game_odds("MLB", conn=conn)
-
-        assert result is not None
-        get_odds_mock.assert_called_once()
-
-    def test_props_fetch_is_also_throttled_independent_of_scan_cadence(self, tmp_path, monkeypatch):
-        conn = self._conn_with_last_fetch(tmp_path, "mlb_pinnacle_props", minutes_ago=10)
         client = OddsAPIPinnacleClient()
         get_events_mock = mock.Mock(return_value=([{"id": "evt1", "commence_time": "2026-08-26T20:00:00Z"}], False))
         monkeypatch.setattr(client._client, "get_events", get_events_mock)
+        monkeypatch.setattr(client._client, "get_event_odds", mock.Mock(return_value=(_props_event(), False)))
 
         result = client.get_player_props("MLB", conn=conn)
 
-        assert result is None
-        assert client.last_props_status["MLB"] == "throttled"
-        get_events_mock.assert_not_called()
+        assert result is not None
+        get_events_mock.assert_called_once()

@@ -241,42 +241,39 @@ PINNACLE_LEAGUE_NAME_BY_LEAGUE = {
 # merge behavior.
 ODDS_API_PINNACLE_ENABLED = True
 ODDS_API_PINNACLE_BOOKMAKER_KEY = "pinnacle"
-# 600s (10 min), not the direct feed's 300s: this bounds the worst case
-# under a burst of back-to-back scans (confirmed happening in real
-# production logs) to roughly one fetch per event per 10 minutes,
-# without ever risking serving data older than
-# PINNACLE_MAX_STALENESS_SECONDS (900s) — the injection-side staleness
-# check would reject it before use anyway. It does NOT eliminate cost
-# scaling with real scan cadence when that cadence is itself longer than
-# 10 minutes (confirmed live: MLB scans roughly every 20-40 min) — see
-# the credit-cost estimate in docs/DECISIONS.md. credit_budget_check()
-# (already wired into the props fetch loop) is the real backstop against
-# this ever silently overspending the shared monthly budget.
-ODDS_API_PINNACLE_CACHE_TTL_SECONDS = 600
-
-# Dedicated refresh throttle, independent of scan cadence and separate
-# from the per-request cache above — added 2026-08-26 after computing
-# the real cost of fetching on every scan: MLB alone (~15 games/day x
-# 4 prop markets = 60 credits/round, plus 3 for game odds) at the real
-# observed production scan cadence (~20-40 min) works out to roughly
-# 45,000-55,000 credits/month for MLB props ALONE — 2-3x the entire
-# 20,000/month budget, before WNBA. The per-request cache above doesn't
-# help here since it expires well before the next real scan.
+# Real methodological requirement (2026-08-26, operator directive): the
+# offered sportsbook price and the Pinnacle reference price used to
+# compute its fair value must come from approximately the same point in
+# time, or the resulting "edge" can be an artifact of the two prices
+# having moved apart, not a real market inefficiency. A standalone
+# multi-hour Pinnacle-specific throttle (tried first, reverted the same
+# day) violated this directly — it could compare a live sportsbook quote
+# against a Pinnacle quote up to 8 hours old.
 #
-# This throttle instead tracks the last REAL (non-cache-hit) fetch per
-# (league, data-type) in the existing odds_api_credits usage log (see
-# odds_api_credits.py — already written to by this module's own calls,
-# no new table needed) and skips the fetch attempt entirely — not just
-# reusing a cached response, but not even trying — when the last real
-# fetch was more recent than this. 480 minutes (8 hours) was chosen by
-# computing the resulting monthly cost directly: at 3 refreshes/day,
-# MLB (63 credits/round) + WNBA (35 credits/round) ≈ 8,820 credits/month
-# combined, alongside the existing ~8,200/month primary props/game-odds
-# usage — comfortably under the 20,000/month budget with real headroom
-# for NFL once its season starts. A single constant to adjust if a
-# different freshness/cost trade-off is wanted; credit_budget_check()
-# (already wired into the props loop) remains the hard backstop either way.
-ODDS_API_PINNACLE_REFRESH_THROTTLE_MINUTES = 480
+# Instead of a separate cost-driven throttle, this fetch now piggybacks
+# on the SAME schedule gate that already controls when the comparison
+# books it's being measured against are fetched:
+#   - Game odds (moneyline/spread/total): fetched on every scan, same as
+#     the comparison books — cheap (3 credits/call) regardless of cadence.
+#   - Player props: fetched ONLY when the scan itself is fetching props
+#     from the primary source (fetch_props=True — see
+#     src/player_prop_scanner.py), i.e. only inside the mlb-props-scan/
+#     wnba-props-scan/nfl-props-scan job runs, which are already gated by
+#     mlb_should_fetch_props/wnba_should_fetch_props/nfl_should_fetch_props
+#     in src/league_schedule.py (at most once every 30-60 min, only
+#     within a few hours of the next game, already tuned to fit the
+#     shared monthly budget for the primary props fetch). Reusing that
+#     existing, already-budget-validated cadence — rather than inventing
+#     a second, independent one — is what keeps this affordable: real
+#     production job counts over 24h (2026-08-26) showed mlb-props-scan
+#     and wnba-props-scan firing only 3 times each, not once per scan.
+#
+# The short per-request cache below (600s) only absorbs genuine
+# back-to-back/overlapping calls within that same window — it is NOT a
+# freshness mechanism on its own; PINNACLE_MAX_STALENESS_SECONDS (900s)
+# independently rejects anything older than that at injection time
+# regardless of how long a response is cached.
+ODDS_API_PINNACLE_CACHE_TTL_SECONDS = 600
 
 # league -> {pinnapi special_units -> our market_type_ou}, for Player
 # Props specials. Verified live 2026-08-23 against real posted props

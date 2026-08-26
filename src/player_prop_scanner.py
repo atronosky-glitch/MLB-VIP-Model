@@ -695,12 +695,27 @@ def run_scan(
         except Exception:
             logger.debug("Could not open connection for Odds-API Pinnacle credit tracking")
         try:
-            try:
-                _oap_props = _oap_client.get_player_props(league=league, conn=_oap_conn)
-            except Exception:
-                logger.exception("Odds-API Pinnacle (props) unavailable")
+            # Player props are fetched ONLY when this scan is also
+            # fetching the comparison-book props they'd be measured
+            # against (fetch_props=True) — this is what keeps a Pinnacle
+            # prop reference temporally synchronized with the sportsbook
+            # price it's compared to (same scan, same job execution),
+            # and it reuses the props-scan job's own already-budget-tuned
+            # schedule (see prop_config.py's ODDS_API_PINNACLE_ENABLED
+            # block) instead of a second, independent cadence. A scan
+            # that isn't fetching props has no fresh comparison-book prop
+            # data to synchronize against in the first place, so fetching
+            # Pinnacle props here would be pure waste.
+            if fetch_props:
+                try:
+                    _oap_props = _oap_client.get_player_props(league=league, conn=_oap_conn)
+                except Exception:
+                    logger.exception("Odds-API Pinnacle (props) unavailable")
+                    _oap_props = None
+                pinnacle_props_status = _oap_client.last_props_status.get(league, "unknown")
+            else:
                 _oap_props = None
-            pinnacle_props_status = _oap_client.last_props_status.get(league, "unknown")
+                pinnacle_props_status = "not_fetching_props_this_scan"
             if _oap_props:
                 pinnacle_props_fetched = len(_oap_props)
                 _oap_lookup = build_pinnacle_lookup(_oap_props)
@@ -734,12 +749,19 @@ def run_scan(
     # -- doesn't cover — alternate lines, some prop markets) ------------
     if cfg.PINNACLE_FEED_ENABLED and league in cfg.PINNACLE_SPORT_ID_BY_LEAGUE:
         _pinnacle_client = PinnacleFeedClient()
-        try:
-            _pinnacle_props = _pinnacle_client.get_player_props(league=league, allow_fetch=True)
-        except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
-            logger.warning("Pinnacle feed (props) unavailable: %s", exc)
+        # Same reasoning as source 1 above: a scan not fetching
+        # comparison-book props has nothing for a Pinnacle prop
+        # reference to synchronize against.
+        if fetch_props:
+            try:
+                _pinnacle_props = _pinnacle_client.get_player_props(league=league, allow_fetch=True)
+            except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
+                logger.warning("Pinnacle feed (props) unavailable: %s", exc)
+                _pinnacle_props = None
+            pinnacle_direct_props_status = _pinnacle_client.last_props_status.get(league, "unknown")
+        else:
             _pinnacle_props = None
-        pinnacle_direct_props_status = _pinnacle_client.last_props_status.get(league, "unknown")
+            pinnacle_direct_props_status = "not_fetching_props_this_scan"
         if _pinnacle_props:
             pinnacle_direct_props_fetched = len(_pinnacle_props)
             _pinnacle_lookup = build_pinnacle_lookup(_pinnacle_props)
@@ -882,6 +904,7 @@ def run_scan(
                 "pinnacle_over_price": analysis.get("pinnacle_over_price"),
                 "pinnacle_under_price": analysis.get("pinnacle_under_price"),
                 "pinnacle_source": analysis.get("pinnacle_source"),
+                "pinnacle_quote_timestamp": analysis.get("pinnacle_quote_timestamp"),
                 "observation_time": max(gdata.get("observation_times") or [""]),
             }
             opportunities.append(opp)

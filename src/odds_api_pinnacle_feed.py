@@ -64,33 +64,6 @@ STATUS_HTTP_ERROR = "http_error"
 STATUS_NETWORK_ERROR = "network_error"
 STATUS_PARSE_ERROR = "parse_error"
 STATUS_NO_PINNACLE_POSTED = "no_pinnacle_currently_posted"
-STATUS_THROTTLED = "throttled"
-
-
-def _last_real_fetch_minutes_ago(conn, job_type: str) -> float | None:
-    """Minutes since the last REAL (non-cache-hit) fetch recorded for
-    *job_type* in the existing odds_api_credits usage log — None if
-    there's no such record yet. Reuses the log this module's own calls
-    already write via record_client_quota, so no new table/tracking is
-    needed for the refresh throttle (see ODDS_API_PINNACLE_REFRESH_
-    THROTTLE_MINUTES's docstring in prop_config.py for why this throttle
-    exists at all)."""
-    from datetime import datetime as _dt
-    row = conn.execute(
-        "SELECT recorded_at FROM odds_api_credits "
-        "WHERE job_type = ? AND cache_hit = 0 "
-        "ORDER BY id DESC LIMIT 1",
-        (job_type,),
-    ).fetchone()
-    if not row or not row["recorded_at"]:
-        return None
-    try:
-        recorded = _dt.fromisoformat(row["recorded_at"].replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    if recorded.tzinfo is None:
-        recorded = recorded.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - recorded).total_seconds() / 60.0
 
 # league -> Odds-API sport_key. Reuses each league adapter's own already-
 # verified constant rather than redeclaring it, so this can never drift
@@ -288,9 +261,17 @@ class OddsAPIPinnacleClient:
             return None
         job_type = f"{league.lower()}_pinnacle_game_odds"
         if conn is not None:
-            age_min = _last_real_fetch_minutes_ago(conn, job_type)
-            if age_min is not None and age_min < cfg.ODDS_API_PINNACLE_REFRESH_THROTTLE_MINUTES:
-                self.last_fetch_status[league] = STATUS_THROTTLED
+            try:
+                from src.odds_api_credits import credit_budget_check, GAME_ODDS_COST
+                allowed, reason = credit_budget_check(conn, GAME_ODDS_COST)
+            except Exception:
+                allowed, reason = True, "budget check unavailable"
+            if not allowed:
+                logger.warning(
+                    "Odds-API Pinnacle game-odds fetch skipped for %s — credit budget: %s",
+                    league, reason,
+                )
+                self.last_fetch_status[league] = STATUS_NO_PINNACLE_POSTED
                 return None
         try:
             data, from_cache = self._client.get_odds(
@@ -333,11 +314,6 @@ class OddsAPIPinnacleClient:
             self.last_props_status[league] = STATUS_LEAGUE_NOT_CONFIGURED
             return None
         job_type = f"{league.lower()}_pinnacle_props"
-        if conn is not None:
-            age_min = _last_real_fetch_minutes_ago(conn, job_type)
-            if age_min is not None and age_min < cfg.ODDS_API_PINNACLE_REFRESH_THROTTLE_MINUTES:
-                self.last_props_status[league] = STATUS_THROTTLED
-                return None
         try:
             events, _ = self._client.get_events(sport_key=sport_key)
         except OddsAPIKeyError:

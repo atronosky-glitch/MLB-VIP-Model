@@ -641,6 +641,94 @@ class TestRunScanFetchPropsFlag:
         assert result is not None  # did not raise
 
 
+class TestPinnaclePropsFetchGatedOnFetchPropsFlag:
+    """Real methodological requirement (2026-08-26, operator directive):
+    the offered sportsbook price and its Pinnacle reference must come
+    from approximately the same point in time. Fetching Pinnacle player
+    props on a scan that isn't ALSO fetching comparison-book props
+    (fetch_props=False) would have nothing to synchronize against — pure
+    waste, and (for the Odds-API source) real spend with zero benefit.
+    Both Pinnacle sources' props fetch must be gated on the exact same
+    fetch_props flag the primary props merge already uses."""
+
+    def _wnba_events(self):
+        return [{"id": "evt-1", "status": {"startsAt": "2099-01-01T00:00:00Z"}}]
+
+    def test_fetch_props_false_never_calls_either_pinnacle_props_source(self):
+        from src import player_prop_scanner as scanner
+        from src.sports import wnba as wnba_mod
+
+        odds_rows = [
+            _prop_row(side="over", price=-115, sportsbook="fanduel"),
+            _prop_row(side="under", price=-105, sportsbook="fanduel"),
+        ]
+        with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
+             mock.patch.object(scanner, "create_run", return_value="run-1"), \
+             mock.patch.object(scanner, "save_player_prop_batch"), \
+             mock.patch.object(wnba_mod, "fetch_and_parse",
+                                return_value=(odds_rows, [], self._wnba_events(), False)), \
+             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_player_props") as oap_props, \
+             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_game_odds", return_value=None), \
+             mock.patch.object(scanner.PinnacleFeedClient, "get_player_props") as direct_props, \
+             mock.patch.object(scanner.PinnacleFeedClient, "get_game_odds", return_value=None):
+            scanner.run_scan(mode="all", market="all", market_form="all",
+                              league="WNBA", fetch_props=False)
+
+        oap_props.assert_not_called()
+        direct_props.assert_not_called()
+
+    def test_fetch_props_true_calls_both_pinnacle_props_sources(self):
+        from src import player_prop_scanner as scanner
+        from src.sports import wnba as wnba_mod
+
+        odds_rows = [
+            _prop_row(side="over", price=-115, sportsbook="fanduel"),
+            _prop_row(side="under", price=-105, sportsbook="fanduel"),
+        ]
+        with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
+             mock.patch.object(scanner, "create_run", return_value="run-1"), \
+             mock.patch.object(scanner, "save_player_prop_batch"), \
+             mock.patch.object(wnba_mod, "fetch_and_parse",
+                                return_value=(odds_rows, [], self._wnba_events(), False)), \
+             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_player_props", return_value=None) as oap_props, \
+             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_game_odds", return_value=None), \
+             mock.patch.object(scanner.PinnacleFeedClient, "get_player_props", return_value=None) as direct_props, \
+             mock.patch.object(scanner.PinnacleFeedClient, "get_game_odds", return_value=None):
+            scanner.run_scan(mode="all", market="all", market_form="all",
+                              league="WNBA", fetch_props=True)
+
+        oap_props.assert_called_once()
+        direct_props.assert_called_once()
+
+    def test_game_odds_pinnacle_is_fetched_regardless_of_fetch_props(self):
+        """Game-market Pinnacle references (moneyline/spread/total) are
+        cheap and match when the comparison books themselves are
+        fetched — every scan, not just props-scans."""
+        from src import player_prop_scanner as scanner
+        from src.sports import wnba as wnba_mod
+
+        odds_rows = [
+            _prop_row(side="over", price=-115, sportsbook="fanduel"),
+            _prop_row(side="under", price=-105, sportsbook="fanduel"),
+        ]
+        with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
+             mock.patch.object(scanner, "create_run", return_value="run-1"), \
+             mock.patch.object(scanner, "save_player_prop_batch"), \
+             mock.patch.object(wnba_mod, "fetch_and_parse",
+                                return_value=(odds_rows, [], self._wnba_events(), False)), \
+             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_player_props") as oap_props, \
+             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_game_odds", return_value=None) as oap_game, \
+             mock.patch.object(scanner.PinnacleFeedClient, "get_player_props") as direct_props, \
+             mock.patch.object(scanner.PinnacleFeedClient, "get_game_odds", return_value=None) as direct_game:
+            scanner.run_scan(mode="all", market="all", market_form="all",
+                              league="WNBA", fetch_props=False)
+
+        oap_props.assert_not_called()
+        direct_props.assert_not_called()
+        oap_game.assert_called_once()
+        direct_game.assert_called_once()
+
+
 class TestFetchAndParsePropsIntelligentPrioritization:
     """fetch_and_parse_props must not re-spend credits on events it just
     fetched, and must stop mid-loop (not partway through a wasted call)

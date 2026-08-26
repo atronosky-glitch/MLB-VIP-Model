@@ -415,16 +415,26 @@ def analyze_prop_group(
     pinnacle_under_price = None
 
     pinnacle_source = None
+    pinnacle_quote_timestamp = None
     if use_pinnacle_ref:
         # Pinnacle no-vig probability becomes the fair reference for all books
         pinnacle_over_price = over_prices[pinnacle_over_book]["price"]
         pinnacle_under_price = under_prices[pinnacle_under_book]["price"]
-        # Provenance (odds_api_pinnacle / direct_pinnapi) — both injectors
-        # write the same key; an organically-fetched (never injected)
-        # pinnacle book has no such key, so this stays None for that case.
+        # Provenance (odds_api_pinnacle / direct_pinnapi) and the quote's
+        # own timestamp — both injectors write the same keys; an
+        # organically-fetched (never injected) pinnacle book has neither,
+        # so both stay None for that case. Real methodological requirement
+        # (2026-08-26): the offered sportsbook price and this Pinnacle
+        # reference must come from approximately the same point in time,
+        # so the timestamp is what lets a caller actually verify that,
+        # not just assume it.
         pinnacle_source = (
             over_prices[pinnacle_over_book].get("pinnacle_source")
             or under_prices[pinnacle_under_book].get("pinnacle_source")
+        )
+        pinnacle_quote_timestamp = (
+            over_prices[pinnacle_over_book].get("pinnacle_last_updated")
+            or under_prices[pinnacle_under_book].get("pinnacle_last_updated")
         )
         nv_prob_over, nv_prob_under = calculate_no_vig_probs(
             pinnacle_over_price, pinnacle_under_price)
@@ -738,6 +748,7 @@ def analyze_prop_group(
         "pinnacle_over_price": pinnacle_over_price,
         "pinnacle_under_price": pinnacle_under_price,
         "pinnacle_source": pinnacle_source,
+        "pinnacle_quote_timestamp": pinnacle_quote_timestamp,
         "official_count": len(official_books),
         "books": books,
         "best_ev": best_ev,
@@ -771,6 +782,7 @@ def _empty_result(group_key, over_prices, under_prices,
         "pinnacle_over_price": None,
         "pinnacle_under_price": None,
         "pinnacle_source": None,
+        "pinnacle_quote_timestamp": None,
         "official_count": 0,
         "books": [],
         "best_ev": None,
