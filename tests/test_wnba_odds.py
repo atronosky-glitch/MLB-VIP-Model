@@ -214,6 +214,76 @@ class TestOddsAPIClient:
         assert captured["params"]["apiKey"] == "test-key"
         assert "basketball_wnba/odds" in captured["url"]
 
+    def test_get_odds_bookmakers_param_takes_priority_over_regions(self, tmp_path):
+        """Real bug found live 2026-08-26: every existing call in this
+        codebase hardcoded regions="us", which never includes Pinnacle
+        (classified under "eu") — confirmed live that bookmakers=pinnacle
+        reaches it directly. The Odds API's own docs say bookmakers takes
+        priority over regions; assert this client actually omits regions
+        entirely when bookmakers is given, rather than sending an
+        ambiguous combination of both."""
+        from src.odds_api_client import OddsAPIClient
+        client = OddsAPIClient(api_key="test-key", cache_dir=str(tmp_path))
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+            def json(self): return [{"id": "g1"}]
+            def raise_for_status(self): pass
+
+        def fake_get(url, params=None, timeout=None):
+            captured["params"] = params
+            return FakeResponse()
+
+        client.session.get = fake_get
+        client.get_odds(sport_key="baseball_mlb", markets="h2h,spreads,totals", bookmakers="pinnacle")
+        assert captured["params"]["bookmakers"] == "pinnacle"
+        assert "regions" not in captured["params"]
+        assert captured["params"]["markets"] == "h2h,spreads,totals"
+
+    def test_get_event_odds_bookmakers_param_takes_priority_over_regions(self, tmp_path):
+        from src.odds_api_client import OddsAPIClient
+        client = OddsAPIClient(api_key="test-key", cache_dir=str(tmp_path))
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+            def json(self): return {"id": "evt1", "bookmakers": []}
+            def raise_for_status(self): pass
+
+        def fake_get(url, params=None, timeout=None):
+            captured["params"] = params
+            return FakeResponse()
+
+        client.session.get = fake_get
+        client.get_event_odds("evt1", sport_key="baseball_mlb", markets="batter_home_runs", bookmakers="pinnacle")
+        assert captured["params"]["bookmakers"] == "pinnacle"
+        assert "regions" not in captured["params"]
+
+    def test_get_odds_defaults_to_regions_when_bookmakers_not_given(self, tmp_path):
+        """Backward compatible: every existing caller that doesn't pass
+        bookmakers must keep sending regions exactly as before."""
+        from src.odds_api_client import OddsAPIClient
+        client = OddsAPIClient(api_key="test-key", cache_dir=str(tmp_path))
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+            def json(self): return [{"id": "g1"}]
+            def raise_for_status(self): pass
+
+        def fake_get(url, params=None, timeout=None):
+            captured["params"] = params
+            return FakeResponse()
+
+        client.session.get = fake_get
+        client.get_odds(sport_key="baseball_mlb", regions="us", markets="h2h")
+        assert captured["params"]["regions"] == "us"
+        assert "bookmakers" not in captured["params"]
+
     def test_get_odds_omits_commence_time_params_when_not_given(self, tmp_path):
         """Backward compatible: existing callers that don't pass a window
         (there were none before 2026-08-22, but the param is optional)

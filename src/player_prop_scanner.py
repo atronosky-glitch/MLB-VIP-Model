@@ -40,6 +40,7 @@ from .pinnacle_feed import (
     build_pinnacle_game_lookup, inject_pinnacle_game_reference,
     PINNACLE_STATUS_NO_PROPS_POSTED,
 )
+from .odds_api_pinnacle_feed import OddsAPIPinnacleClient
 from .validation_constants import APPROVED_STATUSES
 from database.db_manager import get_connection, create_run, finish_run, save_player_prop_batch
 
@@ -640,21 +641,36 @@ def run_scan(
 
     # Inject Pinnacle reference prices into O/U groups (both player props
     # and game markets — moneyline/spread/total) so the frozen Pinnacle
-    # value model can compute a no-vig reference. Multi-league as of
-    # 2026-08-23: MLB, NFL, and WNBA are all live on this feed (NFL has
-    # zero specials posted yet this far before its season opener — real,
-    # not a bug). The feed client caches one raw payload per league (5-min
-    # TTL) and rate-limits live calls, so allow_fetch=True is safe for
-    # every scan: a fresh cache never touches the network, and a stale
-    # cache refetches sharp prices even for cached/research scans
-    # (otherwise those runs silently have no Pinnacle reference at all).
+    # value model can compute a no-vig reference.
+    #
+    # Two independent sources, tried in priority order (added 2026-08-26
+    # after an operator audit found the paid Odds-API plan — bought
+    # specifically for Pinnacle access — was never reaching it, since
+    # every existing Odds-API call in this codebase hardcodes
+    # regions="us" and Pinnacle is classified under "eu"):
+    #   1. The Odds API's own "pinnacle" bookmaker (src/odds_api_pinnacle_
+    #      feed.py), targeted directly via bookmakers=pinnacle rather than
+    #      the whole eu region — now primary since it's what the paid plan
+    #      is actually for.
+    #   2. Direct pinnapi.com (src/pinnacle_feed.py) — unchanged, tried
+    #      second, for whatever the first source doesn't cover (confirmed
+    #      live: alternate lines, and some player-prop markets).
+    # inject_pinnacle_reference/inject_pinnacle_game_reference already
+    # skip a side that already has a "pinnacle" entry, so calling them
+    # for each source in this order both implements the priority (source
+    # 1 wins whenever it has data) and guarantees a source-2 failure
+    # (e.g. the direct-pinnapi auth outage) can never remove or corrupt
+    # what source 1 already supplied — no change to that merge logic
+    # itself, only to which sources feed it and in what order.
     pinnacle_reference_injected = 0
     pinnacle_stale_skipped = 0
     # Per-data-type fetch/match funnel, surfaced in PINNACLE_PROPS_STATUS/
     # PINNACLE_GAME_ODDS_STATUS below (added 2026-08-23, requirement:
     # distinguish "genuinely nothing posted" from an actual fetch/parse/
     # auth/rate-limit failure, and log fetched/matched/stale/unmatched
-    # counts rather than a single collapsed "parsed=0").
+    # counts rather than a single collapsed "parsed=0"). These now track
+    # source 1 (Odds-API Pinnacle); the *_direct_pinnapi_* variants below
+    # track source 2, kept separate for diagnostics per source.
     pinnacle_props_status = "disabled"
     pinnacle_props_fetched = 0
     pinnacle_props_matched = 0
@@ -663,6 +679,59 @@ def run_scan(
     pinnacle_game_odds_fetched = 0
     pinnacle_game_odds_matched = 0
     pinnacle_game_odds_stale = 0
+    pinnacle_direct_props_status = "disabled"
+    pinnacle_direct_props_fetched = 0
+    pinnacle_direct_props_matched = 0
+    pinnacle_direct_game_odds_status = "disabled"
+    pinnacle_direct_game_odds_fetched = 0
+    pinnacle_direct_game_odds_matched = 0
+
+    # -- Source 1: The Odds API's own "pinnacle" bookmaker (primary) ----
+    if cfg.ODDS_API_PINNACLE_ENABLED:
+        _oap_client = OddsAPIPinnacleClient()
+        _oap_conn = None
+        try:
+            _oap_conn = get_connection()
+        except Exception:
+            logger.debug("Could not open connection for Odds-API Pinnacle credit tracking")
+        try:
+            try:
+                _oap_props = _oap_client.get_player_props(league=league, conn=_oap_conn)
+            except Exception:
+                logger.exception("Odds-API Pinnacle (props) unavailable")
+                _oap_props = None
+            pinnacle_props_status = _oap_client.last_props_status.get(league, "unknown")
+            if _oap_props:
+                pinnacle_props_fetched = len(_oap_props)
+                _oap_lookup = build_pinnacle_lookup(_oap_props)
+                pinnacle_props_matched, _stale = inject_pinnacle_reference(
+                    ou_groups, event_map, _oap_lookup, league=league,
+                )
+                pinnacle_reference_injected += pinnacle_props_matched
+                pinnacle_stale_skipped += _stale
+                pinnacle_props_stale = _stale
+
+            try:
+                _oap_games = _oap_client.get_game_odds(league=league, conn=_oap_conn)
+            except Exception:
+                logger.exception("Odds-API Pinnacle (game odds) unavailable")
+                _oap_games = None
+            pinnacle_game_odds_status = _oap_client.last_fetch_status.get(league, "unknown")
+            if _oap_games:
+                pinnacle_game_odds_fetched = len(_oap_games)
+                _oap_game_lookup = build_pinnacle_game_lookup(_oap_games)
+                pinnacle_game_odds_matched, _stale = inject_pinnacle_game_reference(
+                    ou_groups, event_map, _oap_game_lookup,
+                )
+                pinnacle_reference_injected += pinnacle_game_odds_matched
+                pinnacle_stale_skipped += _stale
+                pinnacle_game_odds_stale = _stale
+        finally:
+            if _oap_conn is not None:
+                _oap_conn.close()
+
+    # -- Source 2: direct pinnapi.com (fallback, for whatever source 1 --
+    # -- doesn't cover — alternate lines, some prop markets) ------------
     if cfg.PINNACLE_FEED_ENABLED and league in cfg.PINNACLE_SPORT_ID_BY_LEAGUE:
         _pinnacle_client = PinnacleFeedClient()
         try:
@@ -670,17 +739,16 @@ def run_scan(
         except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
             logger.warning("Pinnacle feed (props) unavailable: %s", exc)
             _pinnacle_props = None
-        pinnacle_props_status = _pinnacle_client.last_props_status.get(league, "unknown")
+        pinnacle_direct_props_status = _pinnacle_client.last_props_status.get(league, "unknown")
         if _pinnacle_props:
-            pinnacle_props_fetched = len(_pinnacle_props)
+            pinnacle_direct_props_fetched = len(_pinnacle_props)
             _pinnacle_lookup = build_pinnacle_lookup(_pinnacle_props)
-            pinnacle_props_matched, _stale = inject_pinnacle_reference(
+            pinnacle_direct_props_matched, _stale = inject_pinnacle_reference(
                 ou_groups, event_map, _pinnacle_lookup, league=league,
             )
-            pinnacle_reference_injected += pinnacle_props_matched
+            pinnacle_reference_injected += pinnacle_direct_props_matched
             pinnacle_stale_skipped += _stale
-            pinnacle_props_stale = _stale
-        elif pinnacle_props_status == PINNACLE_STATUS_NO_PROPS_POSTED:
+        elif pinnacle_direct_props_status == PINNACLE_STATUS_NO_PROPS_POSTED:
             logger.info(
                 "PINNACLE_PROPS_STATUS league=%s status=no_props_currently_posted "
                 "(real — Pinnacle has not posted player-prop specials for this "
@@ -690,8 +758,8 @@ def run_scan(
         else:
             logger.warning(
                 "PINNACLE_PROPS_STATUS league=%s status=%s (fetch/parse failure — "
-                "falling back to LOO consensus for props)",
-                league, pinnacle_props_status,
+                "falling back to LOO consensus for whatever source 1 didn't cover)",
+                league, pinnacle_direct_props_status,
             )
 
         try:
@@ -699,42 +767,41 @@ def run_scan(
         except Exception as exc:  # noqa: BLE001 - a dead feed must never block a scan
             logger.warning("Pinnacle feed (game odds) unavailable: %s", exc)
             _pinnacle_games = None
-        pinnacle_game_odds_status = _pinnacle_client.last_fetch_status.get(league, "unknown")
+        pinnacle_direct_game_odds_status = _pinnacle_client.last_fetch_status.get(league, "unknown")
         if _pinnacle_games:
-            pinnacle_game_odds_fetched = len(_pinnacle_games)
+            pinnacle_direct_game_odds_fetched = len(_pinnacle_games)
             _pinnacle_game_lookup = build_pinnacle_game_lookup(_pinnacle_games)
-            pinnacle_game_odds_matched, _stale = inject_pinnacle_game_reference(
+            pinnacle_direct_game_odds_matched, _stale = inject_pinnacle_game_reference(
                 ou_groups, event_map, _pinnacle_game_lookup,
             )
-            pinnacle_reference_injected += pinnacle_game_odds_matched
+            pinnacle_reference_injected += pinnacle_direct_game_odds_matched
             pinnacle_stale_skipped += _stale
-            pinnacle_game_odds_stale = _stale
         else:
             logger.warning(
                 "PINNACLE_GAME_ODDS_STATUS league=%s status=%s",
-                league, pinnacle_game_odds_status,
+                league, pinnacle_direct_game_odds_status,
             )
 
-        logger.info(
-            "PINNACLE_PROPS_FUNNEL league=%s status=%s fetched=%d matched=%d "
-            "stale_rejected=%d unmatched=%d",
-            league, pinnacle_props_status, pinnacle_props_fetched,
-            pinnacle_props_matched, pinnacle_props_stale,
-            max(0, pinnacle_props_fetched - pinnacle_props_matched - pinnacle_props_stale),
-        )
-        logger.info(
-            "PINNACLE_GAME_ODDS_FUNNEL league=%s status=%s fetched=%d matched=%d "
-            "stale_rejected=%d unmatched=%d",
-            league, pinnacle_game_odds_status, pinnacle_game_odds_fetched,
-            pinnacle_game_odds_matched, pinnacle_game_odds_stale,
-            max(0, pinnacle_game_odds_fetched - pinnacle_game_odds_matched - pinnacle_game_odds_stale),
-        )
+    logger.info(
+        "PINNACLE_PROPS_FUNNEL league=%s odds_api_status=%s odds_api_fetched=%d "
+        "odds_api_matched=%d direct_pinnapi_status=%s direct_pinnapi_fetched=%d "
+        "direct_pinnapi_matched=%d",
+        league, pinnacle_props_status, pinnacle_props_fetched, pinnacle_props_matched,
+        pinnacle_direct_props_status, pinnacle_direct_props_fetched, pinnacle_direct_props_matched,
+    )
+    logger.info(
+        "PINNACLE_GAME_ODDS_FUNNEL league=%s odds_api_status=%s odds_api_fetched=%d "
+        "odds_api_matched=%d direct_pinnapi_status=%s direct_pinnapi_fetched=%d "
+        "direct_pinnapi_matched=%d",
+        league, pinnacle_game_odds_status, pinnacle_game_odds_fetched, pinnacle_game_odds_matched,
+        pinnacle_direct_game_odds_status, pinnacle_direct_game_odds_fetched, pinnacle_direct_game_odds_matched,
+    )
 
-        if pinnacle_reference_injected:
-            print(
-                f"  Pinnacle reference injected into {pinnacle_reference_injected} "
-                f"O/U groups"
-            )
+    if pinnacle_reference_injected:
+        print(
+            f"  Pinnacle reference injected into {pinnacle_reference_injected} "
+            f"O/U groups"
+        )
         if pinnacle_stale_skipped:
             logger.warning(
                 "PINNACLE_STALE_TOTAL league=%s skipped=%d (older than %ds, fell back to LOO consensus)",
@@ -814,6 +881,7 @@ def run_scan(
                 "pinnacle_line": analysis.get("line") if analysis.get("pinnacle_reference_used") else None,
                 "pinnacle_over_price": analysis.get("pinnacle_over_price"),
                 "pinnacle_under_price": analysis.get("pinnacle_under_price"),
+                "pinnacle_source": analysis.get("pinnacle_source"),
                 "observation_time": max(gdata.get("observation_times") or [""]),
             }
             opportunities.append(opp)
@@ -844,6 +912,16 @@ def run_scan(
     pinnacle_summary["pinnacle_game_odds_unmatched"] = max(
         0, pinnacle_game_odds_fetched - pinnacle_game_odds_matched - pinnacle_game_odds_stale
     )
+    # Source-2 (direct pinnapi.com) funnel, kept separate from the
+    # source-1 (Odds-API Pinnacle) keys above — added 2026-08-26 so
+    # diagnostics can show exactly what each real feed contributed, not
+    # just a combined total.
+    pinnacle_summary["direct_pinnapi_props_status"] = pinnacle_direct_props_status
+    pinnacle_summary["direct_pinnapi_props_fetched"] = pinnacle_direct_props_fetched
+    pinnacle_summary["direct_pinnapi_props_matched"] = pinnacle_direct_props_matched
+    pinnacle_summary["direct_pinnapi_game_odds_status"] = pinnacle_direct_game_odds_status
+    pinnacle_summary["direct_pinnapi_game_odds_fetched"] = pinnacle_direct_game_odds_fetched
+    pinnacle_summary["direct_pinnapi_game_odds_matched"] = pinnacle_direct_game_odds_matched
     _log_pinnacle_summary(pinnacle_summary)
 
     # YN groups formed (debug)

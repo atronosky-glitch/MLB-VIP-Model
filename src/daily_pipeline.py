@@ -809,6 +809,7 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
                     "pinnacle_line": opp.get("pinnacle_line"),
                     "pinnacle_over_price": opp.get("pinnacle_over_price"),
                     "pinnacle_under_price": opp.get("pinnacle_under_price"),
+                    "pinnacle_source": opp.get("pinnacle_source"),
                     "pinnacle_fair_prob": opp.get("pinnacle_fair_prob"),
                     "pinnacle_ev": opp.get("pinnacle_ev"),
                     "pinnacle_prob_edge": opp.get("pinnacle_prob_edge"),

@@ -126,6 +126,13 @@ class PinnacleProp:
     # per-price one), consistently under ~30s old in normal operation.
     # None if pinnapi omits the field (never guessed/reconstructed).
     last_updated: float | None = None
+    # Which real feed actually produced this quote — added 2026-08-26 so
+    # diagnostics can show provenance even though the downstream engine
+    # always sees a book literally named "pinnacle" regardless of source
+    # (see src/odds_api_pinnacle_feed.py for the other producer of this
+    # same dataclass). Defaults to "direct_pinnapi" since every call site
+    # in this module predates the second source.
+    source: str = "direct_pinnapi"
 
 
 @dataclass(frozen=True)
@@ -158,6 +165,8 @@ class PinnacleGameOdds:
     # event — see PinnacleProp.last_updated for the same field's meaning
     # and caveats (payload-wide, not genuinely per-price).
     last_updated: float | None = None
+    # See PinnacleProp.source's docstring — same provenance field, same default.
+    source: str = "direct_pinnapi"
 
 
 # ======================================================================
@@ -576,6 +585,8 @@ def inject_pinnacle_reference(
                 "decimal_odds": round(float(decimal), 4),
                 "line": gdata.get("line"),
                 "validation_status": "VALID",
+                "pinnacle_source": pin.source,
+                "pinnacle_last_updated": pin.last_updated,
             }
         injected += 1
     return injected, stale_skipped
@@ -697,6 +708,8 @@ def inject_pinnacle_game_reference(
                 "decimal_odds": round(float(decimal), 4),
                 "line": gdata.get("line"),
                 "validation_status": "VALID",
+                "pinnacle_source": pin.source,
+                "pinnacle_last_updated": pin.last_updated,
             }
         injected += 1
     return injected, stale_skipped

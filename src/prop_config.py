@@ -218,6 +218,42 @@ PINNACLE_LEAGUE_NAME_BY_LEAGUE = {
     "WNBA": "WNBA",
 }
 
+# ── The Odds API's own Pinnacle bookmaker (added 2026-08-26) ───────
+#
+# The operator's paid Odds-API plan includes Pinnacle as a real
+# bookmaker — confirmed live 2026-08-26 for MLB/WNBA moneyline, spread,
+# total, and several player-prop markets. It was never reachable before
+# this because every existing Odds-API call in this codebase hardcodes
+# `regions="us"`, and Pinnacle is classified under `eu`, never `us`.
+#
+# This is now the PRIMARY Pinnacle source (src/odds_api_pinnacle_feed.py)
+# — a targeted `bookmakers=pinnacle` request (not the whole `eu` region,
+# to avoid pulling in dozens of irrelevant European books and to keep
+# the credit cost identical to a single extra region: The Odds API's own
+# docs state up to 10 explicitly-named books count as one region for
+# quota purposes). Direct pinnapi.com (PINNACLE_FEED_ENABLED above)
+# remains a fallback for whatever this source doesn't cover (confirmed
+# live: alternate lines are not available from Pinnacle via The Odds
+# API) — see src/pinnacle_feed.py's inject_pinnacle_reference /
+# inject_pinnacle_game_reference, which already skip injection whenever
+# a "pinnacle" entry is already present, so trying this source first and
+# direct pinnapi second requires no change to that non-destructive
+# merge behavior.
+ODDS_API_PINNACLE_ENABLED = True
+ODDS_API_PINNACLE_BOOKMAKER_KEY = "pinnacle"
+# 600s (10 min), not the direct feed's 300s: this bounds the worst case
+# under a burst of back-to-back scans (confirmed happening in real
+# production logs) to roughly one fetch per event per 10 minutes,
+# without ever risking serving data older than
+# PINNACLE_MAX_STALENESS_SECONDS (900s) — the injection-side staleness
+# check would reject it before use anyway. It does NOT eliminate cost
+# scaling with real scan cadence when that cadence is itself longer than
+# 10 minutes (confirmed live: MLB scans roughly every 20-40 min) — see
+# the credit-cost estimate in docs/DECISIONS.md. credit_budget_check()
+# (already wired into the props fetch loop) is the real backstop against
+# this ever silently overspending the shared monthly budget.
+ODDS_API_PINNACLE_CACHE_TTL_SECONDS = 600
+
 # league -> {pinnapi special_units -> our market_type_ou}, for Player
 # Props specials. Verified live 2026-08-23 against real posted props
 # (see docs/DECISIONS.md "Pinnacle wired in for all 3 leagues" for the

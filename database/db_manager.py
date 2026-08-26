@@ -893,6 +893,12 @@ def init_db(db_path: str | None = None) -> None:
         ("pinnacle_fair_prob", "REAL"),
         ("pinnacle_ev", "REAL"),
         ("pinnacle_prob_edge", "REAL"),
+        # Provenance: which real feed produced this Pinnacle quote —
+        # "odds_api_pinnacle" or "direct_pinnapi" (2026-08-26, added
+        # alongside The Odds API becoming a second, primary Pinnacle
+        # source). NULL for rows saved before this column existed or
+        # where pinnacle_found is False.
+        ("pinnacle_source", "TEXT"),
         ("is_official", "INTEGER DEFAULT 0"),
         ("confidence_score", "REAL"),
         ("reliable_ev_checked", "INTEGER DEFAULT 0"),
@@ -1805,6 +1811,7 @@ def _persist_recommendation_evidence(conn: DB, recommendation_id: str, rec: dict
         "pinnacle_fair_prob": rec.get("pinnacle_fair_prob"),
         "pinnacle_ev": rec.get("pinnacle_ev"),
         "pinnacle_prob_edge": rec.get("pinnacle_prob_edge"),
+        "pinnacle_source": rec.get("pinnacle_source"),
         "is_official": 1 if rec.get("is_official") else 0,
         "confidence_score": rec.get("confidence_score"),
         "reliable_ev_checked": 1 if rec.get("reliable_ev_checked") else 0,

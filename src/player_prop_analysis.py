@@ -414,10 +414,18 @@ def analyze_prop_group(
     pinnacle_over_price = None
     pinnacle_under_price = None
 
+    pinnacle_source = None
     if use_pinnacle_ref:
         # Pinnacle no-vig probability becomes the fair reference for all books
         pinnacle_over_price = over_prices[pinnacle_over_book]["price"]
         pinnacle_under_price = under_prices[pinnacle_under_book]["price"]
+        # Provenance (odds_api_pinnacle / direct_pinnapi) — both injectors
+        # write the same key; an organically-fetched (never injected)
+        # pinnacle book has no such key, so this stays None for that case.
+        pinnacle_source = (
+            over_prices[pinnacle_over_book].get("pinnacle_source")
+            or under_prices[pinnacle_under_book].get("pinnacle_source")
+        )
         nv_prob_over, nv_prob_under = calculate_no_vig_probs(
             pinnacle_over_price, pinnacle_under_price)
         total_prob = (american_to_implied_prob(pinnacle_over_price)
@@ -729,6 +737,7 @@ def analyze_prop_group(
         "pinnacle_book": pinnacle_over_book,
         "pinnacle_over_price": pinnacle_over_price,
         "pinnacle_under_price": pinnacle_under_price,
+        "pinnacle_source": pinnacle_source,
         "official_count": len(official_books),
         "books": books,
         "best_ev": best_ev,
@@ -761,6 +770,7 @@ def _empty_result(group_key, over_prices, under_prices,
         "pinnacle_book": None,
         "pinnacle_over_price": None,
         "pinnacle_under_price": None,
+        "pinnacle_source": None,
         "official_count": 0,
         "books": [],
         "best_ev": None,

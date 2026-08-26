@@ -864,3 +864,135 @@ def test_nonempty_props_cache_uses_normal_full_ttl(tmp_path, monkeypatch):
     monkeypatch.setattr(client, "_fetch_raw", _explode)
     props = client.get_player_props(league="MLB", allow_fetch=True)
     assert props is not None and len(props) == 3
+
+
+# ==================================================================
+# Two-source priority: The Odds API Pinnacle (primary) vs direct
+# pinnapi.com (fallback) — added 2026-08-26. inject_pinnacle_reference/
+# inject_pinnacle_game_reference are source-agnostic (they only look at
+# whether "pinnacle" is already in gdata[side]), so calling them once
+# per source in priority order is what actually implements "try Odds-API
+# Pinnacle first, direct pinnapi.com only for whatever it doesn't cover,
+# and never let one source's failure remove or corrupt the other's
+# data" — these tests exercise exactly that two-call sequence, the real
+# shape src/player_prop_scanner.py now uses.
+# ==================================================================
+
+def _odds_api_prop(line: float = 6.5) -> PinnacleProp:
+    return PinnacleProp(
+        home_name="Kansas City Royals", away_name="Detroit Tigers",
+        player_name="Shota Imanaga", unit="Strikeouts", line=line,
+        over_decimal=1.80, under_decimal=2.10,
+        over_american=-125, under_american=110,
+        last_updated=None, source="odds_api_pinnacle",
+    )
+
+
+def _direct_pinnapi_prop(line: float = 6.5) -> PinnacleProp:
+    return PinnacleProp(
+        home_name="Kansas City Royals", away_name="Detroit Tigers",
+        player_name="Shota Imanaga", unit="Strikeouts", line=line,
+        over_decimal=1.87, under_decimal=1.98,
+        over_american=-115, under_american=-102,
+        last_updated=None, source="direct_pinnapi",
+    )
+
+
+def test_odds_api_pinnacle_wins_when_both_sources_cover_the_same_group():
+    """Source 1 (Odds-API Pinnacle) is tried first; source 2 (direct
+    pinnapi.com) must not overwrite it, per the existing non-destructive
+    injection guard — this is what makes it the PRIMARY source, not a
+    coin-flip between two feeds."""
+    groups = {"k1": _make_group()}
+    event_map = _make_event_map()
+
+    odds_api_lookup = build_pinnacle_lookup([_odds_api_prop()])
+    inject_pinnacle_reference(groups, event_map, odds_api_lookup, league="MLB")
+
+    direct_lookup = build_pinnacle_lookup([_direct_pinnapi_prop()])
+    inject_pinnacle_reference(groups, event_map, direct_lookup, league="MLB")
+
+    pin_over = groups["k1"]["over"]["pinnacle"]
+    assert pin_over["pinnacle_source"] == "odds_api_pinnacle"
+    assert pin_over["price"] == -125  # the odds-api-sourced price, not direct pinnapi's -115
+
+
+def test_direct_pinnapi_fills_in_when_odds_api_has_no_data_for_the_group():
+    """A group Odds-API Pinnacle doesn't cover (e.g. a market it doesn't
+    carry) must still get direct pinnapi.com's reference — the fallback
+    half of the priority order."""
+    groups = {"k1": _make_group()}
+    event_map = _make_event_map()
+
+    empty_odds_api_lookup = build_pinnacle_lookup([])  # source 1 found nothing
+    inject_pinnacle_reference(groups, event_map, empty_odds_api_lookup, league="MLB")
+    assert "pinnacle" not in groups["k1"]["over"]
+
+    direct_lookup = build_pinnacle_lookup([_direct_pinnapi_prop()])
+    inject_pinnacle_reference(groups, event_map, direct_lookup, league="MLB")
+
+    pin_over = groups["k1"]["over"]["pinnacle"]
+    assert pin_over["pinnacle_source"] == "direct_pinnapi"
+    assert pin_over["price"] == -115
+
+
+def test_direct_pinnapi_failure_does_not_remove_odds_api_pinnacle_data():
+    """The exact scenario the operator asked to be verified: a direct
+    PINNAPI auth failure (represented here as source 2 simply having no
+    data — the same effective outcome as a fetch/auth failure, since
+    both leave its lookup empty) must never make an already-injected
+    Odds-API Pinnacle reference disappear."""
+    groups = {"k1": _make_group()}
+    event_map = _make_event_map()
+
+    odds_api_lookup = build_pinnacle_lookup([_odds_api_prop()])
+    inject_pinnacle_reference(groups, event_map, odds_api_lookup, league="MLB")
+    assert groups["k1"]["over"]["pinnacle"]["pinnacle_source"] == "odds_api_pinnacle"
+
+    empty_direct_lookup = build_pinnacle_lookup([])  # simulates a dead/auth-failed direct feed
+    inject_pinnacle_reference(groups, event_map, empty_direct_lookup, league="MLB")
+
+    pin_over = groups["k1"]["over"]["pinnacle"]
+    assert pin_over["pinnacle_source"] == "odds_api_pinnacle"
+    assert pin_over["price"] == -125
+
+
+def test_game_reference_injection_carries_the_same_source_priority():
+    """Same priority/non-destructive behavior for game markets
+    (moneyline/spread/total) via inject_pinnacle_game_reference, not
+    just player props."""
+    from src.pinnacle_feed import PinnacleGameOdds
+
+    groups = {
+        "g1": {
+            "over": {"draftkings": {"price": -110, "decimal_odds": 1.9091,
+                                     "line": None, "validation_status": "VALID"}},
+            "under": {"draftkings": {"price": -110, "decimal_odds": 1.9091,
+                                      "line": None, "validation_status": "VALID"}},
+            "line": None, "player_id": "GAME", "event_id": "ev100",
+            "market_type": "game_moneyline",
+        },
+    }
+    event_map = _make_event_map()
+
+    odds_api_game = PinnacleGameOdds(
+        home_name="Kansas City Royals", away_name="Detroit Tigers",
+        market_type="game_moneyline", line=None,
+        home_decimal=1.90, away_decimal=1.95,
+        over_decimal=None, under_decimal=None,
+        last_updated=None, source="odds_api_pinnacle",
+    )
+    direct_game = PinnacleGameOdds(
+        home_name="Kansas City Royals", away_name="Detroit Tigers",
+        market_type="game_moneyline", line=None,
+        home_decimal=1.80, away_decimal=2.05,
+        over_decimal=None, under_decimal=None,
+        last_updated=None, source="direct_pinnapi",
+    )
+
+    inject_pinnacle_game_reference(groups, event_map, build_pinnacle_game_lookup([odds_api_game]))
+    inject_pinnacle_game_reference(groups, event_map, build_pinnacle_game_lookup([direct_game]))
+
+    # moneyline: away=over, home=under (same convention inject_pinnacle_game_reference uses)
+    assert groups["g1"]["over"]["pinnacle"]["pinnacle_source"] == "odds_api_pinnacle"
+    assert groups["g1"]["over"]["pinnacle"]["decimal_odds"] == 1.95

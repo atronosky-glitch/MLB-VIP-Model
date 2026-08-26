@@ -126,9 +126,24 @@ class OddsAPIClient:
         odds_format: str = "american",
         commence_time_from: str | None = None,
         commence_time_to: str | None = None,
+        bookmakers: str | None = None,
     ) -> tuple[list, bool]:
         """Game-level odds for every upcoming event. Costs
-        ``len(markets.split(',')) * len(regions.split(','))`` credits.
+        ``len(markets.split(',')) * len(regions.split(','))`` credits —
+        or, when *bookmakers* is given, ``len(markets.split(','))`` (up to
+        10 explicitly named books count as a single region for quota
+        purposes, per The Odds API's docs — confirmed live 2026-08-26:
+        a 3-market ``bookmakers=pinnacle`` call cost exactly 3 credits,
+        identical to a single-region call).
+
+        *bookmakers* takes priority over *regions* (also per the docs —
+        confirmed live) and is how Pinnacle is actually reached: it is
+        classified under the ``eu`` region, never ``us``, so every
+        existing ``regions="us"`` caller in this codebase has never
+        fetched it. Passing *bookmakers* omits *regions* from the
+        request entirely rather than sending both, matching the
+        documented precedence instead of relying on the API to resolve
+        an ambiguous combination.
 
         *commence_time_from*/*commence_time_to* are real, documented
         params (ISO 8601, e.g. ``2026-08-22T00:00:00Z``) — without them
@@ -142,7 +157,11 @@ class OddsAPIClient:
         the next ~24h of real games) — still worth passing explicitly for
         any sport where that assumption might not hold.
         """
-        params = {"regions": regions, "markets": markets, "oddsFormat": odds_format}
+        params = {"markets": markets, "oddsFormat": odds_format}
+        if bookmakers:
+            params["bookmakers"] = bookmakers
+        else:
+            params["regions"] = regions
         if commence_time_from:
             params["commenceTimeFrom"] = commence_time_from
         if commence_time_to:
@@ -156,12 +175,17 @@ class OddsAPIClient:
         regions: str = "us",
         markets: str = "player_points,player_rebounds,player_assists,player_threes",
         odds_format: str = "american",
+        bookmakers: str | None = None,
     ) -> tuple[dict, bool]:
-        """Per-event odds (used for player props). Same credit formula as
-        get_odds, charged once per event fetched this way."""
-        return self._get(f"/sports/{sport_key}/events/{event_id}/odds", params={
-            "regions": regions, "markets": markets, "oddsFormat": odds_format,
-        })
+        """Per-event odds (used for player props). Same credit formula —
+        and same *bookmakers*-takes-priority-over-*regions* behavior — as
+        get_odds; see that docstring."""
+        params = {"markets": markets, "oddsFormat": odds_format}
+        if bookmakers:
+            params["bookmakers"] = bookmakers
+        else:
+            params["regions"] = regions
+        return self._get(f"/sports/{sport_key}/events/{event_id}/odds", params=params)
 
     # ------------------------------------------------------------------
     # Internal helpers
