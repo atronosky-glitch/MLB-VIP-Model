@@ -293,7 +293,7 @@ def _group_side(side: str, market_type: str, registry: list | None = None) -> st
 def run_scan(
     mode: str = "actionable",
     min_ev: float | None = None,
-    limit: int = 25,
+    limit: int | None = 25,
     market: str = "all",
     market_form: str = "all",
     sportsbook: str | None = None,
@@ -312,8 +312,25 @@ def run_scan(
     min_ev : float or None
         Override actionable EV threshold as decimal (e.g. 0.02 = 2%).
         Only applied to O/U markets.  Ignored (with warning) for YN.
-    limit : int
-        Maximum number of opportunities to return per form.
+    limit : int or None
+        Maximum number of opportunities to return per form (O/U and YN
+        each capped independently), applied AFTER sorting all markets
+        together by EV — meaning a small limit here is a GLOBAL,
+        market-blind cutoff, not a per-market-type one. Real bug found
+        live 2026-08-26: the production pipeline's limit=25 let ~90
+        same-day batting_homeRuns_ou opportunities (a high-volume, often
+        thin-book market whose EV is structurally larger and noisier —
+        see docs/DECISIONS.md) fill every slot before game or pitcher
+        markets — which had real, live actionable opportunities the
+        exact same scan — were ever considered, discarding them before
+        qualification ever ran. src/daily_pipeline.py's production call
+        now passes None here specifically so the scanner's own volume
+        never decides which market types survive — only mode's real
+        quality+EV gate does. None disables the cap entirely (returns
+        every opportunity that passed `mode`'s filter). CLI callers
+        (this module's own __main__, src/strikeout_scanner.py) keep
+        their existing default of 25 unchanged — this is about what the
+        automated pipeline receives, not human-readable CLI output.
     market : str
         Market CLI name (``"strikeouts"``, ``"outs"``, ``"all"``).
     market_form : str

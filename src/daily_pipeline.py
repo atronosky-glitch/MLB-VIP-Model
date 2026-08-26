@@ -641,7 +641,29 @@ def _stage_scan(config: PipelineConfig, state: PipelineState) -> bool:
             mode=mode,
             market=config.market,
             market_form=config.market_form,
-            limit=25,
+            # No cap here (2026-08-26, real bug found live): run_scan's
+            # limit is a GLOBAL, EV-sorted cutoff applied across every
+            # market type combined, not a per-market one. At the old
+            # limit=25, a high-volume market (batting_homeRuns_ou — many
+            # players x many books x often-thin 2-book groups whose EV
+            # is structurally larger and noisier) filled every slot
+            # before game or pitcher markets were ever considered, even
+            # on a scan where those markets had real, live actionable
+            # opportunities of their own — discarded before qualification
+            # ever ran, not because they failed any real gate. Passing
+            # None here means mode's own quality+EV filter is the only
+            # thing bounding what reaches _stage_freeze/qualification,
+            # which is the correct boundary: qualification should decide
+            # Research/Discovery/Official, not scanner volume. Safe:
+            # mode is always "actionable" in real production
+            # (PipelineConfig.actionable_only defaults True), and real
+            # measured volume there is ~100 opportunities across all MLB
+            # market types on a normal day (live-verified 2026-08-26),
+            # not the thousands mode="all" can return — _stage_freeze
+            # already iterates the full opportunity list unconditionally
+            # regardless of this cap, so there is no new work here, only
+            # less of it being silently thrown away first.
+            limit=None,
             event_id=config.event_id,
             league=config.league,
             fetch_props=config.fetch_props,

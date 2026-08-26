@@ -880,3 +880,306 @@ class TestSingleImplementation:
         # The wrapper should just delegate, not contain analyze_prop_group etc.
         assert "analyze_prop_group" not in src
         assert "analyze_yn_group" not in src
+
+
+# ==================================================================
+# Global EV-sorted limit no longer lets scan volume decide which
+# market types reach qualification (real bug found live 2026-08-26):
+# run_scan's old default caller (src/daily_pipeline.py) truncated the
+# EV-sorted, ALL-markets-combined opportunity list to 25 BEFORE
+# qualification ever ran. A high-volume, often-thin market (many
+# players x many books, structurally larger/noisier EV) could fill
+# every slot, discarding real, live actionable opportunities from
+# lower-volume markets (game odds: one group per market per game;
+# pitcher props: fewer distinct pitchers than batters) — not because
+# they failed any real gate, but because they were never even passed
+# to _stage_freeze. The fix: src/daily_pipeline.py's production call
+# now passes limit=None, so only mode's own quality+EV filter bounds
+# what reaches qualification.
+# ==================================================================
+
+def _sgo_ou_market(prefix: str, player_id: str, player_name: str,
+                    line: float, over_books: dict, under_books: dict) -> dict:
+    """One player's O/U market in real SportsGameOdds oddID-keyed shape
+    (over_books/under_books: {bookmaker: american_odds})."""
+    return {
+        f"{prefix}-{player_id}-game-ou-over": {
+            "playerID": player_id, "playerNames": {"full": player_name, "short": player_name},
+            "marketName": f"{player_name} Over/Under",
+            "byBookmaker": {
+                book: {"overUnder": line, "odds": odds, "available": True}
+                for book, odds in over_books.items()
+            },
+        },
+        f"{prefix}-{player_id}-game-ou-under": {
+            "playerID": player_id, "playerNames": {"full": player_name, "short": player_name},
+            "marketName": f"{player_name} Over/Under",
+            "byBookmaker": {
+                book: {"overUnder": line, "odds": odds, "available": True}
+                for book, odds in under_books.items()
+            },
+        },
+    }
+
+
+def _build_high_volume_batter_event(n_players: int = 100) -> dict:
+    """One real event with N distinct batting_homeRuns_ou groups, each
+    with exactly 2 books at a wide price spread — mirrors the real,
+    live 2026-08-26 pattern (thin 2-book home-run groups structurally
+    producing many high-EV-looking opportunities)."""
+    odds = {}
+    for i in range(n_players):
+        odds.update(_sgo_ou_market(
+            "batting_homeRuns", f"BATTER_{i}_MLB", f"Batter {i}", 0.5,
+            over_books={"betrivers": 450 + i, "williamhill": 500 + i},
+            under_books={"betrivers": -700 - i, "williamhill": -650 - i},
+        ))
+    return {
+        "eventID": "EVENT_HIGH_VOLUME_BATTERS",
+        "teams": {
+            "away": {"names": {"long": "Team A"}, "teamID": "TMA"},
+            "home": {"names": {"long": "Team B"}, "teamID": "TMB"},
+        },
+        "odds": odds,
+    }
+
+
+def _build_lower_ev_pitcher_event() -> dict:
+    """One real event with a single, well-covered (5-book) pitcher
+    strikeouts group at a modest, genuinely positive edge — the kind of
+    opportunity that should always be able to reach qualification, not
+    just when scan volume elsewhere happens to be low."""
+    odds = _sgo_ou_market(
+        "pitching_strikeouts", "PITCHER_1_MLB", "Test Pitcher", 5.5,
+        over_books={"fanduel": -110, "draftkings": -108, "betmgm": -112,
+                    "williamhill": -105, "caesars": -115},
+        under_books={"fanduel": -110, "draftkings": -112, "betmgm": -108,
+                     "williamhill": -115, "caesars": -105},
+    )
+    return {
+        "eventID": "EVENT_PITCHER",
+        "teams": {
+            "away": {"names": {"long": "Team C"}, "teamID": "TMC"},
+            "home": {"names": {"long": "Team D"}, "teamID": "TMD"},
+        },
+        "odds": odds,
+    }
+
+
+def _run_scan_with_mocked_sgo(events: list, mode: str = "all", **run_scan_kwargs):
+    """mode="all" by default: these tests are about whether an
+    opportunity SURVIVES the sort-then-truncate step at all (the exact
+    mechanism of the 2026-08-26 bug), not about precision-engineering
+    synthetic odds to clear mode="actionable"'s separate EV/quality
+    bar — that bar is exercised elsewhere. The sort+limit truncation
+    itself runs identically regardless of mode."""
+    from unittest.mock import patch, MagicMock
+    from src.player_prop_scanner import run_scan as _run_scan
+
+    fake_client = MagicMock()
+    fake_client.get_events.return_value = ({"data": events}, False)
+    with patch("src.player_prop_scanner.SportsGameOddsClient", return_value=fake_client), \
+         patch("src.player_prop_scanner.get_connection", return_value=MagicMock()), \
+         patch("src.player_prop_scanner.create_run", return_value=None), \
+         patch("src.player_prop_scanner.finish_run"), \
+         patch("src.player_prop_scanner.save_player_prop_batch"):
+        return _run_scan(league="MLB", mode=mode, fetch_props=False, **run_scan_kwargs)
+
+
+class TestGlobalLimitNoLongerBlocksLowVolumeMarkets:
+    def test_100_batter_opportunities_do_not_block_a_valid_pitcher_opportunity(self):
+        """The exact scenario requested: with limit=None (production's
+        real setting after the fix), a lower-EV but genuinely valid
+        pitcher opportunity must still reach the returned opportunities
+        even alongside 100 higher-EV batter ones."""
+        events = [_build_high_volume_batter_event(100), _build_lower_ev_pitcher_event()]
+        result = _run_scan_with_mocked_sgo(events, limit=None)
+        market_types = {o["market_type"] for o in result["opportunities"]}
+        assert "pitching_strikeouts_ou" in market_types
+
+    def test_old_limit_25_did_exclude_the_pitcher_opportunity(self):
+        """Confirms the bug actually existed with the OLD default
+        (limit=25) against the exact same data — proves the fix changed
+        real behavior, not just an unrelated code path."""
+        events = [_build_high_volume_batter_event(100), _build_lower_ev_pitcher_event()]
+        result = _run_scan_with_mocked_sgo(events, limit=25)
+        market_types = {o["market_type"] for o in result["opportunities"]}
+        assert "pitching_strikeouts_ou" not in market_types
+        assert len(result["opportunities"]) == 25
+
+    def test_batter_pitcher_and_game_markets_all_present_with_no_limit(self):
+        """Requirement 2: batter props, pitcher props, and game markets
+        can all reach the returned opportunities (and therefore
+        _stage_freeze) in the same scan."""
+        game_odds = _sgo_ou_market(
+            "game_total", "GAME", "Game Total", 8.5,
+            over_books={"fanduel": -105, "draftkings": -108, "betmgm": -102,
+                        "williamhill": -110, "caesars": -107},
+            under_books={"fanduel": -115, "draftkings": -112, "betmgm": -118,
+                         "williamhill": -110, "caesars": -113},
+        )
+        # game_total_ou groups player_id="GAME" via a different oddID
+        # grammar (points-*-game-ou-*), not the player-prop prefix
+        # style — build it directly in that shape instead.
+        game_event = {
+            "eventID": "EVENT_GAME_MARKET",
+            "teams": {
+                "away": {"names": {"long": "Team E"}, "teamID": "TME"},
+                "home": {"names": {"long": "Team F"}, "teamID": "TMF"},
+            },
+            "odds": {
+                "points-all-game-ou-over": {
+                    "statEntityID": "all", "marketName": "Total Runs Over/Under",
+                    "byBookmaker": {
+                        "fanduel": {"odds": "-105", "overUnder": 8.5, "available": True},
+                        "draftkings": {"odds": "-108", "overUnder": 8.5, "available": True},
+                        "betmgm": {"odds": "-102", "overUnder": 8.5, "available": True},
+                        "williamhill": {"odds": "-110", "overUnder": 8.5, "available": True},
+                        "caesars": {"odds": "-107", "overUnder": 8.5, "available": True},
+                    },
+                },
+                "points-all-game-ou-under": {
+                    "statEntityID": "all", "marketName": "Total Runs Over/Under",
+                    "byBookmaker": {
+                        "fanduel": {"odds": "-115", "overUnder": 8.5, "available": True},
+                        "draftkings": {"odds": "-112", "overUnder": 8.5, "available": True},
+                        "betmgm": {"odds": "-118", "overUnder": 8.5, "available": True},
+                        "williamhill": {"odds": "-110", "overUnder": 8.5, "available": True},
+                        "caesars": {"odds": "-113", "overUnder": 8.5, "available": True},
+                    },
+                },
+            },
+        }
+        events = [
+            _build_high_volume_batter_event(30),
+            _build_lower_ev_pitcher_event(),
+            game_event,
+        ]
+        result = _run_scan_with_mocked_sgo(events, limit=None, market="all", market_form="all")
+        market_types = {o["market_type"] for o in result["opportunities"]}
+        assert "batting_homeRuns_ou" in market_types
+        assert "pitching_strikeouts_ou" in market_types
+        assert "game_total_ou" in market_types
+
+        # Requirement 2, taken literally: these must reach _stage_freeze
+        # itself, not just run_scan's return value.
+        from database.db_manager import init_db, get_connection
+        from src.daily_pipeline import _stage_freeze, PipelineConfig, PipelineState
+        db_path = "scratch_market_diversity_freeze_test.db"
+        import os
+        if os.path.exists(db_path):
+            os.remove(db_path)
+        try:
+            init_db(db_path)
+            conn = get_connection(db_path)
+            for eid, away, home in [("EVENT_HIGH_VOLUME_BATTERS", "Team A", "Team B"),
+                                     ("EVENT_PITCHER", "Team C", "Team D"),
+                                     ("EVENT_GAME_MARKET", "Team E", "Team F")]:
+                conn.execute(
+                    "INSERT INTO games (event_id, away_team, home_team, start_time, status) "
+                    "VALUES (?, ?, ?, '2099-01-01T19:00:00Z', 'scheduled')",
+                    (eid, away, home),
+                )
+            conn.commit()
+            conn.close()
+
+            config = PipelineConfig(dry_run=False, output_dir="scratch_output")
+            state = PipelineState()
+            state.scan_run_id = "run-market-diversity-test"
+            state.scan_result = {"opportunities": result["opportunities"], "yn_opportunities": []}
+            from unittest.mock import patch as _patch
+            with _patch(
+                "src.daily_pipeline.get_connection", lambda *a, **kw: get_connection(db_path),
+            ):
+                assert _stage_freeze(config, state) is True
+
+            conn = get_connection(db_path)
+            saved_market_types = {
+                r["market_type"] for r in conn.execute(
+                    "SELECT DISTINCT market_type FROM historical_recommendations "
+                    "WHERE scan_run_id = 'run-market-diversity-test'"
+                ).fetchall()
+            }
+            conn.close()
+            assert "batting_homeRuns_ou" in saved_market_types
+            assert "pitching_strikeouts_ou" in saved_market_types
+            assert "game_total_ou" in saved_market_types
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+            import shutil
+            shutil.rmtree("scratch_output", ignore_errors=True)
+
+    def test_ev_values_are_identical_regardless_of_limit(self):
+        """Requirement 3: the limit truncates WHICH opportunities are
+        returned, never HOW they're calculated — the same surviving
+        opportunity must show byte-identical ev_pct/fair_prob under
+        limit=25 and limit=None."""
+        events = [_build_high_volume_batter_event(5)]
+        unlimited = _run_scan_with_mocked_sgo(events, limit=None)
+        limited = _run_scan_with_mocked_sgo(events, limit=25)
+
+        def _key(o):
+            return (o["event_id"], o["player_id"], o["line"], o["side"], o["sportsbook"])
+
+        limited_by_key = {_key(o): o for o in limited["opportunities"]}
+        assert limited_by_key  # sanity: fixture actually produced opportunities
+        for opp in unlimited["opportunities"]:
+            k = _key(opp)
+            if k in limited_by_key:
+                assert opp["ev_pct"] == limited_by_key[k]["ev_pct"]
+                assert opp["fair_prob"] == limited_by_key[k]["fair_prob"]
+
+    def test_official_publishing_caps_still_hold_with_a_much_larger_candidate_pool(self):
+        """Requirement 4: with the scanner no longer artificially
+        shrinking the candidate pool, rank_and_select_official_picks
+        must still enforce official_daily_max_picks, max-per-game, and
+        max-per-player — the caps that actually decide what gets
+        published must not silently become "select everything" just
+        because more real candidates now reach them."""
+        from src.official_picks import rank_and_select_official_picks, DEFAULT_CONFIG
+
+        def _cand(i, event_id, player_id, market_type):
+            return {
+                "recommendation_id": f"r{i}", "event_id": event_id,
+                "event_start_time": "2026-08-26T19:00:00Z",
+                "player_id": player_id, "player_name": f"Player {i}",
+                "market_type": market_type, "market_form": "ou", "period": "game",
+                "line": 1.5, "side": "over", "sportsbook": "draftkings",
+                "model_score": 9.0 - i * 0.01,  # every one is a strong, distinct candidate
+                "ev_pct": 8.0 - i * 0.01, "n_consensus_books": 5,
+                "freshness_status": "FRESH",
+            }
+
+        candidates = []
+        i = 0
+        for market_type in ("batting_totalBases_ou", "pitching_strikeouts_ou", "game_moneyline"):
+            for game_n in range(10):  # 10 distinct games x 3 market types = 30 candidates
+                candidates.append(_cand(i, f"ev_{game_n}", f"player_{i}", market_type))
+                i += 1
+
+        selected = rank_and_select_official_picks(candidates, config=DEFAULT_CONFIG)
+        assert len(selected) <= DEFAULT_CONFIG.official_daily_max_picks
+        assert len(selected) == DEFAULT_CONFIG.official_daily_max_picks  # all 30 easily qualify
+        game_counts: dict = {}
+        player_counts: dict = {}
+        for s in selected:
+            game_counts[s["event_id"]] = game_counts.get(s["event_id"], 0) + 1
+            player_counts[s["player_id"]] = player_counts.get(s["player_id"], 0) + 1
+        assert all(c <= DEFAULT_CONFIG.official_max_per_game for c in game_counts.values())
+        assert all(c <= DEFAULT_CONFIG.official_max_per_player for c in player_counts.values())
+        # Existing ranking logic (highest model_score first) is what
+        # actually picked the winners, not market-type or arrival order.
+        assert selected == sorted(selected, key=lambda s: -s["model_score"])
+
+    def test_no_duplicate_opportunities_with_limit_removed(self):
+        """Requirement 5: removing the truncation must not introduce
+        duplicates — the existing dedupe-by-(event,player,line,side,book)
+        step already runs unconditionally before the limit check."""
+        events = [_build_high_volume_batter_event(20)]
+        result = _run_scan_with_mocked_sgo(events, limit=None)
+        seen = set()
+        for o in result["opportunities"]:
+            key = (o["event_id"], o["player_id"], o["line"], o["side"], o["sportsbook"])
+            assert key not in seen, f"duplicate opportunity: {key}"
+            seen.add(key)
