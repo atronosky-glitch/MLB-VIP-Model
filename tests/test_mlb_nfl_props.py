@@ -337,6 +337,135 @@ class TestRunScanMergesSupplementalPropsForSGOLeagues:
         assert result["n_events"] == 1
 
 
+class TestFetchPlayerPropsReusesRecentlyCapturedRows:
+    """Real bug, found live 2026-08-26 investigating "zero WNBA
+    recommendations saved for 6 straight days" despite real games, real
+    odds, and real +EV opportunities existing. _recently_captured_prop_
+    event_ids() correctly skips re-FETCHING an event's props within 30
+    minutes (credit-saving, intentional) — but the events it skips were
+    then dropped from fetch_player_props()'s return value entirely, not
+    reused. Since a scheduler's props-scan cadence is close to or
+    shorter than that 30-minute window in production, and a game stays
+    in the pregame/live window for hours, nearly every real scheduled
+    run after the first one that day saw ZERO player props at all.
+    Reproduced live: a fresh props fetch found 17 real actionable WNBA
+    opportunities (2-6% EV); an immediate second scan of the same slate
+    found 0, with only game markets surviving. Fixed by reloading
+    already-captured player_prop_odds rows for skipped events instead of
+    losing them — no new API call, no new credits spent."""
+
+    def _seed_captured_row(self, conn, event_id, captured_at, player_id="p1", sportsbook="draftkings"):
+        from database.db_manager import save_player_prop_batch
+        row = {
+            "event_id": event_id, "odd_id": f"m-{event_id}-{player_id}", "sportsbook": sportsbook,
+            "player_id": player_id, "player_name": "Test Player", "team_id": "", "team_name": "",
+            "market_type": "player_points_ou", "market_group_key": f"{event_id}|{player_id}|8.5",
+            "side": "OVER", "line": 8.5, "price": -110, "decimal_odds": 1.909,
+            "is_alt_line": 0, "available": 1, "validation_status": "VALID",
+            "mapping_confidence": "HIGH", "mapping_method": "roster", "validation_reason": "OK",
+            "captured_at": captured_at,
+        }
+        save_player_prop_batch(conn, [row], [])
+        return row
+
+    def test_recently_captured_event_is_not_refetched_but_rows_are_reused(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import init_db, get_connection
+        from src.odds_api_props_fetch import fetch_player_props
+
+        db_path = tmp_path / "props_reuse.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+
+        recent_captured_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        self._seed_captured_row(conn, "evt-recent", recent_captured_at)
+
+        now = datetime.now(timezone.utc)
+        event = {"id": "evt-recent", "commence_time": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = ([event], False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client):
+            odds_rows, audit_rows = fetch_player_props(
+                conn, sport_key="basketball_wnba", prop_market_keys="player_points",
+                parse_fn=lambda *a, **k: mock.MagicMock(odds_rows=[], audit_rows=[]), league="WNBA",
+            )
+
+        fake_client.get_event_odds.assert_not_called()
+        assert len(odds_rows) == 1
+        assert odds_rows[0]["event_id"] == "evt-recent"
+        assert odds_rows[0]["player_id"] == "p1"
+        assert odds_rows[0]["side"] == "OVER"
+        assert odds_rows[0]["raw_line"] == odds_rows[0]["line"]
+        assert odds_rows[0]["observation_time"] == recent_captured_at
+
+    def test_old_capture_outside_window_is_refetched_normally(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import init_db, get_connection
+        from src.odds_api_props_fetch import fetch_player_props
+
+        db_path = tmp_path / "props_reuse2.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+
+        stale_captured_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        self._seed_captured_row(conn, "evt-stale", stale_captured_at)
+
+        now = datetime.now(timezone.utc)
+        event = {"id": "evt-stale", "commence_time": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = ([event], False)
+        fake_client.get_event_odds.return_value = ({"id": "evt-stale", "bookmakers": []}, False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client):
+            fetch_player_props(
+                conn, sport_key="basketball_wnba", prop_market_keys="player_points",
+                parse_fn=lambda *a, **k: mock.MagicMock(odds_rows=[], audit_rows=[]), league="WNBA",
+            )
+
+        fake_client.get_event_odds.assert_called_once()
+
+    def test_invalid_or_unavailable_rows_are_not_reused(self, tmp_path):
+        """Only genuinely valid, available rows should be resurrected —
+        an excluded/invalid observation must not silently become an
+        actionable opportunity just because it's within the window."""
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import init_db, get_connection, save_player_prop_batch
+        from src.odds_api_props_fetch import fetch_player_props
+
+        db_path = tmp_path / "props_reuse3.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        invalid_row = {
+            "event_id": "evt-invalid", "odd_id": "m-invalid", "sportsbook": "draftkings",
+            "player_id": "", "player_name": "Unresolved Player", "team_id": "", "team_name": "",
+            "market_type": "player_points_ou", "market_group_key": "",
+            "side": "OVER", "line": 8.5, "price": -110, "decimal_odds": 1.909,
+            "is_alt_line": 0, "available": 1, "validation_status": "NONE",
+            "mapping_confidence": "UNRESOLVED", "mapping_method": "none",
+            "validation_reason": "Player identity not trusted", "captured_at": recent,
+        }
+        save_player_prop_batch(conn, [invalid_row], [])
+
+        now = datetime.now(timezone.utc)
+        event = {"id": "evt-invalid", "commence_time": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        fake_client = mock.MagicMock()
+        fake_client.get_events.return_value = ([event], False)
+        fake_client.last_quota = {}
+
+        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client):
+            odds_rows, _ = fetch_player_props(
+                conn, sport_key="basketball_wnba", prop_market_keys="player_points",
+                parse_fn=lambda *a, **k: mock.MagicMock(odds_rows=[], audit_rows=[]), league="WNBA",
+            )
+
+        assert odds_rows == []
+
+
 class TestFetchPlayerPropsFiltersToNearTermEvents:
     """Real bug, found live 2026-08-22 testing NFL props end-to-end:
     get_events() returns EVERY event currently listed for the sport --

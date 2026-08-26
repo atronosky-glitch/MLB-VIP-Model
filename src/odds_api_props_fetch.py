@@ -38,6 +38,56 @@ def _recently_captured_prop_event_ids(conn, event_ids: list[str], within_hours: 
     return {r["event_id"] for r in rows}
 
 
+def _reload_recent_prop_odds_rows(conn, event_ids: list[str], within_hours: float = 0.5) -> list[dict]:
+    """Rebuild generic odds rows (the exact shape src.odds_api_props_parser
+    produces) from already-captured player_prop_odds rows for *event_ids*.
+
+    Real bug, found 2026-08-26 investigating "zero WNBA recommendations
+    saved for 6 straight days" despite real games, real odds, and real
+    +EV opportunities existing: _recently_captured_prop_event_ids()
+    correctly skips re-FETCHING (saving credits), but the events it skips
+    were then dropped from fetch_player_props()'s return value entirely
+    — not re-fetched AND not reused. Since a scheduler's props-scan
+    cadence (~20-40min in production) is close to or shorter than the
+    30-minute dedup window, and a WNBA game stays in the pregame/live
+    window for hours, this meant almost every real scheduled run after
+    the first one that day saw ZERO player props at all (confirmed live:
+    game markets alone never produced a single actionable WNBA
+    opportunity, while a genuinely fresh props fetch found 17 real
+    actionable opportunities at 2-6% EV the same slate). This reloads the
+    rows already sitting in player_prop_odds instead of silently losing
+    them — no new API call, no new credits spent, but the scan still
+    sees them.
+    """
+    if not event_ids:
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=within_hours)).isoformat()
+    placeholders = ",".join("?" * len(event_ids))
+    rows = conn.execute(
+        f"""SELECT event_id, odd_id, sportsbook, player_id, player_name,
+                   team_id, team_name, market_type, market_group_key,
+                   side, line, price, decimal_odds, is_alt_line, available,
+                   validation_status, mapping_confidence, mapping_method,
+                   validation_reason, captured_at
+            FROM player_prop_odds
+            WHERE event_id IN ({placeholders}) AND captured_at >= ?
+              AND validation_status = 'VALID' AND available = 1""",
+        (*event_ids, cutoff),
+    ).fetchall()
+    reloaded = []
+    for r in rows:
+        row = dict(r)
+        # player_prop_odds has no observation_time column (only
+        # captured_at) — the parser's observation_time is a slightly
+        # more precise book_last_update when available, but captured_at
+        # is the same fallback _build_prop_row itself uses when that
+        # parse fails, so it's a correct, honest substitute here.
+        row["observation_time"] = row.get("captured_at") or ""
+        row["raw_line"] = row.get("line")  # no favorite/underdog sign concept for player O/U props
+        reloaded.append(row)
+    return reloaded
+
+
 def fetch_player_props(
     conn, *, sport_key: str, prop_market_keys: str, parse_fn, league: str,
     event_id: str | None = None,
@@ -97,6 +147,7 @@ def fetch_player_props(
                 "pregame window, skipped", league, before_filter - len(events), before_filter,
             )
 
+    reloaded_rows: list[dict] = []
     if event_id:
         events = [e for e in events if e.get("id") == event_id]
     else:
@@ -114,6 +165,16 @@ def fetch_player_props(
                 "%s props: skipping %d event(s) already captured within the last 30 min",
                 league, len(skipped),
             )
+            # Real bug (see _reload_recent_prop_odds_rows's docstring):
+            # "skip" must mean skip the re-FETCH, not lose the data —
+            # reload what's already in player_prop_odds for these events
+            # so this scan still sees them.
+            reloaded_rows = _reload_recent_prop_odds_rows(conn, [e["id"] for e in skipped])
+            if reloaded_rows:
+                logger.info(
+                    "%s props: reloaded %d already-captured row(s) for %d skipped event(s)",
+                    league, len(reloaded_rows), len(skipped),
+                )
 
     roster_client = ESPNRosterClient()
     event_odds_responses = []
@@ -136,4 +197,4 @@ def fetch_player_props(
         event_odds_responses.append(event_odds)
 
     parsed = parse_fn(event_odds_responses, conn=conn, roster_client=roster_client)
-    return parsed.odds_rows, parsed.audit_rows
+    return parsed.odds_rows + reloaded_rows, parsed.audit_rows
