@@ -58,6 +58,21 @@ AUTO_SETTLEABLE_MARKET_TYPES = frozenset({
     # single game-market recommendation from Official status regardless
     # of EV, book count, or Pinnacle approval (caught live 2026-08-23).
     "game_moneyline", "game_spread_ou", "game_runline_ou", "game_total_ou",
+    # WNBA player props — the exact same class of oversight as the
+    # game-market gap above, found live 2026-08-26 investigating "zero
+    # WNBA recommendations saved for 6 straight days": src/wnba_results.py
+    # has real, verified (live 2026-08-19, against a real completed game)
+    # ESPN-boxscore settlement for all 8 of src/sports/wnba.py's
+    # registered player-prop markets, but none of them were ever added
+    # here — so every WNBA player-prop recommendation was structurally
+    # disqualified from Discovery/Official regardless of EV or model
+    # score. Confirmed live: 9 real actionable opportunities (up to 6.35%
+    # EV, model_score up to 7.6) all collapsed to RESEARCH_ONLY solely
+    # for this reason. This registers real, already-working settlement
+    # coverage — it does not loosen any EV/model-score/book-count gate.
+    "player_points_ou", "player_rebounds_ou", "player_assists_ou",
+    "player_threes_ou", "player_points_assists_ou", "player_points_rebounds_ou",
+    "player_rebounds_assists_ou", "player_points_rebounds_assists_ou",
 })
 
 # Extreme outlier: EV magnitude beyond this threshold triggers NEEDS_REVIEW

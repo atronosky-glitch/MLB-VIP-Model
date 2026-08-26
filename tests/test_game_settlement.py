@@ -310,3 +310,50 @@ class TestGameMarketsAreAutoSettleable:
         for market_type in ("game_moneyline", "game_spread_ou",
                              "game_runline_ou", "game_total_ou"):
             assert is_auto_settleable_market(market_type) is True, market_type
+
+
+class TestWNBAPlayerPropsAreAutoSettleable:
+    """Regression: same class of bug as TestGameMarketsAreAutoSettleable
+    above, found live 2026-08-26 investigating "zero WNBA recommendations
+    saved for 6 straight days". src/wnba_results.py has real, verified
+    (live 2026-08-19) ESPN-boxscore settlement for all 8 registered WNBA
+    player-prop markets, but none were ever added to
+    AUTO_SETTLEABLE_MARKET_TYPES — so every WNBA player-prop
+    recommendation was unconditionally blocked from Discovery/Official
+    regardless of EV or model score. Confirmed live: 9 real actionable
+    opportunities (up to 6.35% EV) all collapsed to RESEARCH_ONLY solely
+    for this reason."""
+
+    def test_all_eight_wnba_player_prop_market_types_are_settleable(self):
+        for market_type in (
+            "player_points_ou", "player_rebounds_ou", "player_assists_ou",
+            "player_threes_ou", "player_points_assists_ou",
+            "player_points_rebounds_ou", "player_rebounds_assists_ou",
+            "player_points_rebounds_assists_ou",
+        ):
+            assert is_auto_settleable_market(market_type) is True, market_type
+
+    def test_registered_market_types_match_settleable_registration(self):
+        """Cross-check against the actual registry and the actual
+        settlement module, not a hand-copied list — every market
+        src/sports/wnba.py registers as a player prop must be both
+        (a) genuinely settleable in src.wnba_results and (b) registered
+        in AUTO_SETTLEABLE_MARKET_TYPES. Catches future drift between
+        the three, not just today's specific gap."""
+        from src.sports import wnba
+        from src.wnba_results import _SUPPORTED_BASE_MARKETS
+
+        player_prop_market_types = [
+            cfg.market_type_ou for cfg in wnba.get_market_registry()
+            if cfg.market_type_ou and cfg.market_type_ou.startswith("player_")
+        ]
+        assert player_prop_market_types, "expected WNBA to have registered player-prop markets"
+        for market_type in player_prop_market_types:
+            base = market_type.removesuffix("_ou").removesuffix("_yn")
+            assert base in _SUPPORTED_BASE_MARKETS, (
+                f"{market_type} has no wnba_results settlement coverage"
+            )
+            assert is_auto_settleable_market(market_type) is True, (
+                f"{market_type} has real settlement coverage but is missing "
+                f"from AUTO_SETTLEABLE_MARKET_TYPES"
+            )
