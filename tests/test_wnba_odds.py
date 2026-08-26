@@ -678,6 +678,9 @@ class TestPinnaclePropsFetchGatedOnFetchPropsFlag:
         direct_props.assert_not_called()
 
     def test_fetch_props_true_calls_both_pinnacle_props_sources(self):
+        """Source 1 (Odds-API) now uses the targeted
+        get_player_props_for_targets — the whole point of the 2026-08-26
+        selective-fetch optimization — not the broad get_player_props."""
         from src import player_prop_scanner as scanner
         from src.sports import wnba as wnba_mod
 
@@ -690,7 +693,7 @@ class TestPinnaclePropsFetchGatedOnFetchPropsFlag:
              mock.patch.object(scanner, "save_player_prop_batch"), \
              mock.patch.object(wnba_mod, "fetch_and_parse",
                                 return_value=(odds_rows, [], self._wnba_events(), False)), \
-             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_player_props", return_value=None) as oap_props, \
+             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_player_props_for_targets", return_value=None) as oap_props, \
              mock.patch.object(scanner.OddsAPIPinnacleClient, "get_game_odds", return_value=None), \
              mock.patch.object(scanner.PinnacleFeedClient, "get_player_props", return_value=None) as direct_props, \
              mock.patch.object(scanner.PinnacleFeedClient, "get_game_odds", return_value=None):
@@ -700,23 +703,41 @@ class TestPinnaclePropsFetchGatedOnFetchPropsFlag:
         oap_props.assert_called_once()
         direct_props.assert_called_once()
 
-    def test_game_odds_pinnacle_is_fetched_regardless_of_fetch_props(self):
+    def test_game_odds_pinnacle_is_fetched_when_real_game_markets_exist(self):
         """Game-market Pinnacle references (moneyline/spread/total) are
         cheap and match when the comparison books themselves are
-        fetched — every scan, not just props-scans."""
+        fetched — every scan with real game-market data, not just
+        props-scans. (A scan with only prop data and zero game markets
+        correctly skips this call — nothing to compare against; see the
+        selective-fetch test class below.)"""
         from src import player_prop_scanner as scanner
         from src.sports import wnba as wnba_mod
+        from src.player_prop_parser import _build_group_key
 
+        game_row = {
+            "event_id": "evt-1", "odd_id": "ml-evt-1-away",
+            "sportsbook": "fanduel", "player_id": "GAME", "player_name": "Moneyline",
+            "team_id": "", "team_name": "", "market_type": "game_moneyline",
+            "market_group_key": _build_group_key("evt-1", "GAME", None, 0, "AWAY", "game_moneyline"),
+            "side": "AWAY", "line": None, "raw_line": None,
+            "price": -115, "decimal_odds": 1.87, "is_alt_line": 0, "available": 1,
+            "validation_status": "VALID", "mapping_confidence": "HIGH",
+            "mapping_method": "n/a", "validation_reason": "OK",
+            "captured_at": "2026-08-26T00:00:00Z", "observation_time": "2026-08-26T00:00:00Z",
+        }
         odds_rows = [
             _prop_row(side="over", price=-115, sportsbook="fanduel"),
             _prop_row(side="under", price=-105, sportsbook="fanduel"),
+            game_row,
+            {**game_row, "odd_id": "ml-evt-1-home", "side": "HOME", "price": -105, "decimal_odds": 1.95,
+             "market_group_key": _build_group_key("evt-1", "GAME", None, 0, "HOME", "game_moneyline")},
         ]
         with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
              mock.patch.object(scanner, "create_run", return_value="run-1"), \
              mock.patch.object(scanner, "save_player_prop_batch"), \
              mock.patch.object(wnba_mod, "fetch_and_parse",
                                 return_value=(odds_rows, [], self._wnba_events(), False)), \
-             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_player_props") as oap_props, \
+             mock.patch.object(scanner.OddsAPIPinnacleClient, "get_player_props_for_targets") as oap_props, \
              mock.patch.object(scanner.OddsAPIPinnacleClient, "get_game_odds", return_value=None) as oap_game, \
              mock.patch.object(scanner.PinnacleFeedClient, "get_player_props") as direct_props, \
              mock.patch.object(scanner.PinnacleFeedClient, "get_game_odds", return_value=None) as direct_game:

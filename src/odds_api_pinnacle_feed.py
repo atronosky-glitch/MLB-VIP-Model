@@ -231,6 +231,53 @@ def _parse_props_response(event_data: dict, prop_market_type_map: dict, league: 
     return results
 
 
+def derive_props_targets(
+    ou_groups: dict, event_map: dict, league: str,
+    min_books: int = 1, now: datetime | None = None,
+) -> dict[str, set[str]]:
+    """{event_id: {odds-api market keys}} worth a Pinnacle props check —
+    derived from THIS scan's own already-formed comparable groups, added
+    2026-08-26 to stop spending Pinnacle credits on event/market
+    combinations with no usable comparison-book data (unsupported
+    market, too few books to ever pair a fair value, event already
+    started) in the first place.
+
+    Deliberately filters on DATA AVAILABILITY only, computed before any
+    fair-value/EV math runs on these groups — never on the resulting
+    edge — so every market genuinely eligible for evaluation still gets
+    a fresh Pinnacle comparison; this must never become a filter for
+    "only check Pinnacle on bets that already look good," which would
+    bias away from exactly the edges a real Pinnacle disagreement might
+    reveal.
+
+    *min_books* mirrors src.prop_config.MIN_COMPARISON_BOOKS (the same
+    floor the model itself uses to decide a group can ever be evaluated
+    at all) — a caller should pass that value, not a stricter one, to
+    stay unbiased relative to what the model already considers eligible.
+    """
+    now = now or datetime.now(timezone.utc)
+    prop_market_type_map = _prop_market_type_map_for_league(league)
+    market_type_to_key = {v: k for k, v in prop_market_type_map.items()}
+    targets: dict[str, set[str]] = {}
+    for gd in ou_groups.values():
+        if gd.get("player_id") == "GAME":
+            continue  # game markets handled separately (game-odds fetch)
+        market_key = market_type_to_key.get(gd.get("market_type"))
+        if market_key is None:
+            continue  # not one of this league's Odds-API-registered prop markets
+        if len(gd.get("over") or {}) < min_books or len(gd.get("under") or {}) < min_books:
+            continue  # too few paired books to ever establish fair value
+        event_id = gd.get("event_id")
+        if not event_id:
+            continue
+        ev_info = event_map.get(event_id) or {}
+        start_time = _parse_commence_time(ev_info.get("start_time"))
+        if start_time is not None and start_time < now:
+            continue  # already started — not a live pregame bet anymore
+        targets.setdefault(event_id, set()).add(market_key)
+    return targets
+
+
 class OddsAPIPinnacleClient:
     """Fetch Pinnacle game odds and player props via The Odds API's
     targeted ``bookmakers=pinnacle`` parameter, with the same disk-cache
@@ -373,6 +420,86 @@ class OddsAPIPinnacleClient:
             except Exception:
                 logger.exception(
                     "Odds-API Pinnacle props parse failed for %s event %s", league, ev.get("id"),
+                )
+        self.last_props_status[league] = STATUS_OK if all_props else STATUS_NO_PINNACLE_POSTED
+        return all_props or None
+
+    def get_player_props_for_targets(
+        self, league: str, targets: dict[str, set[str]], conn=None,
+    ) -> list[PinnacleProp] | None:
+        """Same as get_player_props, but scoped to an explicit
+        {event_id: {odds-api market keys}} map instead of discovering
+        every near-term event and requesting all registered markets for
+        each — added 2026-08-26 after computing that MLB alone was
+        spending Pinnacle credits on event/market combinations with no
+        usable comparison-book data to compare against in the first
+        place.
+
+        *targets* should come from the SAME scan's already-formed
+        comparable groups (see src.player_prop_scanner's derivation),
+        not a separate discovery pass — this is what avoids selection
+        bias toward already-attractive-looking bets: it filters on
+        whether a market has ANY real, paired book data to compare
+        against (computed before any EV/fair-value math runs), never on
+        the computed edge itself. Every event/market genuinely eligible
+        for evaluation still gets a fresh Pinnacle comparison; only
+        combinations with nothing to compare against are skipped.
+        """
+        if not cfg.ODDS_API_PINNACLE_ENABLED:
+            self.last_props_status[league] = STATUS_DISABLED
+            return None
+        sport_key = _sport_key_for_league(league)
+        if not sport_key:
+            self.last_props_status[league] = STATUS_LEAGUE_NOT_CONFIGURED
+            return None
+        job_type = f"{league.lower()}_pinnacle_props"
+        if not targets:
+            self.last_props_status[league] = STATUS_NO_PINNACLE_POSTED
+            return None
+
+        all_props: list[PinnacleProp] = []
+        prop_market_type_map = _prop_market_type_map_for_league(league)
+        for event_id, market_keys_set in targets.items():
+            if not market_keys_set:
+                continue
+            market_keys = ",".join(sorted(market_keys_set))
+            planned_cost = len(market_keys_set)
+            if conn is not None:
+                try:
+                    from src.odds_api_credits import credit_budget_check
+                    allowed, reason = credit_budget_check(conn, planned_cost)
+                except Exception:
+                    allowed, reason = True, "budget check unavailable"
+                if not allowed:
+                    logger.warning(
+                        "Odds-API Pinnacle props (targeted) fetch stopped for %s — credit budget: %s",
+                        league, reason,
+                    )
+                    break
+            try:
+                data, from_cache = self._client.get_event_odds(
+                    event_id, sport_key=sport_key, markets=market_keys,
+                    bookmakers=cfg.ODDS_API_PINNACLE_BOOKMAKER_KEY,
+                )
+            except OddsAPIKeyError:
+                self.last_props_status[league] = STATUS_NO_API_KEY
+                return all_props or None
+            except requests.exceptions.RequestException:
+                continue
+            if conn is not None:
+                try:
+                    from src.odds_api_credits import record_client_quota
+                    record_client_quota(
+                        conn, self._client, endpoint="odds_pinnacle_props",
+                        job_type=job_type, cache_hit=from_cache,
+                    )
+                except Exception:
+                    logger.debug("Could not record Odds-API Pinnacle props quota usage", exc_info=True)
+            try:
+                all_props.extend(_parse_props_response(data, prop_market_type_map, league))
+            except Exception:
+                logger.exception(
+                    "Odds-API Pinnacle props (targeted) parse failed for %s event %s", league, event_id,
                 )
         self.last_props_status[league] = STATUS_OK if all_props else STATUS_NO_PINNACLE_POSTED
         return all_props or None

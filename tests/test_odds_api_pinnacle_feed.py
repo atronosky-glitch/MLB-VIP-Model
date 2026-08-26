@@ -17,6 +17,7 @@ from src.odds_api_pinnacle_feed import (
     _parse_props_response,
     _prop_market_type_map_for_league,
     _sport_key_for_league,
+    derive_props_targets,
     STATUS_NO_API_KEY,
     STATUS_NETWORK_ERROR,
     STATUS_LEAGUE_NOT_CONFIGURED,
@@ -353,3 +354,101 @@ class TestOddsAPIPinnacleClientHasNoStandaloneThrottle:
 
         assert result is not None
         get_events_mock.assert_called_once()
+
+
+def _ou_group(
+    market_type="batting_homeRuns_ou", event_id="evt-1",
+    over_books=None, under_books=None, player_id="p1",
+):
+    return {
+        "player_id": player_id, "event_id": event_id, "market_type": market_type,
+        "over": over_books if over_books is not None else {"draftkings": {"price": -110}},
+        "under": under_books if under_books is not None else {"draftkings": {"price": -110}},
+    }
+
+
+class TestDerivePropsTargets:
+    """The selective-fetch optimization (2026-08-26): only request
+    Pinnacle for event/market combinations THIS scan's own
+    comparison-book data shows are genuinely evaluable, instead of every
+    near-term event x every registered market regardless of whether
+    there's real data to compare against."""
+
+    FUTURE = "2099-01-01T00:00:00Z"
+    PAST = "2020-01-01T00:00:00Z"
+
+    def test_group_with_real_paired_data_and_upcoming_event_is_included(self):
+        groups = {"k1": _ou_group(event_id="evt-1")}
+        event_map = {"evt-1": {"start_time": self.FUTURE}}
+        targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
+        assert targets == {"evt-1": {"batter_home_runs"}}
+
+    def test_group_with_no_books_on_one_side_is_excluded(self):
+        groups = {"k1": _ou_group(event_id="evt-1", under_books={})}
+        event_map = {"evt-1": {"start_time": self.FUTURE}}
+        targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
+        assert targets == {}
+
+    def test_unregistered_market_type_is_excluded(self):
+        groups = {"k1": _ou_group(event_id="evt-1", market_type="pitching_walks_ou")}
+        event_map = {"evt-1": {"start_time": self.FUTURE}}
+        targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
+        assert targets == {}
+
+    def test_already_started_event_is_excluded(self):
+        groups = {"k1": _ou_group(event_id="evt-1")}
+        event_map = {"evt-1": {"start_time": self.PAST}}
+        targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
+        assert targets == {}
+
+    def test_game_market_group_is_excluded_handled_separately(self):
+        groups = {"k1": _ou_group(event_id="evt-1", player_id="GAME", market_type="game_moneyline")}
+        event_map = {"evt-1": {"start_time": self.FUTURE}}
+        targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
+        assert targets == {}
+
+    def test_missing_event_map_entry_is_treated_as_no_known_start_time_not_excluded(self):
+        """A group referencing an event not in event_map (shouldn't
+        normally happen, but must fail safe rather than silently drop a
+        genuinely evaluable market)."""
+        groups = {"k1": _ou_group(event_id="evt-unknown")}
+        targets = derive_props_targets(groups, {}, "MLB", min_books=1)
+        assert targets == {"evt-unknown": {"batter_home_runs"}}
+
+    def test_multiple_eligible_markets_for_the_same_event_are_all_included(self):
+        groups = {
+            "k1": _ou_group(event_id="evt-1", market_type="batting_homeRuns_ou"),
+            "k2": _ou_group(event_id="evt-1", market_type="pitching_strikeouts_ou"),
+        }
+        event_map = {"evt-1": {"start_time": self.FUTURE}}
+        targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
+        assert targets == {"evt-1": {"batter_home_runs", "pitcher_strikeouts"}}
+
+    def test_never_filters_on_price_or_apparent_edge_only_on_data_availability(self):
+        """Real requirement (2026-08-26 operator directive): must not
+        only fetch Pinnacle for bets that already look +EV via LOO, or
+        real Pinnacle-revealed edges could be missed. Two groups with
+        identical real book coverage but wildly different prices (one
+        looking like a huge edge, one looking like none at all) must
+        both be included — the function doesn't even look at price."""
+        groups = {
+            "huge_apparent_edge": _ou_group(
+                event_id="evt-1", market_type="batting_homeRuns_ou",
+                over_books={"draftkings": {"price": 900}},  # implies a huge edge
+                under_books={"draftkings": {"price": -110}},
+            ),
+            "no_apparent_edge": _ou_group(
+                event_id="evt-2", market_type="pitching_strikeouts_ou",
+                over_books={"draftkings": {"price": -110}},
+                under_books={"draftkings": {"price": -110}},
+            ),
+        }
+        event_map = {
+            "evt-1": {"start_time": self.FUTURE},
+            "evt-2": {"start_time": self.FUTURE},
+        }
+        targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
+        assert targets == {
+            "evt-1": {"batter_home_runs"},
+            "evt-2": {"pitcher_strikeouts"},
+        }

@@ -40,7 +40,7 @@ from .pinnacle_feed import (
     build_pinnacle_game_lookup, inject_pinnacle_game_reference,
     PINNACLE_STATUS_NO_PROPS_POSTED,
 )
-from .odds_api_pinnacle_feed import OddsAPIPinnacleClient
+from .odds_api_pinnacle_feed import OddsAPIPinnacleClient, derive_props_targets
 from .validation_constants import APPROVED_STATUSES
 from database.db_manager import get_connection, create_run, finish_run, save_player_prop_batch
 
@@ -707,8 +707,23 @@ def run_scan(
             # data to synchronize against in the first place, so fetching
             # Pinnacle props here would be pure waste.
             if fetch_props:
+                # Scoped to event/market combinations THIS scan's own
+                # comparison-book data already shows are genuinely
+                # evaluable (real, paired book coverage; not yet
+                # started) — not "every near-term event, every
+                # registered market" regardless of whether there's
+                # anything real to compare against. Filters purely on
+                # data availability, computed before any fair-value/EV
+                # math runs, never on the resulting edge — see
+                # derive_props_targets's docstring for why that avoids
+                # selection bias.
+                _oap_targets = derive_props_targets(
+                    ou_groups, event_map, league, min_books=cfg.MIN_COMPARISON_BOOKS,
+                )
                 try:
-                    _oap_props = _oap_client.get_player_props(league=league, conn=_oap_conn)
+                    _oap_props = _oap_client.get_player_props_for_targets(
+                        league=league, targets=_oap_targets, conn=_oap_conn,
+                    )
                 except Exception:
                     logger.exception("Odds-API Pinnacle (props) unavailable")
                     _oap_props = None
@@ -726,12 +741,22 @@ def run_scan(
                 pinnacle_stale_skipped += _stale
                 pinnacle_props_stale = _stale
 
-            try:
-                _oap_games = _oap_client.get_game_odds(league=league, conn=_oap_conn)
-            except Exception:
-                logger.exception("Odds-API Pinnacle (game odds) unavailable")
+            # Skip the game-odds Pinnacle call entirely when this scan
+            # has no real game-market data to compare it against (the
+            # primary game-odds fetch found/produced nothing) — added
+            # 2026-08-26, matches the same "nothing to compare against"
+            # principle as the props targeting above.
+            _has_game_markets = any(gd.get("player_id") == "GAME" for gd in ou_groups.values())
+            if _has_game_markets:
+                try:
+                    _oap_games = _oap_client.get_game_odds(league=league, conn=_oap_conn)
+                except Exception:
+                    logger.exception("Odds-API Pinnacle (game odds) unavailable")
+                    _oap_games = None
+                pinnacle_game_odds_status = _oap_client.last_fetch_status.get(league, "unknown")
+            else:
                 _oap_games = None
-            pinnacle_game_odds_status = _oap_client.last_fetch_status.get(league, "unknown")
+                pinnacle_game_odds_status = "no_game_markets_this_scan"
             if _oap_games:
                 pinnacle_game_odds_fetched = len(_oap_games)
                 _oap_game_lookup = build_pinnacle_game_lookup(_oap_games)
