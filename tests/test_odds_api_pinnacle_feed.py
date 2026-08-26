@@ -383,8 +383,24 @@ class TestDerivePropsTargets:
         targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
         assert targets == {"evt-1": {"batter_home_runs"}}
 
-    def test_group_with_no_books_on_one_side_is_excluded(self):
+    def test_group_with_no_books_on_one_side_is_still_included(self):
+        """Real bug found and fixed 2026-08-26: src.player_prop_analysis
+        ._classify_market computes its book-count gate from over_prices/
+        under_prices AFTER Pinnacle has already been injected into that
+        same dict — Pinnacle can be exactly what fills the empty side
+        (or completes a thin group). Excluding a one-sided group here,
+        before Pinnacle is even fetched, would wrongly throw away a
+        market Pinnacle itself could make evaluable."""
         groups = {"k1": _ou_group(event_id="evt-1", under_books={})}
+        event_map = {"evt-1": {"start_time": self.FUTURE}}
+        targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
+        assert targets == {"evt-1": {"batter_home_runs"}}
+
+    def test_group_with_zero_books_on_both_sides_never_occurs_but_is_excluded_defensively(self):
+        """Structurally impossible in the real pipeline (a group is only
+        ever created in ou_groups by adding a real row), but the
+        function must not crash or fabricate a target for it."""
+        groups = {"k1": _ou_group(event_id="evt-1", over_books={}, under_books={})}
         event_map = {"evt-1": {"start_time": self.FUTURE}}
         targets = derive_props_targets(groups, event_map, "MLB", min_books=1)
         assert targets == {}
@@ -452,3 +468,68 @@ class TestDerivePropsTargets:
             "evt-1": {"batter_home_runs"},
             "evt-2": {"pitcher_strikeouts"},
         }
+
+    def test_boundary_min_comparison_books_minus_one_plus_pinnacle_becomes_eligible(self, monkeypatch):
+        """The exact scenario the operator flagged (2026-08-26): 4 real
+        comparison books exist, Pinnacle would provide the 5th. Note the
+        real formula in src.player_prop_analysis._classify_market is
+        ``total_books < MIN_COMPARISON_BOOKS + 1`` (VALID requires
+        total_books >= MIN_COMPARISON_BOOKS + 1) — so "4 real books,
+        Pinnacle as the 5th, crossing into eligibility" corresponds to
+        MIN_COMPARISON_BOOKS=4 (4 books alone: 4 < 4+1, INSUFFICIENT;
+        + Pinnacle: 5 >= 4+1, VALID), not literally "MIN_COMPARISON_BOOKS
+        - 1" books — that phrase describes being one book short of
+        MIN_COMPARISON_BOOKS's OWN +1 requirement, which is what this
+        sets up. This must NOT be excluded from the Pinnacle prefilter,
+        because Pinnacle itself can be the book that makes
+        src.player_prop_analysis._classify_market call it VALID. This is
+        an end-to-end proof, not just a unit check on
+        derive_props_targets: it runs the REAL analyze_prop_group after
+        a REAL inject_pinnacle_reference, at a raised threshold, and
+        confirms the group crosses from INSUFFICIENT to VALID."""
+        import src.prop_config as cfg
+        from src.player_prop_analysis import analyze_prop_group
+        from src.pinnacle_feed import PinnacleProp, build_pinnacle_lookup, inject_pinnacle_reference
+
+        monkeypatch.setattr(cfg, "MIN_COMPARISON_BOOKS", 4)
+
+        # 4 real comparison books — one short of the total 5 books
+        # (MIN_COMPARISON_BOOKS + 1) the real gate requires for VALID.
+        over_books = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 6.5} for i in range(4)}
+        under_books = {f"book{i}": {"price": -110, "decimal_odds": 1.9091, "line": 6.5} for i in range(4)}
+        ou_groups = {"k1": {
+            "player_id": "p1", "event_id": "evt-1", "market_type": "pitching_strikeouts_ou",
+            "player_name": "Shota Imanaga", "line": 6.5,
+            "over": over_books, "under": under_books,
+        }}
+        event_map = {
+            "evt-1": {"home_name": "Kansas City Royals", "away_name": "Detroit Tigers"},
+        }
+
+        # 1) The prefilter must still target this group for a Pinnacle check.
+        targets = derive_props_targets(ou_groups, event_map, "MLB", min_books=cfg.MIN_COMPARISON_BOOKS)
+        assert targets == {"evt-1": {"pitcher_strikeouts"}}
+
+        # 2) Without Pinnacle, the real model gate rejects it (proves the
+        # test scenario is genuinely at the boundary, not a false setup).
+        without_pinnacle = analyze_prop_group("k1", over_books, under_books)
+        assert without_pinnacle["market_quality"] == cfg.MARKET_QUALITY_INSUFFICIENT
+
+        # 3) Inject a real Pinnacle quote (the 5th book) via the real
+        # injection function, exactly as production does.
+        pinnacle_prop = PinnacleProp(
+            home_name="Kansas City Royals", away_name="Detroit Tigers",
+            player_name="Shota Imanaga", unit="Strikeouts", line=6.5,
+            over_decimal=1.87, under_decimal=1.98,
+            over_american=-115, under_american=-102,
+            last_updated=None, source="odds_api_pinnacle",
+        )
+        lookup = build_pinnacle_lookup([pinnacle_prop])
+        n_injected, _ = inject_pinnacle_reference(ou_groups, event_map, lookup, league="MLB")
+        assert n_injected == 1
+
+        # 4) With Pinnacle now present, the SAME real gate must classify
+        # the group as VALID — Pinnacle was the missing comparison book.
+        with_pinnacle = analyze_prop_group("k1", ou_groups["k1"]["over"], ou_groups["k1"]["under"])
+        assert with_pinnacle["market_quality"] == cfg.MARKET_QUALITY_VALID
+        assert with_pinnacle["pinnacle_reference_used"] is True

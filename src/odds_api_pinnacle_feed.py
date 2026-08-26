@@ -239,8 +239,7 @@ def derive_props_targets(
     derived from THIS scan's own already-formed comparable groups, added
     2026-08-26 to stop spending Pinnacle credits on event/market
     combinations with no usable comparison-book data (unsupported
-    market, too few books to ever pair a fair value, event already
-    started) in the first place.
+    market, event already started) in the first place.
 
     Deliberately filters on DATA AVAILABILITY only, computed before any
     fair-value/EV math runs on these groups — never on the resulting
@@ -250,10 +249,21 @@ def derive_props_targets(
     bias away from exactly the edges a real Pinnacle disagreement might
     reveal.
 
-    *min_books* mirrors src.prop_config.MIN_COMPARISON_BOOKS (the same
-    floor the model itself uses to decide a group can ever be evaluated
-    at all) — a caller should pass that value, not a stricter one, to
-    stay unbiased relative to what the model already considers eligible.
+    Deliberately does NOT require the group to already meet
+    MIN_COMPARISON_BOOKS on its own (bug found and fixed 2026-08-26,
+    caught before it could ever bite at the current MIN_COMPARISON_BOOKS
+    default): src.player_prop_analysis._classify_market computes its
+    book-count gate from over_prices/under_prices AFTER Pinnacle has
+    already been injected into that same dict — i.e. Pinnacle itself
+    counts toward MIN_COMPARISON_BOOKS in the real model, and can be the
+    one book that completes a side that otherwise had none at all, or
+    pushes a thin group over the threshold. Requiring the threshold to
+    already be met BEFORE fetching Pinnacle would make this prefilter
+    incorrectly exclude exactly the groups Pinnacle itself would make
+    eligible. *min_books* is accepted for interface stability (a caller
+    may reasonably pass cfg.MIN_COMPARISON_BOOKS) but is intentionally
+    unused for exclusion — only whether a group has ANY real data at
+    all (guaranteed by simply appearing in ou_groups) gates inclusion.
     """
     now = now or datetime.now(timezone.utc)
     prop_market_type_map = _prop_market_type_map_for_league(league)
@@ -265,8 +275,8 @@ def derive_props_targets(
         market_key = market_type_to_key.get(gd.get("market_type"))
         if market_key is None:
             continue  # not one of this league's Odds-API-registered prop markets
-        if len(gd.get("over") or {}) < min_books or len(gd.get("under") or {}) < min_books:
-            continue  # too few paired books to ever establish fair value
+        if not gd.get("over") and not gd.get("under"):
+            continue  # no real data on either side — nothing for Pinnacle to complete
         event_id = gd.get("event_id")
         if not event_id:
             continue
