@@ -254,6 +254,30 @@ ODDS_API_PINNACLE_BOOKMAKER_KEY = "pinnacle"
 # this ever silently overspending the shared monthly budget.
 ODDS_API_PINNACLE_CACHE_TTL_SECONDS = 600
 
+# Dedicated refresh throttle, independent of scan cadence and separate
+# from the per-request cache above — added 2026-08-26 after computing
+# the real cost of fetching on every scan: MLB alone (~15 games/day x
+# 4 prop markets = 60 credits/round, plus 3 for game odds) at the real
+# observed production scan cadence (~20-40 min) works out to roughly
+# 45,000-55,000 credits/month for MLB props ALONE — 2-3x the entire
+# 20,000/month budget, before WNBA. The per-request cache above doesn't
+# help here since it expires well before the next real scan.
+#
+# This throttle instead tracks the last REAL (non-cache-hit) fetch per
+# (league, data-type) in the existing odds_api_credits usage log (see
+# odds_api_credits.py — already written to by this module's own calls,
+# no new table needed) and skips the fetch attempt entirely — not just
+# reusing a cached response, but not even trying — when the last real
+# fetch was more recent than this. 480 minutes (8 hours) was chosen by
+# computing the resulting monthly cost directly: at 3 refreshes/day,
+# MLB (63 credits/round) + WNBA (35 credits/round) ≈ 8,820 credits/month
+# combined, alongside the existing ~8,200/month primary props/game-odds
+# usage — comfortably under the 20,000/month budget with real headroom
+# for NFL once its season starts. A single constant to adjust if a
+# different freshness/cost trade-off is wanted; credit_budget_check()
+# (already wired into the props loop) remains the hard backstop either way.
+ODDS_API_PINNACLE_REFRESH_THROTTLE_MINUTES = 480
+
 # league -> {pinnapi special_units -> our market_type_ou}, for Player
 # Props specials. Verified live 2026-08-23 against real posted props
 # (see docs/DECISIONS.md "Pinnacle wired in for all 3 leagues" for the
