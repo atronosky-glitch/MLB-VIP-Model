@@ -476,6 +476,25 @@ class TestConfidenceScoring:
         assert result["confidence_score"] < 50
         assert result["grade"] in ("D", "F")
 
+    def test_fresh_non_sportsgameodds_provider_scores_same_as_fresh_live_api(self):
+        """Regression (2026-08-29): _score_freshness matched the literal
+        string "LIVE API" before checking freshness_status, so WNBA's
+        provider label ("N/A (non-SportsGameOdds provider)", never
+        "LIVE API") fell through to the 0.5 unknown-freshness default
+        even when freshness_status was genuinely "FRESH" — silently
+        depressing confidence_score for every WNBA recommendation."""
+        from src.confidence import compute_confidence
+        base = {
+            "n_consensus_books": 4, "market_quality": "VALID_MARKET",
+            "ev_pct": 5.0, "mapping_confidence": "HIGH",
+        }
+        live_api = compute_confidence({**base, "freshness_status": "FRESH", "data_source": "LIVE API"})
+        other_provider = compute_confidence({
+            **base, "freshness_status": "FRESH",
+            "data_source": "N/A (non-SportsGameOdds provider)",
+        })
+        assert other_provider["confidence_score"] == live_api["confidence_score"]
+
     def test_yn_market_uses_advantage(self):
         from src.confidence import compute_confidence
         rec = {

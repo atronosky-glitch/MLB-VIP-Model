@@ -77,9 +77,22 @@ def _score_ev_magnitude(ev_pct: float | None, yn_adv: float | None) -> float:
 
 
 def _score_freshness(freshness: str | None, data_source: str | None) -> float:
-    """Score data freshness. LIVE = 1.0, CACHE = 0.7, STALE = 0.3, UNKNOWN = 0.5."""
+    """Score data freshness. LIVE = 1.0, CACHE = 0.7, STALE = 0.3, UNKNOWN = 0.5.
+
+    ``freshness`` (freshness_status: always exactly "FRESH" or "STALE",
+    computed purely from observation-timestamp age) must be checked
+    before ``data_source``, which is a provider label that differs by
+    league — MLB's SportsGameOdds path writes "LIVE API", WNBA's
+    non-SportsGameOdds provider writes "N/A (non-SportsGameOdds
+    provider)". Same bug class as src/model_scoring.py's
+    _score_freshness (fixed 2026-08-29): matching data_source first let
+    genuinely fresh non-MLB data silently score as unknown-freshness
+    (0.5), quietly depressing confidence_score for every WNBA rec.
+    """
     if freshness == "STALE":
         return 0.3
+    if freshness == "FRESH":
+        return 1.0
     if data_source == "LIVE API":
         return 1.0
     if data_source == "CACHE":
