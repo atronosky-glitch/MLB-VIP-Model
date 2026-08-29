@@ -646,6 +646,15 @@ def analyze_prop_group(
             market_quality = cfg.MARKET_QUALITY_NEEDS_REVIEW
             quality_flags.append("Extreme outlier EV detected")
 
+    # is_official was computed per-book above, BEFORE this outlier demotion
+    # could run (the demotion depends on every book's ev_pct, so it can only
+    # be evaluated once all books exist). A book flagged official prior to
+    # its own group being demoted to NEEDS_REVIEW must not keep that flag —
+    # official status always requires a market_quality clean enough to trust.
+    if market_quality != cfg.MARKET_QUALITY_VALID:
+        for b in books:
+            b["is_official"] = False
+
     books.sort(key=lambda b: b["ev_pct"], reverse=True)
 
     # Best positive EV

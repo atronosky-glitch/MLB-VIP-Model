@@ -319,6 +319,42 @@ class TestPinnacleRequiredForOfficial:
         finally:
             cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
 
+    def test_outlier_ev_demotes_is_official_even_when_pinnacle_approved(self):
+        """2026-08-29 bug: is_official was computed per-book BEFORE the
+        outlier-EV demotion (OUTLIER_EV_THRESHOLD=10%) that can downgrade
+        market_quality to NEEDS_REVIEW. A book could clear the Pinnacle
+        approval bar (EV/prob-edge thresholds) *and* be extreme enough to
+        trigger NEEDS_REVIEW, yet keep is_official=True — exactly the
+        combination found while auditing a live game_moneyline opportunity
+        (market_quality=NEEDS_REVIEW, is_official=true). The real
+        publishing gate (classify_recommendation) already blocks this from
+        becoming an Official pick, but the raw is_official flag persisted
+        into the DB was misleading. is_official must never be True once its
+        own group has been demoted off VALID_MARKET.
+        """
+        orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        try:
+            # extremebook clears MIN_PINNACLE_EV (4%) and MIN_PINNACLE_PROB_EDGE
+            # (2.5%) by a wide margin (EV ~108.7%, prob edge ~27%) — approved —
+            # but that same EV blows well past OUTLIER_EV_THRESHOLD (10%).
+            over = {"pinnacle": _price(-120), "extremebook": _price(300),
+                    "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            under = {"pinnacle": _price(100), "extremebook": _price(-110),
+                     "book2": _price(-110), "book3": _price(-110), "book4": _price(-110)}
+            result = analyze_prop_group("g1", over, under)
+            assert result["market_quality"] == cfg.MARKET_QUALITY_NEEDS_REVIEW
+            extreme = next(b for b in result["books"]
+                          if b["sportsbook"] == "extremebook" and b["side"] == "OVER")
+            assert extreme["pinnacle_approved"] is True
+            assert extreme["ev_pct"] > cfg.OUTLIER_EV_THRESHOLD * 100
+            assert extreme["is_official"] is False
+            assert result["best_ev"]["is_official"] is False
+            assert result["official_count"] == 0
+            assert all(b["is_official"] is False for b in result["books"])
+        finally:
+            cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
+
     def test_different_line_pinnacle_not_used_as_reference(self):
         orig = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
         cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True

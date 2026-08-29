@@ -7,6 +7,7 @@ Pinnacle is classified under "eu"."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
@@ -272,7 +273,8 @@ class TestOddsAPIPinnacleGameOddsCreditBudget:
 class TestOddsAPIPinnacleClientCreditBudget:
     def test_props_fetch_stops_when_budget_exhausted(self, monkeypatch):
         client = OddsAPIPinnacleClient()
-        events = [{"id": f"evt{i}", "commence_time": "2026-08-26T20:00:00Z"} for i in range(3)]
+        near_term_iso = (datetime.now(timezone.utc) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        events = [{"id": f"evt{i}", "commence_time": near_term_iso} for i in range(3)]
         monkeypatch.setattr(client._client, "get_events", mock.Mock(return_value=(events, False)))
         get_event_odds_mock = mock.Mock(return_value=(_props_event(), False))
         monkeypatch.setattr(client._client, "get_event_odds", get_event_odds_mock)
@@ -286,7 +288,8 @@ class TestOddsAPIPinnacleClientCreditBudget:
 
     def test_no_conn_skips_budget_check_but_still_fetches(self, monkeypatch):
         client = OddsAPIPinnacleClient()
-        events = [{"id": "evt1", "commence_time": "2026-08-26T20:00:00Z"}]
+        near_term_iso = (datetime.now(timezone.utc) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        events = [{"id": "evt1", "commence_time": near_term_iso}]
         monkeypatch.setattr(client._client, "get_events", mock.Mock(return_value=(events, False)))
         monkeypatch.setattr(
             client._client, "get_event_odds",
@@ -346,7 +349,8 @@ class TestOddsAPIPinnacleClientHasNoStandaloneThrottle:
         conn.commit()
 
         client = OddsAPIPinnacleClient()
-        get_events_mock = mock.Mock(return_value=([{"id": "evt1", "commence_time": "2026-08-26T20:00:00Z"}], False))
+        near_term_iso = (datetime.now(timezone.utc) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        get_events_mock = mock.Mock(return_value=([{"id": "evt1", "commence_time": near_term_iso}], False))
         monkeypatch.setattr(client._client, "get_events", get_events_mock)
         monkeypatch.setattr(client._client, "get_event_odds", mock.Mock(return_value=(_props_event(), False)))
 
