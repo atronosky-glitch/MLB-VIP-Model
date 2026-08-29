@@ -134,12 +134,31 @@ def _score_reliability(rec: dict) -> float:
 
 
 def _score_freshness(rec: dict) -> float:
-    """Data freshness: source quality + staleness. Returns 0..1."""
+    """Data freshness: source quality + staleness. Returns 0..1.
+
+    ``freshness_status`` (from ``_freshness_for_observation`` in
+    daily_pipeline.py) is the canonical, provider-independent freshness
+    signal — computed purely from observation-timestamp age, always
+    exactly "FRESH" or "STALE" regardless of league. It must be checked
+    before falling back to the ``data_source`` string, which is a
+    provider label that varies by league (MLB's SportsGameOdds path
+    writes "LIVE API"; WNBA's non-SportsGameOdds provider writes "N/A
+    (non-SportsGameOdds provider)"). Confirmed live 2026-08-29: because
+    this function previously matched ``data_source`` first, every single
+    WNBA recommendation — 100%, genuinely FRESH data included — scored
+    the 0.5 unknown-source default instead of 1.0, silently costing
+    ~0.5 raw points on the 1-10 scale for every WNBA pick and pushing
+    many real, otherwise-qualifying picks just under the 7.0 Official
+    threshold for no reason related to actual data quality.
+    """
     freshness = rec.get("freshness_status", "")
     data_source = rec.get("data_source", "")
 
     if freshness == "STALE":
         return 0.2
+    if freshness == "FRESH":
+        return 1.0
+    # freshness_status unknown/unset — fall back to a data_source heuristic.
     if data_source == "LIVE API":
         return 1.0
     if data_source == "CACHE":

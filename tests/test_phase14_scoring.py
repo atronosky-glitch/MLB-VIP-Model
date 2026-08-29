@@ -221,6 +221,26 @@ class TestModelScore:
             freshness_status="FRESH", data_source="LIVE API"))
         assert fresh.score > stale.score
 
+    def test_fresh_non_sportsgameodds_provider_scores_same_as_fresh_live_api(self):
+        """Regression (2026-08-29): _score_freshness matched the literal
+        string "LIVE API" before checking freshness_status, so a league
+        on a different provider — WNBA writes data_source="N/A
+        (non-SportsGameOdds provider)", never "LIVE API" — fell through
+        to the 0.5 unknown-source default even when freshness_status was
+        genuinely "FRESH". Confirmed live: 100% of WNBA recommendations
+        (405/405) carried this data_source and were silently scored as if
+        their freshness were unknown, costing ~0.5 raw points on the 1-10
+        scale and pushing real, otherwise-qualifying picks just under the
+        7.0 Official threshold for reasons unrelated to actual data
+        quality. freshness_status is the canonical, provider-independent
+        signal and must win regardless of the data_source label."""
+        from src.model_scoring import compute_model_score
+        live_api = compute_model_score(self._base_rec(
+            freshness_status="FRESH", data_source="LIVE API"))
+        other_provider = compute_model_score(self._base_rec(
+            freshness_status="FRESH", data_source="N/A (non-SportsGameOdds provider)"))
+        assert other_provider.score == live_api.score
+
     def test_game_market_gets_full_confidence_without_a_confidence_score(self):
         """Regression (2026-08-23): game-level markets (player_id=="GAME")
         never go through player-identity name-matching, so there's no
