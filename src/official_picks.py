@@ -50,6 +50,7 @@ class OfficialPickConfig:
     official_daily_max_picks: int = 3
     official_max_per_game: int = 1
     official_max_per_player: int = 1
+    official_max_per_market_type: int = 1
     official_rules_version: str = RULES_VERSION
 
     # Discovery tier (private research only)
@@ -379,8 +380,21 @@ def rank_and_select_official_picks(
     1. Sort by model_score desc, edge_metric desc, book_count desc, freshness
     2. Daily max limit (default 3)
     3. Per-game limit (default 1)
-    4. No duplicate player/market/side/line
-    5. Already selected today carry forward
+    4. Per-market-type limit (default 1)
+    5. No duplicate player/market/side/line
+    6. Already selected today carry forward
+
+    The per-market-type limit (2026-08-30) exists because ranking by raw
+    model_score alone, uncapped, let a single high-volume market family
+    (MLB batting props) structurally sweep every daily slot on days where
+    it happened to score highest — not because it was the only real edge
+    available, but because the daily cap is small (3) and other qualified
+    markets (WNBA player props, MLB pitcher/game markets) never got a
+    chance to compete for a slot once that family filled all of them.
+    Capping picks per exact market_type still ranks by quality within
+    each market — the best candidate from each type competes for a slot,
+    nothing is chosen at random — it just stops one market type from
+    occupying more than its share of a very small daily list.
 
     Returns list of dicts with 'official_rank' added.
     """
@@ -391,6 +405,7 @@ def rank_and_select_official_picks(
     seen_picks: set[str] = set()
     game_counts: dict[str, int] = {}
     player_counts: dict[str, int] = {}
+    market_type_counts: dict[str, int] = {}
 
     # Pre-populate from already-selected picks today
     if already_selected_today:
@@ -402,6 +417,9 @@ def rank_and_select_official_picks(
             player_id = str(pick.get("player_id", ""))
             if player_id:
                 player_counts[player_id] = player_counts.get(player_id, 0) + 1
+            market_type = str(pick.get("market_type", ""))
+            if market_type:
+                market_type_counts[market_type] = market_type_counts.get(market_type, 0) + 1
             selected.append(pick)
 
     # Sort eligible candidates
@@ -423,33 +441,53 @@ def rank_and_select_official_picks(
         ]
     candidates = sorted(qualified_recs, key=sort_key)
 
-    for rec in candidates:
+    def _try_select(rec: dict, enforce_market_cap: bool) -> bool:
         if len(selected) >= config.official_daily_max_picks:
-            break
+            return False
 
         pk = _pick_key(rec)
         gk = _game_key(rec)
         player_id = str(rec.get("player_id", ""))
+        market_type = str(rec.get("market_type", ""))
 
-        # Skip duplicates
         if pk in seen_picks:
-            continue
-
-        # Per-game limit
+            return False
         if game_counts.get(gk, 0) >= config.official_max_per_game:
-            continue
-
+            return False
         if player_id and player_counts.get(player_id, 0) >= config.official_max_per_player:
-            continue
+            return False
+        if (enforce_market_cap and market_type
+                and market_type_counts.get(market_type, 0) >= config.official_max_per_market_type):
+            return False
 
         seen_picks.add(pk)
         game_counts[gk] = game_counts.get(gk, 0) + 1
+        if market_type:
+            market_type_counts[market_type] = market_type_counts.get(market_type, 0) + 1
         if player_id:
             player_counts[player_id] = player_counts.get(player_id, 0) + 1
 
-        rank = len(selected) + 1
-        rec["official_rank"] = rank
+        rec["official_rank"] = len(selected) + 1
         selected.append(rec)
+        return True
+
+    # Pass 1: enforce the per-market-type cap, so the best candidate from
+    # each distinct qualified market type gets first claim on a slot —
+    # every market type gets an equal shot at the daily list, ranked by
+    # quality within itself, before any type is allowed a second pick.
+    leftover = [rec for rec in candidates if not _try_select(rec, enforce_market_cap=True)]
+
+    # Pass 2: only if slots remain unfilled after every distinct market
+    # type has had its chance — i.e. there wasn't enough real diversity
+    # today — fall back to ranking the rest purely by quality, market cap
+    # no longer enforced. This keeps daily pick volume intact on days
+    # with genuinely little market variety instead of leaving slots
+    # empty for the sake of a diversity rule that has nothing to diversify.
+    if len(selected) < config.official_daily_max_picks:
+        for rec in leftover:
+            if len(selected) >= config.official_daily_max_picks:
+                break
+            _try_select(rec, enforce_market_cap=False)
 
     return selected
 

@@ -276,6 +276,44 @@ class TestRanking:
         selected = rank_and_select_official_picks(recs)
         assert selected[0]["official_rank"] == 1
 
+    def test_one_market_type_cannot_sweep_every_daily_slot(self):
+        """2026-08-30: one high-volume market family (e.g. MLB batting
+        props) scoring highest most days was structurally sweeping all
+        daily_max_picks slots, so genuinely qualified picks from other
+        markets never got a chance to be published even on days they
+        existed. When 3+ distinct market types are qualified, each gets
+        first claim on a slot before any type gets a second."""
+        recs = [
+            _base_rec(model_score=9.5 - i * 0.1, event_id=f"hr_ev_{i}",
+                      player_id=f"hr_player_{i}", market_type="batting_homeRuns_ou",
+                      recommendation_id=f"hr{i}")
+            for i in range(5)
+        ] + [
+            _base_rec(model_score=7.5, event_id="tb_ev", player_id="tb_player",
+                      market_type="batting_totalBases_ou", recommendation_id="tb1"),
+            _base_rec(model_score=7.2, event_id="wnba_ev", player_id="wnba_player",
+                      market_type="player_rebounds_ou", recommendation_id="wnba1"),
+        ]
+        selected = rank_and_select_official_picks(recs)
+        market_types = {s["market_type"] for s in selected}
+        assert len(selected) == 3
+        assert market_types == {"batting_homeRuns_ou", "batting_totalBases_ou", "player_rebounds_ou"}
+
+    def test_market_type_cap_relaxes_when_no_other_diversity_exists(self):
+        """The per-market-type cap must not shrink the daily list on a
+        day with genuinely only one qualified market type — it falls
+        back to filling remaining slots from that same type rather than
+        leaving slots empty for diversity that doesn't exist."""
+        recs = [
+            _base_rec(model_score=8.0 + i * 0.1, event_id=f"ev_{i}",
+                      player_id=f"player_{i}", market_type="batting_homeRuns_ou",
+                      recommendation_id=f"r{i}")
+            for i in range(5)
+        ]
+        selected = rank_and_select_official_picks(recs)
+        assert len(selected) == 3
+        assert all(s["market_type"] == "batting_homeRuns_ou" for s in selected)
+
 
 # ═══════════════════════════════════════════════════════════════════
 # Part 2: Immutable Freeze
