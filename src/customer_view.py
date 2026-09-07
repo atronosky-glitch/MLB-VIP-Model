@@ -354,7 +354,7 @@ def _render_full_pick(pick: dict, settled: bool = False) -> None:
 
     st.markdown(f"""
     <div class="pick {'settled' if settled else ''} {result_class}">
-      <div class="pick-title">{pick.get('player_name') or 'Official Play'}</div>
+      <div class="pick-title">{pick.get('player_name') or 'Top Play'}</div>
       <div class="pick-meta">{_league_badge(pick)} · {pick.get('matchup','')} · {_market_label(pick.get('market_type',''))} · {side_line}</div>
       <div class="pick-meta">{pick.get('sportsbook','')} {pick.get('offered_american_odds','')} · <span class="edge">{edge_text}</span></div>
       <div class="pick-meta">{detail_line}</div>
@@ -368,7 +368,7 @@ def _render_locked_pick(lock: dict) -> None:
     st.markdown(f"""
     <div class="pick locked">
       <div class="pick-title">{lock.get('matchup') or 'Game'}</div>
-      <div class="pick-meta">{lock.get('event_start_time','')[:16]} · Official Model Play</div>
+      <div class="pick-meta">{lock.get('event_start_time','')[:16]} · Top Model Play</div>
       <div class="lock-copy">VIP PICK AVAILABLE 🔒</div>
       <div class="pick-meta">Unlock the exact player and wager before first pitch.</div>
     </div>
@@ -415,17 +415,17 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 if not authorized:
-    st.info("Official plays are posted when the slate qualifies. Subscriber access unlocks the exact wager before the game; settled picks become public automatically for full accountability.")
-    st.subheader("Today's Official Picks")
+    st.info("Top plays are posted when the slate qualifies. Subscriber access unlocks the exact wager before the game; settled picks become public automatically for full accountability.")
+    st.subheader("Today's Top Picks")
     if data["locked"]:
         for lock in data["locked"]:
             _render_locked_pick(lock)
         st.button("Unlock Today's Picks", type="primary", use_container_width=True, disabled=True)
     else:
-        st.success("No Official Plays Yet")
+        st.success("No Top Picks Yet")
         st.caption("The model has not identified an opportunity meeting today's qualification standards.")
 else:
-    st.subheader("Today's Official Picks — Upcoming")
+    st.subheader("Today's Top Picks — Upcoming")
     if data["upcoming"]:
         with st.expander("Filter upcoming picks", expanded=False):
             up_filters = render_pick_filters(data["upcoming"], "upcoming")
@@ -436,17 +436,17 @@ else:
         else:
             st.caption("No upcoming picks match the current filters.")
     else:
-        st.success("No Official Plays Yet")
+        st.success("No Top Picks Yet")
         st.caption("The model has not identified an opportunity meeting today's qualification standards.")
     if data["research"]:
-        with st.expander("Research Opportunities"):
+        with st.expander("Full Board"):
             for pick in data["research"]:
                 _render_full_pick(pick)
 
 st.divider()
 st.markdown('<div id="track-record"></div>', unsafe_allow_html=True)
 st.subheader("Verified Track Record — Past Picks")
-st.caption("Settled Official Picks only. Winners and losses are included equally; no results are manually selected or hidden.")
+st.caption("Settled Top Picks only. Winners and losses are included equally; no results are manually selected or hidden.")
 if data["settled"]:
     with st.expander("Filter settled picks", expanded=False):
         settled_filters = render_pick_filters(data["settled"], "settled")
@@ -469,7 +469,7 @@ if data["settled"]:
         <div class="results-panel">
           <div class="results-eyebrow">Real Results — {period}</div>
           <div class="results-number" style="color:{line_color};">{period_units:+.2f}u</div>
-          <div class="results-caption">Cumulative result if every Official Pick were followed at its recorded stake.
+          <div class="results-caption">Cumulative result if every Top Pick were followed at its recorded stake.
           Every settled pick counts — wins and losses included equally, nothing hidden or cherry-picked.</div>
         </div>
         """, unsafe_allow_html=True)
@@ -545,7 +545,7 @@ if data["settled"]:
             ])
             st.dataframe(table, hide_index=True, use_container_width=True)
 else:
-    st.info("BUILDING VERIFIED TRACK RECORD · Performance appears after official picks settle.")
+    st.info("BUILDING VERIFIED TRACK RECORD · Performance appears after Top Picks settle.")
 
 st.divider()
 features = st.columns(4)
@@ -570,4 +570,4 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-st.caption("This platform does not guarantee profit, place bets, or present Research opportunities as Official Picks.")
+st.caption("This platform does not guarantee profit, place bets, or present Full Board signals as Top Picks.")

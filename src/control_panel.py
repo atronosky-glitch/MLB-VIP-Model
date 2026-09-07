@@ -771,8 +771,8 @@ with meta_cols[4]:
 # ── Tab Layout ─────────────────────────────────────────────────────
 tabs = st.tabs([
     ":material/star: Today's Picks",
-    ":material/verified: Official Picks",
-    ":material/science: Research",
+    ":material/verified: Top Picks",
+    ":material/science: Full Board",
     ":material/trending_up: Line Movement",
     ":material/analytics: Performance",
     ":material/insights: Market Intelligence",
@@ -915,11 +915,11 @@ with tabs[0]:
         )
 
 # ==================================================================
-# Tab 2: Official Picks
+# Tab 2: Top Picks
 # ==================================================================
 with tabs[1]:
-    st.subheader("Official Picks (Frozen Snapshots)")
-    st.caption("Official picks meet all qualification thresholds and are frozen as immutable records. Variable Kelly staking.")
+    st.subheader("Top Picks (Frozen Snapshots)")
+    st.caption("Top Picks meet all qualification thresholds and are frozen as immutable records. Variable Kelly staking.")
 
     try:
         import pandas as pd
@@ -979,13 +979,13 @@ with tabs[1]:
 
             st.dataframe(pd.DataFrame(op_table), use_container_width=True, hide_index=True)
         else:
-            st.info("No official picks yet. Run the pipeline to generate them.")
+            st.info("No Top Picks yet. Run the pipeline to generate them.")
     except Exception as e:
-        st.error(f"Error loading official picks: {e}")
+        st.error(f"Error loading Top Picks: {e}")
 
-    # Why No Official Picks Today
+    # Why No Top Picks Today
     st.divider()
-    st.subheader(":material/help: Why No Official Picks Today")
+    st.subheader(":material/help: Why No Top Picks Today")
     try:
         import pandas as pd
         conn_why = _open_dashboard_connection(db_path)
@@ -1001,7 +1001,7 @@ with tabs[1]:
             official_today = [r for r in today_recs if dict(r).get("recommendation_tier") == "OFFICIAL_TRACKED"]
 
             if official_today:
-                st.success(f"{len(official_today)} official pick(s) qualified today.")
+                st.success(f"{len(official_today)} Top Pick(s) qualified today.")
             elif today_recs:
                 why_data = []
                 for row in today_recs:
@@ -1041,7 +1041,7 @@ with tabs[1]:
                     })
 
                 st.dataframe(pd.DataFrame(why_data), use_container_width=True, hide_index=True)
-                st.caption("Showing top 20 research picks by Model Score. Failed gates explain why they did not reach 7.0.")
+                st.caption("Showing top 20 Full Board picks by Model Score. Failed gates explain why they did not reach 7.0.")
             else:
                 st.info("No recommendations generated today yet.")
         finally:
@@ -1052,43 +1052,43 @@ with tabs[1]:
     # Manual grading
     st.divider()
     st.subheader(":material/fact_check: Manual Grading")
-    if st.button("Grade Pending Official Picks", use_container_width=False):
+    if st.button("Grade Pending Top Picks", use_container_width=False):
         try:
             from src.tracker import grade_pending_picks
             conn = _open_dashboard_connection(db_path)
             try:
                 graded = grade_pending_picks(conn)
-                st.success(f"Graded {graded} official pick(s)")
+                st.success(f"Graded {graded} Top Pick(s)")
             finally:
                 conn.close()
         except Exception as e:
             st.error(f"Grading failed: {e}")
 
 # ==================================================================
-# Tab 3: Research
+# Tab 3: Full Board
 # ==================================================================
 with tabs[2]:
-    st.subheader(":material/science: Research Recommendations")
-    st.caption("Discovery picks (score >= 6.0, private research) and Research-only picks are for threshold calibration.")
+    st.subheader(":material/science: Full Board")
+    st.caption("Watchlist picks (score >= 6.0, private) and the rest of the Full Board are for threshold calibration.")
     st.caption("Model Score is a quality metric — not a guaranteed win probability. It does not predict game outcomes.")
 
     recs_all = _load_recs(db_path, "today")
     discovery_recs = [r for r in recs_all if r.get("recommendation_tier") == "DISCOVERY_TRACKED"]
     research_only = [r for r in recs_all if r.get("recommendation_tier") == "RESEARCH_ONLY"]
 
-    # Discovery tier summary
+    # Watchlist (Discovery) tier summary
     if discovery_recs:
-        st.subheader("Discovery Picks (Private Research)")
-        st.caption(f"{len(discovery_recs)} pick(s) scored >= 6.0 — does not count toward official record.")
+        st.subheader("Watchlist (Private)")
+        st.caption(f"{len(discovery_recs)} pick(s) scored >= 6.0 — does not count toward the Top Picks record.")
         disc_cols = st.columns(3, border=True)
-        disc_cols[0].metric("Discovery", len(discovery_recs))
-        disc_cols[1].metric("Research Only", len(research_only))
-        disc_cols[2].metric("Total Non-Official", len(discovery_recs) + len(research_only))
+        disc_cols[0].metric("Watchlist", len(discovery_recs))
+        disc_cols[1].metric("Full Board Only", len(research_only))
+        disc_cols[2].metric("Total Non-Top-Pick", len(discovery_recs) + len(research_only))
 
     all_non_official = discovery_recs + research_only
 
     if not all_non_official:
-        st.info("No research-only recommendations today.")
+        st.info("No Full Board recommendations today.")
     else:
         try:
             import pandas as pd
@@ -1155,7 +1155,7 @@ with tabs[2]:
 
             if table_data:
                 st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
-                st.caption(f"Showing {len(filtered)} of {len(research_only)} research picks")
+                st.caption(f"Showing {len(filtered)} of {len(research_only)} Full Board picks")
             else:
                 if selected_types is not None:
                     try:
@@ -1183,7 +1183,7 @@ with tabs[2]:
                             yn_rows = [r for r in coverage_rows if str(r.get("market_type", "")).endswith("_yn")]
                             paired = sum(1 for sides in groups.values() if {"OVER", "UNDER"}.issubset(sides))
                             st.info(
-                                f"No saved research picks for this market. Raw approved coverage: "
+                                f"No saved Full Board picks for this market. Raw approved coverage: "
                                 f"{len(coverage_rows)} rows, {len({r.get('player_id') for r in coverage_rows})} players, "
                                 f"{len({r.get('sportsbook') for r in coverage_rows})} books. "
                                 f"O/U rows={len(ou_rows)}, Y/N rows={len(yn_rows)}, "
@@ -1196,9 +1196,9 @@ with tabs[2]:
                                 "This indicates API/parser coverage, not simply no positive edge."
                             )
                     except Exception:
-                        st.info("No research picks match filters.")
+                        st.info("No Full Board picks match filters.")
                 else:
-                    st.info("No research picks match filters.")
+                    st.info("No Full Board picks match filters.")
         except Exception as e:
             st.error(f"Error: {e}")
 
@@ -1207,7 +1207,7 @@ with tabs[2]:
 # ==================================================================
 with tabs[3]:
     st.subheader(":material/trending_up: Odds Observations & Line Movement")
-    st.caption("Track odds changes from morning → pregame → closing for official picks.")
+    st.caption("Track odds changes from morning → pregame → closing for Top Picks.")
 
     try:
         import pandas as pd
@@ -1226,7 +1226,7 @@ with tabs[3]:
             conn.close()
 
         if not official_picks_list:
-            st.info("No official picks today to track observations for.")
+            st.info("No Top Picks today to track observations for.")
         else:
             for op in official_picks_list:
                 rid = op["recommendation_id"]
@@ -1340,7 +1340,7 @@ with tabs[4]:
                             padding:18px 22px; margin-bottom:10px;">
                   <div style="color:#9a9488; text-transform:uppercase; letter-spacing:.09em;
                               font-size:.72rem; font-weight:800;">
-                    Cumulative Result &mdash; All Settled Official Picks
+                    Cumulative Result &mdash; All Settled Top Picks
                   </div>
                   <div style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:2.6rem;
                               letter-spacing:-.03em; color:{accent}; margin-top:4px;">
@@ -1427,7 +1427,7 @@ with tabs[4]:
                 pass
 
         if not official_all:
-            st.info("No official picks with outcomes yet.")
+            st.info("No Top Picks with outcomes yet.")
     except Exception as e:
         st.error(f"Error loading performance data: {e}")
 
@@ -1563,9 +1563,9 @@ with tabs[5]:
                     "Two-Sided": two_sided,
                     "Stale": s["stale_count"],
                     "Map Fail": s["mapping_failures"],
-                    "Official": s["official_count"],
-                    "Discovery": s["discovery_count"],
-                    "Research": s["research_count"],
+                    "Top": s["official_count"],
+                    "Watchlist": s["discovery_count"],
+                    "Full Board": s["research_count"],
                 })
 
             # Registry markets with ZERO raw rows today never appear in
@@ -1590,11 +1590,11 @@ with tabs[5]:
                     "Odds Rows": 0, "Events": 0, "Players": 0, "Books": 0,
                     "Avg Books/Market": 0.0, "Median Books": 0, "4+ Books %": 0.0,
                     "Two-Sided": 0, "Stale": 0, "Map Fail": 0,
-                    "Official": 0, "Discovery": 0, "Research": 0,
+                    "Top": 0, "Watchlist": 0, "Full Board": 0,
                 })
 
-            # Sort by average sportsbook coverage desc, then discovery count desc
-            mi_display.sort(key=lambda x: (-x["Avg Books/Market"], -x["Discovery"], -x["Research"]))
+            # Sort by average sportsbook coverage desc, then watchlist count desc
+            mi_display.sort(key=lambda x: (-x["Avg Books/Market"], -x["Watchlist"], -x["Full Board"]))
 
             import pandas as pd
             st.dataframe(pd.DataFrame(mi_display), use_container_width=True, hide_index=True)
@@ -1613,7 +1613,7 @@ with tabs[5]:
             total_research = sum(s["research_count"] for s in market_stats.values())
             st.caption(
                 f"Total: {len(market_stats)} markets | "
-                f"Official: {total_official} | Discovery: {total_discovery} | Research: {total_research}"
+                f"Top: {total_official} | Watchlist: {total_discovery} | Full Board: {total_research}"
             )
 
             # Top markets by Market Quality Score
@@ -1817,8 +1817,8 @@ with tabs[6]:
         official = [r for r in recs if r.get("recommendation_tier") == "OFFICIAL_TRACKED"]
         research_recs = [r for r in recs if r.get("recommendation_tier") != "OFFICIAL_TRACKED"]
         tier_cols = st.columns(3, border=True)
-        tier_cols[0].metric("Official", len(official))
-        tier_cols[1].metric("Research Only", len(research_recs))
+        tier_cols[0].metric("Top", len(official))
+        tier_cols[1].metric("Full Board", len(research_recs))
         tier_cols[2].metric("Total", len(recs))
 
     # Skipped games
@@ -2529,7 +2529,7 @@ with tabs[8]:
             st.caption(
                 "Every scan's real outcome, end to end: opportunities found → "
                 "recommendations saved/duplicated/errored → tier breakdown → "
-                "Pinnacle usage → gate rejections → Official picks actually "
+                "Pinnacle usage → gate rejections → Top Picks actually "
                 "published. No guessing whether the automated runner found anything."
             )
             try:
@@ -2566,9 +2566,9 @@ with tabs[8]:
                         "Saved": funnel.get("n_saved", "—"),
                         "Dupes": funnel.get("n_duplicates", "—"),
                         "Save Errs": funnel.get("n_save_errors", "—"),
-                        "Research": tiers.get("RESEARCH_ONLY", "—"),
-                        "Discovery": tiers.get("DISCOVERY_TRACKED", "—"),
-                        "Official-tier": tiers.get("OFFICIAL_TRACKED", "—"),
+                        "Full Board": tiers.get("RESEARCH_ONLY", "—"),
+                        "Watchlist": tiers.get("DISCOVERY_TRACKED", "—"),
+                        "Top-tier": tiers.get("OFFICIAL_TRACKED", "—"),
                         "Published": funnel.get("n_official_picks_published", "—"),
                         "Pin. Found": funnel.get("pinnacle_found", "—"),
                         "Pin. Used": funnel.get("pinnacle_reference_used", "—"),

@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_customer_view_is_separate_from_admin_dashboard():
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert "official_picks" in source
-    assert "Research Opportunities" in source
-    assert "No Official Plays Yet" in source
+    assert "Full Board" in source
+    assert "No Top Picks Yet" in source
     assert "subprocess" not in source
     assert "SPORTSODDS_API_KEY" not in source
 
