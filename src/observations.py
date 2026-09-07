@@ -100,10 +100,19 @@ def record_pipeline_observations(
 ) -> int:
     """Record a scan's prices for already-frozen official picks.
 
-    Matching uses stable event/player/market/side/line/sportsbook fields. A
-    later price or odds change therefore attaches to the original official
-    pick instead of creating a second identity. One observation per phase is
-    retained by design; final CLV remains handled by ``closing_prices``.
+    Matching uses the same stable identity ``compute_bet_slot_key`` uses
+    everywhere else in this codebase — event/player/market/side — plus
+    line (line changes get their own new official pick via a material
+    update, so a stale line here means "not the same pick" rather than
+    "the pick as it exists now"). Deliberately NOT sportsbook: a later
+    scan's best price is very often a different book than whichever one
+    was quoting it at freeze time, and until 2026-09-07 requiring the
+    exact original sportsbook meant a later phase's price almost never
+    matched anything — confirmed live in production, 91 completed
+    pregame scans had produced only 9 PREGAME observations, ever. Only
+    the still-ACTIVE pick for this identity is ever a valid match — a
+    superseded one from an earlier price/line has already been replaced
+    and must not receive new observations.
     """
     if observation_type not in OBSERVATION_TYPES:
         raise ValueError(f"Unknown observation type: {observation_type}")
@@ -114,12 +123,11 @@ def record_pipeline_observations(
                FROM historical_recommendations hr
                JOIN official_picks op ON op.recommendation_id = hr.recommendation_id
               WHERE hr.event_id = ? AND hr.player_id = ? AND hr.market_type = ?
-                AND hr.market_form = ? AND hr.side = ? AND hr.sportsbook = ?
+                AND hr.market_form = ? AND hr.side = ? AND op.pick_status = 'ACTIVE'
               ORDER BY hr.scan_timestamp DESC""",
             (
                 opp.get("event_id"), opp.get("player_id"), opp.get("market_type"),
                 "yn" if opp.get("line") is None else "ou", opp.get("side"),
-                opp.get("sportsbook"),
             ),
         ).fetchall()
         match = next(
