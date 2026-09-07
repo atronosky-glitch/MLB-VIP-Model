@@ -152,3 +152,139 @@ def test_ingestion_persists_postponed_game_as_void_status(db_conn):
         "SELECT final_status FROM event_results WHERE event_id = ?", ("E-POSTPONED",),
     ).fetchone()
     assert row["final_status"] == "POSTPONED"
+
+
+# ── Schedule date-boundary fix (2026-09-07) ──────────────────────────
+#
+# Root cause: MLB StatsAPI's /schedule endpoint is keyed by the US
+# "baseball day", not a UTC calendar date. Grouping recommendations by
+# the raw UTC date of event_start_time asked the API for the *wrong*
+# day for any evening game (the large majority of them) — confirmed live
+# against 7 real stuck production recommendations, 7/7 only matched once
+# looked up under the correct (US Eastern) date.
+
+class DateRecordingClient(MLBStatsClient):
+    """Only returns the real game (at the given gameDate) when asked for
+    the expected date_value — any other date (e.g. the pre-fix UTC date)
+    gets an empty schedule, exactly like the real API does for "the wrong
+    day". Game team names match FakeClient's fixture rec ("Away Team @
+    Home Team")."""
+
+    def __init__(self, expected_date: str, game_date: str):
+        super().__init__()
+        self.expected_date = expected_date
+        self.game_date = game_date
+        self.requested_dates: list[str] = []
+
+    def fetch_schedule(self, date_value):
+        self.requested_dates.append(date_value)
+        if date_value != self.expected_date:
+            return []
+        return [{
+            "gamePk": 99, "gameDate": self.game_date,
+            "teams": {"away": {"team": {"name": "Away Team"}},
+                      "home": {"team": {"name": "Home Team"}}},
+        }]
+
+    def fetch_game_feed(self, game_pk):
+        return _feed()
+
+
+def test_ingestion_looks_up_the_eastern_game_date_not_the_utc_date(db_conn):
+    """A game at 2026-08-04T02:00:00Z (a real UTC timestamp for a night
+    game) is really an August 3rd Eastern game — the schedule lookup must
+    ask for 2026-08-03, not 2026-08-04."""
+    from tests.test_automatic_grading import _seed
+    _seed(db_conn, "seed-only")  # creates player_stat_results (fixture's minimal schema doesn't)
+    client = DateRecordingClient(
+        expected_date="2026-08-03", game_date="2026-08-04T02:00:00Z",
+    )
+    result = ingest_results_for_recommendations(
+        db_conn,
+        [{"recommendation_id": "result-tz-1", "event_id": "E-AUTO", "player_id": "P-AUTO",
+          "player_name": "Test Pitcher", "market_type": "pitching_strikeouts",
+          "event_start_time": "2026-08-04T02:00:00Z",
+          "matchup": "Away Team @ Home Team"}],
+        client=client,
+    )
+    assert client.requested_dates == ["2026-08-03"]
+    assert result["facts_saved"] == 1
+
+
+def test_ingestion_still_uses_same_day_for_an_afternoon_game(db_conn):
+    """An early/afternoon game (e.g. 18:00Z = 2pm Eastern, no UTC-day
+    rollover) must still be looked up under its own UTC date — the fix
+    is a real Eastern-time conversion, not a blind "subtract a day"."""
+    from tests.test_automatic_grading import _seed
+    _seed(db_conn, "seed-only-2")
+    client = DateRecordingClient(
+        expected_date="2026-08-03", game_date="2026-08-03T18:00:00Z",
+    )
+    result = ingest_results_for_recommendations(
+        db_conn,
+        [{"recommendation_id": "result-tz-2", "event_id": "E-AUTO", "player_id": "P-AUTO",
+          "player_name": "Test Pitcher", "market_type": "pitching_strikeouts",
+          "event_start_time": "2026-08-03T18:00:00Z",
+          "matchup": "Away Team @ Home Team"}],
+        client=client,
+    )
+    assert client.requested_dates == ["2026-08-03"]
+    assert result["facts_saved"] == 1
+
+
+# ── Doubleheader tie-break fix (2026-09-07) ──────────────────────────
+
+def _dh_games():
+    return [
+        {
+            "gamePk": 1, "gameDate": "2026-07-29T17:10:00Z",
+            "teams": {"away": {"team": {"name": "Atlanta Braves"}},
+                      "home": {"team": {"name": "New York Mets"}}},
+        },
+        {
+            "gamePk": 2, "gameDate": "2026-07-29T23:10:00Z",
+            "teams": {"away": {"team": {"name": "Atlanta Braves"}},
+                      "home": {"team": {"name": "New York Mets"}}},
+        },
+    ]
+
+
+class TestDoubleheaderMatching:
+    def test_resolves_to_the_closest_start_time_not_ambiguous(self):
+        from src.mlb_results import _match_schedule_game
+        game = _match_schedule_game(
+            _dh_games(), "Atlanta Braves", "New York Mets", "2026-07-29T17:10:00Z",
+        )
+        assert game is not None
+        assert game["gamePk"] == 1
+
+    def test_resolves_the_second_game_of_a_doubleheader_too(self):
+        from src.mlb_results import _match_schedule_game
+        game = _match_schedule_game(
+            _dh_games(), "Atlanta Braves", "New York Mets", "2026-07-29T23:05:00Z",
+        )
+        assert game is not None
+        assert game["gamePk"] == 2
+
+    def test_stays_unresolved_with_no_target_time_to_disambiguate(self):
+        from src.mlb_results import _match_schedule_game
+        assert _match_schedule_game(
+            _dh_games(), "Atlanta Braves", "New York Mets", None,
+        ) is None
+
+    def test_stays_unresolved_on_a_genuine_tie(self):
+        from src.mlb_results import _match_schedule_game
+        # Exactly equidistant between both games — must not coin-flip.
+        game = _match_schedule_game(
+            _dh_games(), "Atlanta Braves", "New York Mets", "2026-07-29T20:10:00Z",
+        )
+        assert game is None
+
+    def test_single_game_still_resolves_normally(self):
+        from src.mlb_results import _match_schedule_game
+        games = [_dh_games()[0]]
+        game = _match_schedule_game(
+            games, "Atlanta Braves", "New York Mets", "2026-07-29T17:10:00Z",
+        )
+        assert game is not None
+        assert game["gamePk"] == 1

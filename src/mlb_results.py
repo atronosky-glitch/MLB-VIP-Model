@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import zoneinfo
 from datetime import datetime, timezone
 
 import requests
@@ -20,6 +21,24 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://statsapi.mlb.com/api"
 RESULT_SOURCE = "MLB StatsAPI"
+
+# MLB StatsAPI's /schedule endpoint is keyed by the US "baseball day", not
+# a UTC calendar date. Most games start in the evening US time, so their
+# UTC timestamp already rolls into the next calendar day — e.g. a game at
+# 2026-08-03T22:00 Eastern is stored here as event_start_time
+# "2026-08-04T02:00:00Z". Grouping by the raw UTC date and calling
+# fetch_schedule(that date) asks the API for the *next* baseball day,
+# which doesn't contain the game, and _match_schedule_game() correctly
+# reports "not found" — not a bug in the matcher, but every evening game
+# was being looked up under the wrong day. Confirmed live 2026-09-07
+# against 7 real stuck recommendations: fetch_schedule(UTC date) found 0
+# of 7; fetch_schedule(this Eastern-converted date) found 7 of 7. This is
+# the single largest contributor to a real production settlement
+# backlog. Always US Eastern regardless of MLB_TIMEZONE — this is the
+# data source's own fixed convention, not the product's configurable
+# display timezone (see database.db_manager.get_today_in_configured_timezone
+# for that separate, genuinely-configurable concept).
+_MLB_SCHEDULE_TIMEZONE = zoneinfo.ZoneInfo("America/New_York")
 _MARKET_FIELDS = {
     "pitching_strikeouts": ("pitching", "strikeOuts"),
     "pitching_hits": ("pitching", "hits"),
@@ -93,7 +112,7 @@ def _match_schedule_game(
     away = normalize_name(away_team)
     home = normalize_name(home_team)
     target_time = _parse_time(start_time)
-    matches = []
+    matches: list[tuple[dict, datetime | None]] = []
     for game in games:
         teams = game.get("teams", {})
         game_away = normalize_name(((teams.get("away") or {}).get("team") or {}).get("name"))
@@ -103,8 +122,35 @@ def _match_schedule_game(
         game_time = _parse_time(game.get("gameDate"))
         if target_time and game_time and abs((game_time - target_time).total_seconds()) > 18 * 3600:
             continue
-        matches.append(game)
-    return matches[0] if len(matches) == 1 else None
+        matches.append((game, game_time))
+
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0][0]
+
+    # More than one game between these exact two teams within the window
+    # — in practice almost always a doubleheader (same two teams, ~6
+    # hours apart, both comfortably inside the 18-hour window above). The
+    # recommendation's own start time is exactly what disambiguates which
+    # game it was actually offered against — found live 2026-09-07 via a
+    # production settlement-backlog audit: this case was previously
+    # always returning None (never resolving), silently contributing to
+    # that backlog for every doubleheader date. Still never guesses: only
+    # resolves when exactly one candidate is unambiguously the closest;
+    # a genuine tie, or a missing/unparseable time on either side, stays
+    # unresolved.
+    if target_time is None:
+        return None
+    timed = [(game, game_time) for game, game_time in matches if game_time is not None]
+    if not timed:
+        return None
+    timed.sort(key=lambda pair: abs((pair[1] - target_time).total_seconds()))
+    if len(timed) == 1:
+        return timed[0][0]
+    closest_diff = abs((timed[0][1] - target_time).total_seconds())
+    runner_up_diff = abs((timed[1][1] - target_time).total_seconds())
+    return timed[0][0] if closest_diff < runner_up_diff else None
 
 
 def _iter_players(feed: dict):
@@ -191,7 +237,8 @@ def ingest_results_for_recommendations(conn, recommendations: list[dict], client
             continue
         parsed = _parse_time(rec.get("event_start_time"))
         if parsed:
-            by_date.setdefault(parsed.date().isoformat(), []).append(rec)
+            schedule_date = parsed.astimezone(_MLB_SCHEDULE_TIMEZONE).date().isoformat()
+            by_date.setdefault(schedule_date, []).append(rec)
 
     stats = {
         "recommendations": len(recommendations), "games_final": 0,
