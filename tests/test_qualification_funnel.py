@@ -184,3 +184,132 @@ def test_build_funnel_report_scopes_to_one_league(tmp_path):
 def test_build_funnel_report_empty_db_returns_empty(tmp_path):
     conn = _init(tmp_path)
     assert build_funnel_report(conn) == {}
+
+
+# ── Provider-coverage vs. qualification distinction (2026-09-06) ────
+
+from datetime import datetime, timezone
+
+from src.qualification_funnel import (
+    NO_DATA_FROM_PROVIDER,
+    DATA_RECEIVED_NO_BET_QUALIFIED,
+    PRODUCING_RECOMMENDATIONS,
+    classify_market_data_status,
+    build_market_coverage_report,
+)
+
+
+class _FakeMarketConfig:
+    def __init__(self, cli_name, display_name, market_type_ou=None, market_type_yn=None):
+        self.cli_name = cli_name
+        self.display_name = display_name
+        self.market_type_ou = market_type_ou
+        self.market_type_yn = market_type_yn
+
+
+class TestClassifyMarketDataStatus:
+    def test_zero_raw_rows_is_no_data_from_provider(self):
+        assert classify_market_data_status(raw_rows=0, rec_rows=0) == NO_DATA_FROM_PROVIDER
+
+    def test_raw_rows_but_zero_recs_is_data_received_no_bet_qualified(self):
+        assert (
+            classify_market_data_status(raw_rows=500, rec_rows=0)
+            == DATA_RECEIVED_NO_BET_QUALIFIED
+        )
+
+    def test_raw_rows_and_recs_is_producing_recommendations(self):
+        assert (
+            classify_market_data_status(raw_rows=500, rec_rows=3)
+            == PRODUCING_RECOMMENDATIONS
+        )
+
+    def test_never_reports_data_received_when_raw_rows_is_zero(self):
+        """Even if a caller somehow has rec_rows > 0 with raw_rows == 0
+        (shouldn't happen — a rec can't exist without raw data — but the
+        classification must never call that "no bet qualified", which
+        would misleadingly imply the provider sent data this cycle)."""
+        assert classify_market_data_status(raw_rows=0, rec_rows=5) == NO_DATA_FROM_PROVIDER
+
+
+def _insert_player_prop_odds(conn, *, market_type, n=1, validation_status="VALID"):
+    from database.db_manager import save_player_prop_batch
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for i in range(n):
+        rows.append({
+            "event_id": f"E-{market_type}-{i}", "odd_id": f"odd-{market_type}-{i}",
+            "sportsbook": "draftkings", "player_id": f"P-{market_type}-{i}",
+            "player_name": "Test Player", "team_id": None, "team_name": None,
+            "market_type": market_type, "market_group_key": f"grp-{market_type}-{i}",
+            "side": "OVER", "line": 1.5, "price": -110, "decimal_odds": 1.909,
+            "is_alt_line": 0, "available": 1, "validation_status": validation_status,
+            "mapping_confidence": "HIGH", "mapping_method": "exact",
+            "validation_reason": "", "captured_at": now,
+        })
+    save_player_prop_batch(conn, rows)
+
+
+class TestBuildMarketCoverageReport:
+    def test_market_with_no_raw_rows_is_no_data_from_provider(self, tmp_path):
+        conn = _init(tmp_path)
+        registry = [_FakeMarketConfig("hits", "Player Hits", market_type_ou="batting_hits_ou")]
+        report = build_market_coverage_report(conn, "MLB", registry)
+        assert len(report) == 1
+        assert report[0]["status"] == NO_DATA_FROM_PROVIDER
+        assert report[0]["raw_rows"] == 0
+        assert report[0]["rec_rows"] == 0
+
+    def test_market_with_raw_rows_but_no_recs_is_data_received_no_bet_qualified(self, tmp_path):
+        conn = _init(tmp_path)
+        _insert_player_prop_odds(conn, market_type="pitching_strikeouts_ou", n=10)
+        registry = [_FakeMarketConfig(
+            "strikeouts", "Pitcher Strikeouts", market_type_ou="pitching_strikeouts_ou",
+        )]
+        report = build_market_coverage_report(conn, "MLB", registry)
+        assert report[0]["status"] == DATA_RECEIVED_NO_BET_QUALIFIED
+        assert report[0]["raw_rows"] == 10
+        assert report[0]["rec_rows"] == 0
+
+    def test_market_with_raw_rows_and_recs_is_producing_recommendations(self, tmp_path):
+        conn = _init(tmp_path)
+        _insert_player_prop_odds(conn, market_type="batting_homeRuns_ou", n=10)
+        _save_rec(
+            conn, market_type="batting_homeRuns_ou", league="MLB",
+            scan_timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        registry = [_FakeMarketConfig(
+            "home_runs", "Home Runs", market_type_ou="batting_homeRuns_ou",
+        )]
+        report = build_market_coverage_report(conn, "MLB", registry)
+        assert report[0]["status"] == PRODUCING_RECOMMENDATIONS
+        assert report[0]["raw_rows"] == 10
+        assert report[0]["rec_rows"] == 1
+
+    def test_scopes_recommendation_counts_to_the_requested_league(self, tmp_path):
+        """save_player_prop_batch always tags raw rows 'MLB' (its schema
+        column default — there's no per-row league param), so the
+        league-scoping to actually exercise here is on the recommendation
+        side: a same-market_type recommendation logged under a different
+        league must not count toward this league's status."""
+        conn = _init(tmp_path)
+        _insert_player_prop_odds(conn, market_type="batting_homeRuns_ou", n=5)
+        _save_rec(
+            conn, market_type="batting_homeRuns_ou", league="WNBA",
+            scan_timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        registry = [_FakeMarketConfig(
+            "home_runs", "Home Runs", market_type_ou="batting_homeRuns_ou",
+        )]
+        report = build_market_coverage_report(conn, "MLB", registry)
+        # Raw MLB coverage exists, but the only recommendation is WNBA's —
+        # an MLB-scoped report must not count it as an MLB recommendation.
+        assert report[0]["raw_rows"] == 5
+        assert report[0]["rec_rows"] == 0
+        assert report[0]["status"] == DATA_RECEIVED_NO_BET_QUALIFIED
+
+    def test_skips_registry_entries_with_no_market_type_at_all(self, tmp_path):
+        conn = _init(tmp_path)
+        registry = [_FakeMarketConfig("broken", "Broken Entry")]  # no ou/yn type
+        report = build_market_coverage_report(conn, "MLB", registry)
+        assert report == []

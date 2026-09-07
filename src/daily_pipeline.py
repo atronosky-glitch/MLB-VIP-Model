@@ -1017,16 +1017,26 @@ def _stage_freeze(config: PipelineConfig, state: PipelineState) -> bool:
             if saved > 0:
                 try:
                     from src.official_picks import rank_and_select_official_picks
+                    from database.db_manager import get_official_picks_today
                     today_recs = conn.execute(
                         """SELECT * FROM historical_recommendations
                            WHERE date(scan_timestamp) = date('now')
+                           AND league = ?
                            AND event_status NOT IN (
                                'live','inprogress','in_progress','started','in-progress',
                                'final','finished','completed','closed','ended'
-                           )"""
+                           )""",
+                        (config.league,),
                     ).fetchall()
                     today_recs = [dict(r) for r in today_recs]
-                    official = rank_and_select_official_picks(today_recs)
+                    # Cross-run daily cap (2026-09-06 fix): re-derive today's
+                    # already-selected slots from the database on every call
+                    # instead of starting from an empty list, so
+                    # official_daily_max_picks is a real per-day cap across
+                    # every pipeline invocation today, not a per-invocation
+                    # one. See docs/ROOT_CAUSE_FIX_2026-09-06.md.
+                    already_today = get_official_picks_today(conn, league=config.league)
+                    official = rank_and_select_official_picks(today_recs, already_selected_today=already_today)
                     if official:
                         from database.db_manager import freeze_or_update_official_pick
                         n_frozen = n_duplicate = n_superseded = 0

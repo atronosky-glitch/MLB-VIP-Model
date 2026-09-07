@@ -11,6 +11,7 @@ import logging
 
 from database.db_manager import (
     DB,
+    capture_closing_prices,
     get_unsettled_recommendations,
     get_event_result,
     get_player_stat_result,
@@ -23,6 +24,35 @@ from src.game_settlement import GAME_MARKET_TYPES, classify_event_status, grade_
 from src.tracker import compute_variable_stake
 
 logger = logging.getLogger(__name__)
+
+
+def _capture_final_closing_price(conn: DB, rec: dict) -> None:
+    """Capture the canonical (customer/report-facing) closing_prices row
+    for *rec*, now that it's settled and the game is definitely over.
+
+    Fix (2026-09-06): capture_closing_prices() only ever populates the
+    canonical closing_prices table when called with snapshot_kind="final"
+    — every real production call site (the daily pipeline's own morning
+    and pregame stages) used snapshot_kind="morning"/"pregame", which only
+    record lifecycle evidence, never the canonical table. Every settled
+    Official pick in production had a missing CLV as a result — the
+    closing_prices table had zero rows, ever, despite 9,168 CLOSING_SNAPSHOT
+    lifecycle events already being recorded correctly. Grading (this
+    module) is the first point in the pipeline where a recommendation is
+    both settled and its game is confirmed over, so it's the correct place
+    for the one true "final" snapshot. capture_closing_prices() is already
+    idempotent per recommendation_id (an existing row short-circuits it),
+    so this is safe to call on every grading pass, including re-runs.
+    Never allowed to fail grading itself — a closing-price lookup issue
+    for one recommendation must not block settling it.
+    """
+    try:
+        capture_closing_prices(conn, [rec], snapshot_kind="final")
+    except Exception:
+        logger.warning(
+            "Closing-price capture failed for recommendation=%s (grading itself succeeded)",
+            rec.get("recommendation_id"), exc_info=True,
+        )
 
 
 def grade_available_recommendations(conn: DB, event_id: str | None = None) -> dict:
@@ -56,6 +86,7 @@ def grade_available_recommendations(conn: DB, event_id: str | None = None) -> di
                 ):
                     save_bet_units(conn, rec["recommendation_id"], "VOID", rec["offered_american_odds"])
                     record_grading_completed(conn, rec, "VOID", grader_version=GRADER_VERSION)
+                    _capture_final_closing_price(conn, rec)
                     result["graded"] += 1
                 else:
                     result["errors"] += 1
@@ -106,6 +137,7 @@ def grade_available_recommendations(conn: DB, event_id: str | None = None) -> di
                 final_stat_value=final_value,
                 grader_version=GRADER_VERSION,
             )
+            _capture_final_closing_price(conn, rec)
             result["graded"] += 1
         except Exception:
             logger.exception("Automatic grading failed recommendation=%s", rec.get("recommendation_id"))
@@ -159,6 +191,7 @@ def grade_available_game_recommendations(conn: DB, event_id: str | None = None) 
             record_grading_completed(
                 conn, rec, status, final_stat_value=None, grader_version=GRADER_VERSION,
             )
+            _capture_final_closing_price(conn, rec)
             result["graded"] += 1
             if status == "NEEDS_REVIEW":
                 result["needs_review"] += 1

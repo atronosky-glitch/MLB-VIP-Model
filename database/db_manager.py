@@ -2222,10 +2222,28 @@ def freeze_or_update_official_pick(
         return {"action": "error", "recommendation_id": recommendation_id}
 
 
-def get_official_picks_today(conn: DB) -> list[dict]:
-    """Get today's official picks."""
-    rows = conn.execute("""
-        SELECT op.*, hr.player_name, hr.market_type, hr.market_form,
+def get_official_picks_today(conn: DB, league: str | None = None) -> list[dict]:
+    """Get today's official picks (one row per still-ACTIVE bet slot).
+
+    "Today" is the same UTC calendar day used everywhere else in the
+    pipeline (``date(scan_timestamp) = date('now')`` on the daily
+    pipeline's candidate-recs query) — not an Eastern-time boundary.
+
+    Pass ``league`` to scope to one league — required when the result
+    feeds ``src.official_picks.rank_and_select_official_picks``'s
+    ``already_selected_today`` parameter, since that ranking pass itself
+    only ever considers one league's candidates at a time (see
+    ``src/daily_pipeline.py::_stage_freeze``); omit it for an
+    all-leagues view (e.g. an admin dashboard).
+
+    Includes ``player_id`` and ``event_id`` (needed by
+    ``compute_bet_slot_key``/``_pick_key``/``_game_key``), in addition to
+    every column ``official_picks`` and the display fields already
+    selected here.
+    """
+    sql = """
+        SELECT op.*, hr.player_id, hr.event_id, hr.player_name,
+               hr.market_type, hr.market_form,
                hr.side, hr.line, hr.sportsbook, hr.offered_american_odds,
                hr.offered_decimal_odds, hr.ev_pct, hr.yn_implied_prob_adv,
                hr.n_consensus_books, hr.matchup, hr.event_status,
@@ -2234,8 +2252,13 @@ def get_official_picks_today(conn: DB) -> list[dict]:
         JOIN historical_recommendations hr ON op.recommendation_id = hr.recommendation_id
         WHERE date(op.selected_at) = date('now')
           AND op.pick_status = 'ACTIVE'
-        ORDER BY op.official_rank
-    """).fetchall()
+    """
+    params: tuple = ()
+    if league is not None:
+        sql += " AND op.league = ?"
+        params = (league,)
+    sql += " ORDER BY op.official_rank"
+    rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -2247,8 +2270,33 @@ def get_performance_baseline(conn: DB) -> str | None:
     return row["baseline_at"] if row else None
 
 
+def get_today_in_configured_timezone() -> str:
+    """Today's calendar date (``YYYY-MM-DD``) in the product's configured
+    timezone (``MLB_SCHEDULER_TIMEZONE`` / ``MLB_TIMEZONE``, default
+    ``America/New_York`` — the same env vars and default ``src.worker``
+    already uses for scheduling).
+
+    Deliberately NOT the same "today" as ``date('now')`` (a UTC calendar
+    day), which every non-customer-facing "today" query in this schema
+    uses (the daily Official-pick cap, scan freshness, etc.) and which
+    stays untouched. This helper exists only for the customer-facing
+    "Today's Research" queries below and in ``src/customer_view.py``:
+    those are meant to mean the Eastern calendar day a customer is
+    actually living in, and comparing a UTC day instead made the visible
+    research list silently go empty for several hours every evening
+    Eastern time (any time after 8pm ET, once UTC has already rolled to
+    tomorrow's date) — see docs/ROOT_CAUSE_FIX_2026-09-06.md.
+    """
+    import zoneinfo
+    tz_name = os.environ.get(
+        "MLB_SCHEDULER_TIMEZONE", os.environ.get("MLB_TIMEZONE", "America/New_York")
+    )
+    return datetime.now(zoneinfo.ZoneInfo(tz_name)).date().isoformat()
+
+
 def get_research_picks_today(conn: DB) -> list[dict]:
-    """Get today's research-only recommendations."""
+    """Get today's research-only recommendations (Eastern calendar day —
+    see get_today_in_configured_timezone)."""
     rows = conn.execute("""
         SELECT recommendation_id, event_id, player_name, market_type, market_form,
                side, line, sportsbook, offered_american_odds, ev_pct,
@@ -2257,10 +2305,10 @@ def get_research_picks_today(conn: DB) -> list[dict]:
                event_start_time, model_score, score_explanation,
                recommendation_tier, disqualification_reasons
         FROM historical_recommendations
-        WHERE date(scan_timestamp) = date('now')
+        WHERE date(scan_timestamp) = ?
         AND recommendation_tier = 'RESEARCH_ONLY'
         ORDER BY model_score DESC
-    """).fetchall()
+    """, (get_today_in_configured_timezone(),)).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -15,6 +15,18 @@ def test_customer_view_is_separate_from_admin_dashboard():
     assert "SPORTSODDS_API_KEY" not in source
 
 
+def test_research_picks_use_configured_timezone_not_utc_day():
+    """Regression test (2026-09-06 fix): the customer-facing "Today's
+    Research" list must use the Eastern (or whatever MLB_TIMEZONE says)
+    calendar day, not a raw UTC date('now') — the earlier version made the
+    list silently truncate for several hours every evening once UTC
+    rolled to tomorrow's date while it was still evening Eastern time."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert "get_today_in_configured_timezone" in source
+    # The old buggy comparison must be gone from the research query.
+    assert "date(scan_timestamp) = date('now')" not in source
+
+
 def test_expected_actual_series_uses_recorded_values():
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert 'frame["expected_units"] = frame["risk_units"] * frame["ev_pct"] / 100.0' in source

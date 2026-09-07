@@ -16,7 +16,9 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from database.db_manager import get_connection, init_db, get_performance_baseline
+from database.db_manager import (
+    get_connection, init_db, get_performance_baseline, get_today_in_configured_timezone,
+)
 from src.grading import performance_summary, breakdown_by_field, assign_bucket, EV_BUCKETS
 
 logger = logging.getLogger(__name__)
@@ -226,11 +228,11 @@ def load_customer_data(authorized: bool) -> dict:
                        fair_american_odds, confidence_score, confidence_grade,
                        market_quality
                 FROM historical_recommendations
-                WHERE date(scan_timestamp) = date('now')
+                WHERE date(scan_timestamp) = ?
                   AND COALESCE(recommendation_tier, 'RESEARCH_ONLY') <> 'OFFICIAL_TRACKED'
                 ORDER BY model_score DESC, ev_pct DESC
                 LIMIT 25
-            """).fetchall()
+            """, (get_today_in_configured_timezone(),)).fetchall()
         return {
             "settled": [dict(r) for r in settled],
             "locked": [dict(r) for r in locked],

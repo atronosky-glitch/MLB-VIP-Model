@@ -275,6 +275,104 @@ def print_funnel_report(conn, league: str | None = None, limit_runs: int = 1) ->
                 print(f"    gate rejections: {top}")
 
 
+# ── Provider-coverage vs. qualification distinction ──────────────────
+#
+# Added 2026-09-06 per operator directive, following a production audit
+# that found 9 of the MLB registry's 20 player-prop markets (Player Hits,
+# RBI, Singles, Doubles, Stolen Bases, Walks, Triples, Pitcher Hits/Walks-
+# Allowed/Earned-Runs) with zero raw ingested odds rows for weeks — most
+# likely SportsGameOdds's own monthly entity cap (2,500/month on the
+# "amateur" tier, confirmed over-cap live) silently truncating full-roster
+# player-prop coverage. The dashboard's existing per-market breakdown
+# (Tab 6, "Market Intelligence") only ever listed markets that had at
+# least one raw row that day, so a market going completely dark from a
+# provider-side data gap looked identical to it simply never appearing —
+# no distinct signal at all, and easy to miss among markets that legitimately
+# have data but no qualifying bet that day. These two states are read
+# directly off data the pipeline already persists (player_prop_odds,
+# historical_recommendations); this module never changes what qualifies
+# as Official/Discovery/Research, only how "why zero?" is reported.
+
+NO_DATA_FROM_PROVIDER = "NO_DATA_FROM_PROVIDER"
+DATA_RECEIVED_NO_BET_QUALIFIED = "DATA_RECEIVED_NO_BET_QUALIFIED"
+PRODUCING_RECOMMENDATIONS = "PRODUCING_RECOMMENDATIONS"
+
+MARKET_STATUS_LABELS = {
+    NO_DATA_FROM_PROVIDER: "No data from provider",
+    DATA_RECEIVED_NO_BET_QUALIFIED: "Data received, no bet qualified",
+    PRODUCING_RECOMMENDATIONS: "Producing recommendations",
+}
+
+
+def classify_market_data_status(raw_rows: int, rec_rows: int) -> str:
+    """Classify one market's today into exactly one of three states.
+
+    - ``NO_DATA_FROM_PROVIDER``: zero approved raw odds rows were ingested
+      at all — the provider sent nothing for this market today (or the
+      parser/mapping layer rejected everything, which is functionally the
+      same "no usable data" outcome from the selection engine's point of
+      view). Never a selection-methodology signal.
+    - ``DATA_RECEIVED_NO_BET_QUALIFIED``: raw rows exist, but zero
+      recommendations of any tier (Official/Discovery/Research) were
+      produced from them today — the market was genuinely evaluated and
+      found nothing worth recording, or every candidate group failed a
+      quality/book-count/outlier gate.
+    - ``PRODUCING_RECOMMENDATIONS``: at least one recommendation of any
+      tier exists today.
+
+    Pure function — the only inputs are counts already computed by the
+    caller from ``player_prop_odds``/``historical_recommendations``, so
+    this never issues its own queries or touches a threshold.
+    """
+    if raw_rows <= 0:
+        return NO_DATA_FROM_PROVIDER
+    if rec_rows <= 0:
+        return DATA_RECEIVED_NO_BET_QUALIFIED
+    return PRODUCING_RECOMMENDATIONS
+
+
+def build_market_coverage_report(conn, league: str, registry) -> list[dict]:
+    """One row per market in *registry*, classified via
+    ``classify_market_data_status`` from today's real raw-ingestion and
+    recommendation counts (UTC day, matching every other "today" query in
+    this schema outside the customer-facing Research list).
+
+    *registry* is a list of ``src.prop_config.MarketConfig``-shaped
+    objects (anything with ``.cli_name``, ``.display_name``,
+    ``.market_type_ou``, ``.market_type_yn``). Read-only.
+    """
+    report = []
+    for market_config in registry:
+        types = tuple(
+            t for t in (market_config.market_type_ou, market_config.market_type_yn) if t
+        )
+        if not types:
+            continue
+        placeholders = ",".join("?" * len(types))
+        raw_rows = conn.execute(
+            f"""SELECT COUNT(*) AS c FROM player_prop_odds
+                WHERE league = ? AND date(captured_at) = date('now')
+                  AND market_type IN ({placeholders})
+                  AND validation_status IN ('VALID','CONFIRMED','VERIFIED')""",
+            (league, *types),
+        ).fetchone()["c"]
+        rec_rows = conn.execute(
+            f"""SELECT COUNT(*) AS c FROM historical_recommendations
+                WHERE league = ? AND date(scan_timestamp) = date('now')
+                  AND market_type IN ({placeholders})""",
+            (league, *types),
+        ).fetchone()["c"]
+        report.append({
+            "cli_name": market_config.cli_name,
+            "display_name": getattr(market_config, "display_name", market_config.cli_name),
+            "market_types": types,
+            "raw_rows": raw_rows,
+            "rec_rows": rec_rows,
+            "status": classify_market_data_status(raw_rows, rec_rows),
+        })
+    return report
+
+
 if __name__ == "__main__":
     import argparse
     from database.db_manager import get_connection

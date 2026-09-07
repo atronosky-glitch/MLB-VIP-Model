@@ -1525,8 +1525,14 @@ with tabs[5]:
                     s["research_count"] += 1
 
             # Build display rows
+            from src.qualification_funnel import (
+                classify_market_data_status, MARKET_STATUS_LABELS, NO_DATA_FROM_PROVIDER,
+            )
+
             mi_display = []
+            seen_market_types: set[str] = set()
             for mt, s in sorted(market_stats.items()):
+                seen_market_types.add(mt)
                 n_exact = len(s["books_per_market"])
                 books_list = [len(v) for v in s["books_per_market"].values()]
                 avg_books = round(sum(books_list) / max(1, len(books_list)), 1)
@@ -1540,9 +1546,13 @@ with tabs[5]:
                 cfg = get_market_by_ou_type(mt) or get_market_by_yn_type(mt)
                 display_name = cfg.display_name if cfg else mt
 
+                rec_rows = s["official_count"] + s["discovery_count"] + s["research_count"]
+                status = classify_market_data_status(s["total_odds_rows"], rec_rows)
+
                 mi_display.append({
                     "Market": display_name,
                     "Type": mt,
+                    "Status": MARKET_STATUS_LABELS[status],
                     "Odds Rows": s["total_odds_rows"],
                     "Events": len(s["unique_events"]),
                     "Players": len(s["unique_players"]),
@@ -1558,11 +1568,44 @@ with tabs[5]:
                     "Research": s["research_count"],
                 })
 
+            # Registry markets with ZERO raw rows today never appear in
+            # market_stats above (it's only ever populated from rows that
+            # exist) — so a market going completely dark from a provider
+            # data gap previously looked identical to it simply not being
+            # in the table, with no distinct signal at all. Added
+            # 2026-09-06 after a production audit found 9 of 20 MLB
+            # player-prop markets silently dark for weeks (SportsGameOdds
+            # entity-cap overage, most likely — see docs/ROOT_CAUSE_FIX_2026-09-06.md).
+            from src.prop_config import MARKET_REGISTRY
+            for market_config in MARKET_REGISTRY:
+                registry_types = [
+                    t for t in (market_config.market_type_ou, market_config.market_type_yn) if t
+                ]
+                if any(t in seen_market_types for t in registry_types):
+                    continue
+                mi_display.append({
+                    "Market": market_config.display_name,
+                    "Type": "/".join(registry_types),
+                    "Status": MARKET_STATUS_LABELS[NO_DATA_FROM_PROVIDER],
+                    "Odds Rows": 0, "Events": 0, "Players": 0, "Books": 0,
+                    "Avg Books/Market": 0.0, "Median Books": 0, "4+ Books %": 0.0,
+                    "Two-Sided": 0, "Stale": 0, "Map Fail": 0,
+                    "Official": 0, "Discovery": 0, "Research": 0,
+                })
+
             # Sort by average sportsbook coverage desc, then discovery count desc
             mi_display.sort(key=lambda x: (-x["Avg Books/Market"], -x["Discovery"], -x["Research"]))
 
             import pandas as pd
             st.dataframe(pd.DataFrame(mi_display), use_container_width=True, hide_index=True)
+            st.caption(
+                "Status distinguishes **No data from provider** (zero raw odds rows "
+                "ingested today — a data-source gap, e.g. a provider quota/entity cap) "
+                "from **Data received, no bet qualified** (real data, evaluated, "
+                "nothing cleared the quality/EV/book-count gates) and "
+                "**Producing recommendations** (at least one rec of any tier today). "
+                "Never reflects a threshold change — purely a reporting distinction."
+            )
 
             # Summary
             total_official = sum(s["official_count"] for s in market_stats.values())

@@ -681,3 +681,196 @@ class TestFreezeOrUpdateOfficialPick:
         ids = {r["recommendation_id"] for r in today}
         assert rec2["recommendation_id"] in ids
         assert rec1["recommendation_id"] not in ids
+
+    def test_get_official_picks_today_scopes_to_one_league(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick, get_official_picks_today
+        mlb_rec = _save_rec(db_conn, event_id="EM", player_id="PM", league="MLB")
+        freeze_or_update_official_pick(db_conn, mlb_rec, official_rank=1)
+        wnba_rec = _save_rec(db_conn, event_id="EW", player_id="PW", league="WNBA")
+        freeze_or_update_official_pick(db_conn, wnba_rec, official_rank=1)
+
+        mlb_only = get_official_picks_today(db_conn, league="MLB")
+        assert {r["recommendation_id"] for r in mlb_only} == {mlb_rec["recommendation_id"]}
+
+        all_leagues = get_official_picks_today(db_conn)
+        assert {r["recommendation_id"] for r in all_leagues} == {
+            mlb_rec["recommendation_id"], wnba_rec["recommendation_id"],
+        }
+
+
+def _candidate(conn, n, **overrides):
+    """A qualifying OFFICIAL_TRACKED candidate, distinct enough (own event,
+    player, market_type) that the per-game/per-player/per-market-type caps
+    in rank_and_select_official_picks never interfere with what a test is
+    actually checking."""
+    overrides.setdefault("event_id", f"E{n}")
+    overrides.setdefault("player_id", f"P{n}")
+    overrides.setdefault("market_type", f"market_{n}")
+    overrides.setdefault("model_score", 9.0 - n * 0.01)
+    return _save_rec(conn, **overrides)
+
+
+class TestDailyOfficialPickCapAcrossRuns:
+    """Regression tests for the 2026-09-06 fix: src/daily_pipeline.py's
+    official-pick freeze stage (``_stage_freeze``) now passes
+    ``get_official_picks_today(conn, league=...)`` as
+    ``rank_and_select_official_picks``'s ``already_selected_today``,
+    instead of never passing it at all. Before the fix, every one of the
+    day's many separate pipeline invocations (morning run, each pregame
+    check) started ranking from an empty "already selected" list, so
+    ``official_daily_max_picks`` (default 3) only ever capped a single
+    invocation, not the calendar day — daily Official-pick counts in
+    production ran 3-11, not <=3. These tests exercise the exact
+    get_official_picks_today -> rank_and_select_official_picks ->
+    freeze_or_update_official_pick sequence ``_stage_freeze`` now runs,
+    across multiple separate calls standing in for separate runs."""
+
+    def test_first_run_selects_up_to_three(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick, get_official_picks_today
+        from src.official_picks import rank_and_select_official_picks
+
+        candidates = [_candidate(db_conn, i) for i in range(5)]
+        already = get_official_picks_today(db_conn, league="MLB")
+        assert already == []
+
+        official = rank_and_select_official_picks(candidates, already_selected_today=already)
+        assert len(official) == 3
+
+        for rank, rec in enumerate(official, 1):
+            result = freeze_or_update_official_pick(db_conn, rec, official_rank=rank)
+            assert result["action"] == "frozen"
+
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM official_picks WHERE pick_status = 'ACTIVE'"
+        ).fetchone()["c"]
+        assert count == 3
+
+    def test_second_run_selects_zero_when_three_already_exist(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick, get_official_picks_today
+        from src.official_picks import rank_and_select_official_picks
+
+        # Run 1: 5 candidates exist; the top 3 (by model_score) get frozen.
+        run1_candidates = [_candidate(db_conn, i) for i in range(5)]
+        official1 = rank_and_select_official_picks(
+            run1_candidates,
+            already_selected_today=get_official_picks_today(db_conn, league="MLB"),
+        )
+        assert len(official1) == 3
+        for rank, rec in enumerate(official1, 1):
+            freeze_or_update_official_pick(db_conn, rec, official_rank=rank)
+
+        # Run 2: a separate call (a later pregame-check the same day) with 5
+        # brand-new candidates that would all outrank run 1's on model_score
+        # alone — the bug this regresses let a high-turnover market keep
+        # winning fresh slots all day for exactly this reason.
+        run2_candidates = [_candidate(db_conn, 100 + i, model_score=9.9) for i in range(5)]
+        already = get_official_picks_today(db_conn, league="MLB")
+        assert len(already) == 3, "must see all 3 of run 1's picks, not start from empty"
+
+        official2 = rank_and_select_official_picks(run2_candidates, already_selected_today=already)
+
+        # The cap is already full: the 3 carried-forward picks occupy every
+        # slot, and none of run 2's new (higher-scoring) candidates are
+        # newly selected.
+        assert len(official2) == 3
+        assert {r["recommendation_id"] for r in official2} == {
+            r["recommendation_id"] for r in official1
+        }
+
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM official_picks WHERE pick_status = 'ACTIVE'"
+        ).fetchone()["c"]
+        assert count == 3, "run 2 must not add a 4th official pick for today"
+
+    def test_third_run_fills_remaining_slots_when_fewer_than_three_selected(self, db_conn):
+        from database.db_manager import freeze_or_update_official_pick, get_official_picks_today
+        from src.official_picks import rank_and_select_official_picks
+
+        # Run 1: only 1 candidate exists/qualifies.
+        official1 = rank_and_select_official_picks(
+            [_candidate(db_conn, 0)],
+            already_selected_today=get_official_picks_today(db_conn, league="MLB"),
+        )
+        assert len(official1) == 1
+        freeze_or_update_official_pick(db_conn, official1[0], official_rank=1)
+
+        # Run 2: 4 more distinct candidates appear later the same day.
+        run2_candidates = [_candidate(db_conn, 10 + i) for i in range(4)]
+        already = get_official_picks_today(db_conn, league="MLB")
+        assert len(already) == 1
+
+        official2 = rank_and_select_official_picks(run2_candidates, already_selected_today=already)
+
+        # 1 carried forward + exactly 2 new = 3 total: the remaining slots
+        # get filled, not left empty and not overfilled.
+        assert len(official2) == 3
+        new_ids = {r["recommendation_id"] for r in official2} - {
+            official1[0]["recommendation_id"]
+        }
+        assert len(new_ids) == 2
+
+    def test_cap_persists_across_a_fresh_connection_simulating_worker_restart(self, tmp_path):
+        """A brand-new DB connection standing in for a worker process
+        restart (zero shared Python state with whatever selected today's
+        first 3 picks) must still recover the same day's already-selected
+        slots — proving the cap comes entirely from the database, not from
+        anything kept in the worker process, so a restart can't reset it."""
+        import sqlite3
+
+        import database.db_manager as dbm
+        from database.db_manager import (
+            freeze_or_update_official_pick, get_official_picks_today, save_recommendation,
+        )
+        from src.official_picks import rank_and_select_official_picks
+
+        db_path = str(tmp_path / "restart_test.db")
+
+        def _file_conn():
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            return conn
+
+        orig_path, orig_get_conn = dbm.DB_PATH, dbm.get_connection
+        dbm.DB_PATH = db_path
+        dbm.get_connection = _file_conn
+        try:
+            dbm.init_db()
+
+            conn_a = _file_conn()
+            try:
+                candidates = []
+                for i in range(5):
+                    rec = {
+                        "event_id": f"E{i}", "player_id": f"P{i}", "player_name": f"Player {i}",
+                        "market_type": f"market_{i}", "market_form": "ou", "period": "game",
+                        "line": 1.5, "side": "OVER", "sportsbook": "DraftKings",
+                        "offered_american_odds": -110, "offered_decimal_odds": 1.909,
+                        "offered_implied_prob": 0.524, "fair_prob": 0.55, "ev_pct": 5.0,
+                        "n_consensus_books": 6, "market_quality": "VALID_MARKET",
+                        "rec_status": "QUALIFIED", "rec_eligible": 1,
+                        "scan_timestamp": "2026-08-21T09:00:00+00:00",
+                        "recommendation_tier": "OFFICIAL_TRACKED", "qualification_passed": 1,
+                        "league": "MLB", "sport": "baseball", "model_score": 9.0 - i * 0.01,
+                    }
+                    rec["recommendation_id"] = save_recommendation(conn_a, rec)
+                    candidates.append(rec)
+
+                official = rank_and_select_official_picks(candidates, already_selected_today=[])
+                assert len(official) == 3
+                for rank, rec in enumerate(official, 1):
+                    freeze_or_update_official_pick(conn_a, rec, official_rank=rank)
+            finally:
+                conn_a.close()
+
+            # "Restart": a brand-new connection object, no in-memory state
+            # inherited from conn_a whatsoever.
+            conn_b = _file_conn()
+            try:
+                already = get_official_picks_today(conn_b, league="MLB")
+                assert len(already) == 3
+            finally:
+                conn_b.close()
+        finally:
+            dbm.DB_PATH = orig_path
+            dbm.get_connection = orig_get_conn

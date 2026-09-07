@@ -1,0 +1,77 @@
+selected_at,player_name,matchup,market_type,side,line,sportsbook,offered_american_odds,ev_pct,model_score,confidence_score,pinnacle_approved,pinnacle_found,pick_status,outcome,risk_units,profit_units,event_start_time
+2026-08-25 23:44:33.595152+00,Corbin Carroll,Chicago Cubs @ Arizona Diamondbacks,batting_homeRuns_ou,OVER,0.5,betrivers,500,10.0,8.1,70.83,,0,ACTIVE,loss,0.64,-0.64,2026-08-26T01:40:00Z
+2026-08-25 23:44:33.703135+00,Julio Rodriguez,Philadelphia Phillies @ Seattle Mariners,batting_homeRuns_ou,OVER,0.5,betrivers,450,9.7826,8.1,70.38,,0,ACTIVE,pending,,,2026-08-26T01:40:00Z
+2026-08-25 23:44:33.796477+00,Jose Ramirez,Cleveland Guardians @ Los Angeles Angels,batting_homeRuns_ou,OVER,0.5,betrivers,525,9.5238,8.0,69.84,,0,ACTIVE,pending,,,2026-08-26T01:38:00Z
+2026-08-26 14:12:16.916567+00,Jake McCarthy,Colorado Rockies @ Washington Nationals,batting_totalBases_ou,OVER,1.5,betrivers,133,9.9057,8.9,83.14,,0,ACTIVE,win,2.0,2.66,2026-08-26T22:46:00Z
+2026-08-26 14:12:17.002823+00,Spencer Horwitz,Pittsburgh Pirates @ San Diego Padres,batting_totalBases_ou,OVER,1.5,betrivers,155,9.9138,8.7,76.9,,0,ACTIVE,win,2.0,3.1,2026-08-26T20:11:00Z
+2026-08-26 14:12:17.005459+00,Dillon Dingler,Tampa Bay Rays @ Detroit Tigers,batting_totalBases_ou,OVER,1.5,betrivers,148,9.2511,8.7,81.77,,0,ACTIVE,loss,2.0,-2.0,2026-08-26T17:11:00Z
+2026-08-27 14:09:38.614091+00,Christian Encarnacion-Strand,Baltimore Orioles @ St. Louis Cardinals,batting_homeRuns_ou,OVER,0.5,betrivers,525,9.5238,8.0,69.84,,0,ACTIVE,loss,0.57,-0.57,2026-08-27T18:16:00Z
+2026-08-27 14:09:38.704787+00,Drew Cavanaugh,Arizona Diamondbacks @ San Francisco Giants,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-08-28T01:46:00Z
+2026-08-27 14:09:38.707407+00,A.J. Ewing,Milwaukee Brewers @ New York Mets,batting_homeRuns_ou,OVER,0.5,betrivers,900,8.8235,7.8,68.38,,0,ACTIVE,loss,0.29,-0.29,2026-08-27T23:11:00Z
+2026-08-27 16:50:21.509467+00,Michael Harris II,Los Angeles Dodgers @ Atlanta Braves,batting_totalBases_ou,OVER,1.5,betrivers,170,9.9801,8.8,80.17,,0,ACTIVE,loss,2.0,-2.0,2026-08-27T23:16:00Z
+2026-08-28 00:12:40.314114+00,Bryce Eldridge,Arizona Diamondbacks @ San Francisco Giants,batting_totalBases_ou,OVER,1.5,betrivers,155,6.4723,7.9,72.86,,0,ACTIVE,pending,,,2026-08-28T01:46:00Z
+2026-08-28 15:37:31.606445+00,George Springer,Seattle Mariners @ Toronto Blue Jays,batting_totalBases_ou,OVER,1.5,betrivers,170,9.5941,8.8,85.61,1,1,ACTIVE,win,2.0,3.4,2026-08-28T23:16:00Z
+2026-08-28 15:37:31.703405+00,Jackson Merrill,San Diego Padres @ Tampa Bay Rays,batting_totalBases_ou,OVER,1.5,betrivers,175,8.992,8.6,81.23,1,1,ACTIVE,win,1.8,3.15,2026-08-28T23:11:00Z
+2026-08-28 15:37:31.70589+00,Heriberto Hernandez,Miami Marlins @ Washington Nationals,batting_homeRuns_ou,OVER,0.5,betrivers,360,8.9744,7.9,68.7,,0,ACTIVE,pending,,,2026-08-28T22:46:00Z
+2026-08-28 19:59:07.598155+00,Steven Kwan,Kansas City Royals @ Cleveland Guardians,batting_totalBases_ou,OVER,1.5,betrivers,180,9.6853,8.8,79.55,1,1,ACTIVE,loss,1.95,-1.95,2026-08-28T23:11:00Z
+2026-08-29 01:19:46.506734+00,Christian Encarnacion-Strand,Baltimore Orioles @ Athletics,batting_homeRuns_ou,OVER,0.5,betrivers,300,7.971,7.6,66.61,,0,ACTIVE,pending,,,2026-08-29T01:41:00Z
+2026-08-29 14:24:15.407869+00,Caleb Durbin,Boston Red Sox @ New York Yankees,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-08-29T17:06:00Z
+2026-08-29 14:24:15.508132+00,Nico Hoerner,Cincinnati Reds @ Chicago Cubs,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,loss,0.34,-0.34,2026-08-29T18:21:00Z
+2026-08-29 14:24:15.595175+00,Jeremy Pena,Houston Astros @ New York Mets,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-08-29T20:11:00Z
+2026-08-29 15:44:22.501187+00,Christian Yelich,Texas Rangers @ Milwaukee Brewers,batting_totalBases_ou,OVER,1.5,betrivers,175,8.8044,8.2,71.47,,0,ACTIVE,win,1.64,2.87,2026-08-29T23:16:00Z
+2026-08-29 17:04:40.197565+00,Corbin Carroll,Arizona Diamondbacks @ San Francisco Giants,batting_homeRuns_ou,OVER,0.5,betrivers,500,10.0,8.1,70.83,,0,ACTIVE,pending,,,2026-08-29T20:06:00Z
+2026-08-29 18:20:16.801794+00,Juan Soto,Houston Astros @ New York Mets,batting_homeRuns_ou,OVER,0.5,betrivers,325,9.8592,8.1,70.54,,0,ACTIVE,loss,0.97,-0.97,2026-08-29T20:11:00Z
+2026-08-29 23:37:09.308468+00,Zach Neto,Philadelphia Phillies @ Los Angeles Angels,batting_totalBases_ou,OVER,1.5,betrivers,165,7.5646,8.2,75.13,1,1,ACTIVE,pending,,,2026-08-30T02:08:00Z
+2026-08-30 00:39:28.110804+00,Justin Crawford,Philadelphia Phillies @ Los Angeles Angels,batting_totalBases_ou,OVER,1.5,betrivers,175,8.8044,8.2,71.47,,0,ACTIVE,pending,,,2026-08-30T02:08:00Z
+2026-08-30 00:39:28.202793+00,Donovan Walton,Baltimore Orioles @ Athletics,batting_totalBases_ou,OVER,1.5,betrivers,180,7.9388,7.9,69.66,1,1,ACTIVE,pending,,,2026-08-30T02:06:00Z
+2026-08-30 00:39:28.205478+00,Bryce Eldridge,Arizona Diamondbacks @ San Francisco Giants,batting_totalBases_ou,OVER,1.5,betonlineag,155,6.7245,7.6,67.13,,0,ACTIVE,pending,,,2026-08-30T02:06:00Z
+2026-08-30 13:23:45.613498+00,Jarren Duran,Boston Red Sox @ New York Yankees,batting_totalBases_ou,OVER,1.5,betrivers,170,9.5941,8.7,79.36,1,1,ACTIVE,pending,,,2026-08-30T17:36:00Z
+2026-08-30 13:23:45.795954+00,Ernie Clement,Seattle Mariners @ Toronto Blue Jays,batting_totalBases_ou,OVER,1.5,betrivers,180,8.9494,8.4,74.89,,0,ACTIVE,pending,,,2026-08-30T17:38:00Z
+2026-08-30 18:19:26.902949+00,Javier Sanoja,Miami Marlins @ Washington Nationals,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-08-30T16:16:00Z
+2026-08-31 19:25:43.004655+00,Josh Bell,Detroit Tigers @ Minnesota Twins,batting_totalBases_ou,OVER,1.5,betrivers,155,9.9322,8.8,80.07,,0,ACTIVE,pending,,,2026-08-31T23:41:00Z
+2026-08-31 19:25:43.110792+00,Agustín Ramírez,Miami Marlins @ Washington Nationals,batting_homeRuns_ou,OVER,0.5,betrivers,500,10.0,8.1,70.83,,0,ACTIVE,pending,,,2026-08-31T22:46:00Z
+2026-08-31 19:25:43.114115+00,Moneyline,Philadelphia Phillies @ Arizona Diamondbacks,game_moneyline,HOME,,williamhill_us,120,5.8845,7.7,74.76,1,1,ACTIVE,pending,,,2026-09-02T01:41:00Z
+2026-08-31 22:06:08.011958+00,Moneyline,Athletics @ Texas Rangers,game_moneyline,AWAY,,draftkings,195,9.2321,8.7,87.98,1,1,ACTIVE,pending,,,2026-09-01T00:06:00Z
+2026-09-01 19:53:03.039293+00,Josh Bell,Detroit Tigers @ Minnesota Twins,batting_totalBases_ou,OVER,1.5,betrivers,145,9.1753,8.6,78.49,,0,ACTIVE,pending,,,2026-09-01T23:41:00Z
+2026-09-01 19:53:03.297229+00,Alejandro Kirk,Toronto Blue Jays @ Cleveland Guardians,batting_homeRuns_ou,OVER,0.5,betrivers,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-09-01T22:41:00Z
+2026-09-01 19:53:03.394964+00,Drew Gilbert,San Francisco Giants @ Pittsburgh Pirates,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-09-01T22:41:00Z
+2026-09-01 21:13:29.812957+00,Pete Crow-Armstrong,Milwaukee Brewers @ Chicago Cubs,batting_homeRuns_ou,OVER,0.5,betrivers,290,10.0,8.1,70.83,,0,ACTIVE,pending,,,2026-09-01T23:41:00Z
+2026-09-01 22:33:51.704604+00,Max Clark,Detroit Tigers @ Minnesota Twins,batting_totalBases_ou,OVER,1.5,betrivers,163,9.5833,8.6,76.22,,0,ACTIVE,pending,,,2026-09-01T23:41:00Z
+2026-09-01 22:33:51.825483+00,Henry Bolte,Athletics @ Texas Rangers,batting_totalBases_ou,OVER,1.5,betrivers,175,9.2715,8.5,75.57,1,1,ACTIVE,pending,,,2026-09-02T00:06:00Z
+2026-09-02 01:14:04.29516+00,Moneyline,St. Louis Cardinals @ Los Angeles Dodgers,game_moneyline,AWAY,,bovada,200,7.9594,8.3,75.96,1,1,ACTIVE,pending,,,2026-09-03T02:11:00Z
+2026-09-02 01:14:04.595695+00,Moises Ballesteros,New York Yankees @ Los Angeles Angels,batting_homeRuns_ou,OVER,0.5,williamhill_us,750,6.6667,7.2,63.89,,0,ACTIVE,pending,,,2026-09-02T01:39:00Z
+2026-09-02 01:14:04.599058+00,Edmundo Sosa,Philadelphia Phillies @ Arizona Diamondbacks,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,5.8824,7.0,62.25,,0,ACTIVE,pending,,,2026-09-02T01:41:00Z
+2026-09-02 13:57:50.703297+00,Henry Bolte,Athletics @ Texas Rangers,batting_totalBases_ou,OVER,1.5,betrivers,150,8.6957,8.5,80.62,,0,ACTIVE,pending,,,2026-09-02T18:36:00Z
+2026-09-02 13:57:51.096805+00,Dillon Dingler,Detroit Tigers @ Minnesota Twins,batting_homeRuns_ou,OVER,0.5,betrivers,500,10.0,8.1,70.83,,0,ACTIVE,pending,,,2026-09-02T23:41:00Z
+2026-09-02 15:18:08.294103+00,Bryce Eldridge,San Francisco Giants @ Pittsburgh Pirates,batting_totalBases_ou,OVER,1.5,betrivers,150,9.1703,8.5,75.35,,0,ACTIVE,pending,,,2026-09-02T22:41:00Z
+2026-09-02 19:19:17.194839+00,Alejandro Kirk,Toronto Blue Jays @ Cleveland Guardians,batting_totalBases_ou,OVER,1.5,betrivers,170,9.5941,8.7,79.36,1,1,ACTIVE,pending,,,2026-09-02T22:41:00Z
+2026-09-03 00:40:40.816559+00,Tommy Edman,St. Louis Cardinals @ Los Angeles Dodgers,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-09-03T02:11:00Z
+2026-09-03 13:44:42.502789+00,Nathan Lukes,Toronto Blue Jays @ Cleveland Guardians,batting_totalBases_ou,OVER,1.5,betrivers,180,9.4045,8.7,85.22,1,1,ACTIVE,pending,,,2026-09-03T17:10:00Z
+2026-09-03 13:44:42.60967+00,Pete Crow-Armstrong,Milwaukee Brewers @ Chicago Cubs,batting_homeRuns_ou,OVER,0.5,betrivers,290,10.0,8.1,70.83,,0,ACTIVE,pending,,,2026-09-03T23:15:00Z
+2026-09-03 13:44:42.613264+00,Kade Anderson,Athletics @ Seattle Mariners,pitching_outs_ou,OVER,15.5,betrivers,-109,4.1874,7.5,68.1,,0,ACTIVE,pending,,,2026-09-04T01:40:00Z
+2026-09-03 15:04:54.302527+00,Jakob Marsee,Miami Marlins @ Kansas City Royals,batting_totalBases_ou,OVER,1.5,betrivers,165,9.9381,8.9,86.33,1,1,ACTIVE,pending,,,2026-09-03T23:40:00Z
+2026-09-04 00:27:25.016336+00,J.P. Crawford,Athletics @ Seattle Mariners,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,7.9,65.78,,0,ACTIVE,pending,,,2026-09-04T01:40:00Z
+2026-09-04 00:27:25.198066+00,Joshua Baez,St. Louis Cardinals @ Los Angeles Dodgers,batting_totalBases_ou,OVER,0.5,betrivers,-103,3.2362,7.1,62.99,,0,ACTIVE,pending,,,2026-09-04T02:10:00Z
+2026-09-04 15:32:10.721079+00,Drew Romo,Minnesota Twins @ Chicago White Sox,batting_totalBases_ou,OVER,0.5,betrivers,-108,9.7475,8.4,73.43,,0,ACTIVE,pending,,,2026-09-04T23:41:00Z
+2026-09-04 15:32:10.912517+00,Edmundo Sosa,Atlanta Braves @ Philadelphia Phillies,batting_homeRuns_ou,OVER,0.5,betrivers,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-09-04T22:41:00Z
+2026-09-04 15:32:10.995519+00,Adley Rutschman,Boston Red Sox @ Baltimore Orioles,batting_totalBases_ou,OVER,1.5,betrivers,165,8.6066,8.3,74.18,,0,ACTIVE,pending,,,2026-09-04T23:06:00Z
+2026-09-04 16:52:36.396753+00,Alec Bohm,Atlanta Braves @ Philadelphia Phillies,batting_totalBases_ou,OVER,1.5,betrivers,180,8.8472,8.5,77.81,1,1,ACTIVE,pending,,,2026-09-04T22:41:00Z
+2026-09-04 16:52:36.797682+00,Ben Malgeri,Detroit Tigers @ Cleveland Guardians,batting_homeRuns_ou,OVER,0.5,betrivers,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-09-04T18:11:00Z
+2026-09-04 19:13:24.505972+00,Janson Junk,Chicago Cubs @ Miami Marlins,pitching_outs_ou,OVER,13.5,draftkings,-120,3.9147,7.1,61.28,,0,ACTIVE,pending,,,2026-09-04T23:10:00Z
+2026-09-04 20:33:41.417405+00,Braden Montgomery,Minnesota Twins @ Chicago White Sox,batting_totalBases_ou,OVER,1.5,betrivers,175,8.992,8.6,78.11,1,1,ACTIVE,pending,,,2026-09-04T23:41:00Z
+2026-09-04 20:33:41.722829+00,Griffin Conine,Chicago Cubs @ Miami Marlins,batting_homeRuns_ou,OVER,0.5,betrivers,450,9.7826,8.1,70.38,,0,ACTIVE,pending,,,2026-09-04T23:10:00Z
+2026-09-04 23:14:15.696811+00,Jo Adell,Detroit Tigers @ Cleveland Guardians,batting_totalBases_ou,OVER,1.5,betrivers,143,9.7071,8.8,79.6,,0,ACTIVE,pending,,,2026-09-04T23:46:00Z
+2026-09-05 00:34:12.614348+00,Austin Hays,New York Yankees @ San Diego Padres,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-09-05T01:41:00Z
+2026-09-05 00:34:12.801068+00,TJ Rumfield,St. Louis Cardinals @ Colorado Rockies,batting_homeRuns_ou,OVER,0.5,betrivers,900,8.8235,7.8,68.38,,0,ACTIVE,pending,,,2026-09-05T00:41:00Z
+2026-09-05 00:34:12.804279+00,Max Muncy,Washington Nationals @ Los Angeles Dodgers,batting_homeRuns_ou,OVER,0.5,betrivers,360,6.7901,7.3,64.15,,0,ACTIVE,pending,,,2026-09-05T02:11:00Z
+2026-09-05 17:19:03.912366+00,Bobby Witt Jr.,Toronto Blue Jays @ Kansas City Royals,batting_totalBases_ou,OVER,1.5,betrivers,112,9.5845,8.8,82.47,,0,ACTIVE,pending,,,2026-09-05T23:11:00Z
+2026-09-05 17:19:04.097206+00,Pedro Ramirez,Chicago Cubs @ Miami Marlins,batting_totalBases_ou,OVER,1.5,betrivers,175,8.992,8.6,81.23,1,1,ACTIVE,pending,,,2026-09-05T20:11:00Z
+2026-09-05 20:00:10.404774+00,Jonah Cox,San Francisco Giants @ New York Mets,batting_totalBases_ou,OVER,1.5,betrivers,165,9.5041,8.6,76.05,,0,ACTIVE,pending,,,2026-09-05T20:11:00Z
+2026-09-06 00:00:54.704553+00,Jordan Beck,St. Louis Cardinals @ Colorado Rockies,batting_totalBases_ou,OVER,1.5,betrivers,165,7.698,8.2,75.41,1,1,ACTIVE,pending,,,2026-09-06T00:11:00Z
+2026-09-06 00:00:54.904367+00,Cole Young,Athletics @ Seattle Mariners,batting_homeRuns_ou,OVER,0.5,williamhill_us,850,9.375,8.0,69.53,,0,ACTIVE,pending,,,2026-09-06T01:41:00Z
+2026-09-06 00:00:54.907842+00,Freddie Freeman,Washington Nationals @ Los Angeles Dodgers,batting_homeRuns_ou,OVER,0.5,betrivers,540,8.1818,7.7,67.05,,0,ACTIVE,pending,,,2026-09-06T01:11:00Z
+2026-09-06 13:24:47.818939+00,Ernie Clement,Toronto Blue Jays @ Kansas City Royals,batting_totalBases_ou,OVER,1.5,betrivers,140,9.34,8.7,85.08,,0,ACTIVE,pending,,,2026-09-06T18:11:00Z
+2026-09-06 13:24:48.014138+00,Ryan Jeffers,Minnesota Twins @ Chicago White Sox,batting_homeRuns_ou,OVER,0.5,betrivers,410,10.0,8.1,70.83,,0,ACTIVE,pending,,,2026-09-06T22:20:00Z
+2026-09-06 13:24:48.017276+00,Andrew Alvarez,Washington Nationals @ Los Angeles Dodgers,pitching_outs_ou,OVER,14.5,betrivers,-113,6.541,7.9,76.13,,0,ACTIVE,pending,,,2026-09-07T02:11:00Z
+2026-09-06 16:05:29.615499+00,Jo Adell,Detroit Tigers @ Cleveland Guardians,batting_totalBases_ou,OVER,1.5,betrivers,163,9.5833,8.7,79.34,,0,ACTIVE,pending,,,2026-09-06T17:40:00Z
+2026-09-06 16:05:29.897784+00,Kyle Schwarber,Atlanta Braves @ Philadelphia Phillies,batting_homeRuns_ou,OVER,0.5,betrivers,270,9.7826,8.4,73.51,1,1,ACTIVE,pending,,,2026-09-06T17:10:00Z
