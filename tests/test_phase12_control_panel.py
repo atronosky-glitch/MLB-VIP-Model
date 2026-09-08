@@ -140,6 +140,52 @@ class TestHelperFunctions:
         assert _format_market_type("") == ""
 
 
+class TestFormatPickSideLine:
+    """Regression tests for the 2026-09-08 fix: a moneyline/run-line pick's
+    HOME/AWAY side must resolve to the real team name (the dashboard
+    previously showed the unhelpful literal "Home · binary result",
+    forcing the viewer to cross-reference the Matchup column)."""
+
+    def test_moneyline_resolves_home_side_to_the_real_team(self):
+        from src.control_panel import _format_pick_side_line
+        rec = {
+            "side": "HOME", "line": None, "market_type": "game_moneyline",
+            "matchup": "Toronto Blue Jays @ Athletics",
+        }
+        assert _format_pick_side_line(rec) == "Athletics ML"
+
+    def test_moneyline_resolves_away_side_to_the_real_team(self):
+        from src.control_panel import _format_pick_side_line
+        rec = {
+            "side": "AWAY", "line": None, "market_type": "game_moneyline",
+            "matchup": "Toronto Blue Jays @ Athletics",
+        }
+        assert _format_pick_side_line(rec) == "Toronto Blue Jays ML"
+
+    def test_run_line_resolves_team_and_keeps_the_line(self):
+        from src.control_panel import _format_pick_side_line
+        rec = {
+            "side": "HOME", "line": -1.5, "market_type": "game_runline_ou",
+            "matchup": "Toronto Blue Jays @ Athletics",
+        }
+        assert _format_pick_side_line(rec) == "Athletics -1.5"
+
+    def test_falls_back_to_home_away_when_matchup_is_missing(self):
+        from src.control_panel import _format_pick_side_line
+        rec = {"side": "HOME", "line": None, "market_type": "game_moneyline", "matchup": ""}
+        assert _format_pick_side_line(rec) == "Home ML"
+
+    def test_player_prop_over_under_is_unaffected(self):
+        from src.control_panel import _format_pick_side_line
+        rec = {"side": "OVER", "line": 1.5, "market_type": "batting_totalBases_ou"}
+        assert _format_pick_side_line(rec) == "Over 1.5"
+
+    def test_player_prop_yes_no_is_unaffected(self):
+        from src.control_panel import _format_pick_side_line
+        rec = {"side": "YES", "line": None, "market_type": "batting_hits_yn"}
+        assert _format_pick_side_line(rec) == "Yes · 1+ hit"
+
+
 # ==================================================================
 # Recommendation table transformation
 # ==================================================================

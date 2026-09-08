@@ -229,9 +229,23 @@ def _format_market_type(mt: str) -> str:
 
 
 def _format_pick_side_line(rec: dict) -> str:
-    """Render O/U lines and Y/N conditions without a misleading None."""
-    side = (rec.get("side") or "").title()
+    """Render O/U lines and Y/N conditions without a misleading None.
+
+    Game-market picks (moneyline, run line) carry side as HOME/AWAY —
+    showing that literally forces the viewer to go cross-reference the
+    matchup to find out which team it actually means. Resolve it to the
+    real team name here instead, e.g. "Athletics ML" / "Athletics -1.5"
+    rather than "Home" / "Home -1.5".
+    """
+    side_raw = (rec.get("side") or "").upper()
     line = rec.get("line")
+    if side_raw in ("HOME", "AWAY"):
+        away, _, home = (rec.get("matchup") or "").partition(" @ ")
+        team = (home if side_raw == "HOME" else away).strip()
+        label = team or side_raw.title()
+        return f"{label} {line:+g}" if line is not None else f"{label} ML"
+
+    side = side_raw.title()
     if line is not None:
         return f"{side} {line}"
     labels = {
@@ -251,7 +265,7 @@ def _format_pick_side_line(rec: dict) -> str:
 # reserved for brand/tier accents, not outcome, to match customer_view.py.
 _TIER_STUB = {
     "OFFICIAL_TRACKED": ("#e8b923", "VIP OFFICIAL"),
-    "DISCOVERY_TRACKED": ("#A995FF", "DISCOVERY"),
+    "DISCOVERY_TRACKED": ("#A995FF", "WATCHLIST"),
 }
 _OUTCOME_STUB = {
     "win": ("#3ddc84", "WIN"),
@@ -875,8 +889,13 @@ with tabs[0]:
     else:
         board_rows = []
         for p in picks_board:
-            player = p.get("player_name", "")
-            market = _format_market_type(p.get("market_type", ""))
+            market_type = p.get("market_type", "")
+            is_game_market = market_type.startswith("game_")
+            # Game markets store a fixed placeholder player_name (e.g.
+            # "Moneyline") — not a real player, and already redundant
+            # with the Market column, so it's dropped from the Pick label.
+            player = "" if is_game_market else p.get("player_name", "")
+            market = _format_market_type(market_type)
             pick_line = _format_pick_side_line(p)
             pick_label = " · ".join(x for x in [player, market, pick_line] if x)
             units = p.get("risk_units")
@@ -889,6 +908,7 @@ with tabs[0]:
                 "League": p.get("league") or "MLB",
                 "Matchup": p.get("matchup", ""),
                 "Pick": pick_label,
+                "Sportsbook": p.get("sportsbook", ""),
                 "Odds": p.get("offered_american_odds"),
                 "Units": round(units, 2) if units is not None else None,
                 "Result": _result_badge(p.get("outcome")),
@@ -901,6 +921,7 @@ with tabs[0]:
                 "League": st.column_config.TextColumn("League"),
                 "Matchup": st.column_config.TextColumn("Matchup"),
                 "Pick": st.column_config.TextColumn("Pick"),
+                "Sportsbook": st.column_config.TextColumn("Sportsbook"),
                 "Odds": st.column_config.TextColumn("Odds"),
                 "Units": st.column_config.NumberColumn("Units", format="%.2f"),
                 "Result": st.column_config.MarkdownColumn("Result"),
