@@ -30,3 +30,16 @@ def test_market_intelligence_tab_distinguishes_no_data_from_no_bet_qualified():
     assert "NO_DATA_FROM_PROVIDER" in source
     assert '"Status": MARKET_STATUS_LABELS[status]' in source
     assert "Registry markets with ZERO raw rows today never appear" in source
+
+
+def test_line_movement_tab_shows_a_clv_leaderboard():
+    """The Line Movement tab must show a Best CLV all-time top-5 table and
+    today's picks' own CLV, both reading from the canonical closing_prices
+    table (the one src/automatic_grading.py's _capture_final_closing_price
+    fix, 2026-09-06, actually populates)."""
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    assert "Best Closing Line Value" in source
+    assert "Today's Picks — CLV" in source
+    assert "FROM closing_prices cp" in source
+    assert "ORDER BY cp.clv_probability DESC" in source
+    assert "LIMIT 5" in source

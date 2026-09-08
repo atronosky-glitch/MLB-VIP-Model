@@ -1230,6 +1230,91 @@ with tabs[3]:
     st.subheader(":material/trending_up: Odds Observations & Line Movement")
     st.caption("Track odds changes from morning → pregame → closing for Top Picks.")
 
+    # ── Closing Line Value ──────────────────────────────────────────
+    # CLV (probability moved in our favor by close) is the standard way
+    # to judge whether a pick beat the market, independent of whether it
+    # ultimately won or lost. Only exists once a game has closed and
+    # grading has run — see src/automatic_grading.py's
+    # _capture_final_closing_price (2026-09-06 fix; before that,
+    # closing_prices was never populated at all, so this section will be
+    # sparse until picks settle under the fixed code).
+    st.markdown("##### :material/military_tech: Best Closing Line Value — All-Time Top 5")
+    try:
+        import pandas as pd
+        conn_clv = _open_dashboard_connection(db_path)
+        try:
+            best_clv_rows = conn_clv.execute("""
+                SELECT hr.player_name, hr.market_type, hr.side, hr.line,
+                       hr.sportsbook, hr.offered_american_odds,
+                       cp.closing_sportsbook, cp.closing_american,
+                       cp.clv_probability, hr.matchup, hr.league, op.outcome
+                FROM closing_prices cp
+                JOIN historical_recommendations hr ON hr.recommendation_id = cp.recommendation_id
+                JOIN official_picks op ON op.recommendation_id = cp.recommendation_id
+                WHERE cp.clv_available = 1 AND cp.clv_probability IS NOT NULL
+                ORDER BY cp.clv_probability DESC
+                LIMIT 5
+            """).fetchall()
+        finally:
+            conn_clv.close()
+
+        if not best_clv_rows:
+            st.info(
+                "No Closing Line Value recorded yet — CLV is only captured once a pick's "
+                "game closes and it gets graded."
+            )
+        else:
+            best_clv_table = [{
+                "Player": r["player_name"] or "",
+                "Pick": f"{_format_market_type(r['market_type'])} · {_format_pick_side_line(dict(r))}",
+                "League": r["league"] or "MLB",
+                "Bet": f"{r['sportsbook']} {r['offered_american_odds']:+d}" if r["offered_american_odds"] is not None else r["sportsbook"] or "",
+                "Closed": f"{r['closing_sportsbook']} {r['closing_american']:+d}" if r["closing_american"] is not None else r["closing_sportsbook"] or "",
+                "CLV": f"{r['clv_probability']:+.2%}" if r["clv_probability"] is not None else "",
+                "Result": r["outcome"] or "pending",
+            } for r in [dict(row) for row in best_clv_rows]]
+            st.dataframe(pd.DataFrame(best_clv_table), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Error loading best CLV: {e}")
+
+    st.markdown("##### :material/today: Today's Picks — CLV")
+    try:
+        conn_clv2 = _open_dashboard_connection(db_path)
+        try:
+            today_clv_rows = conn_clv2.execute("""
+                SELECT op.official_rank, hr.player_name, hr.market_type, hr.side, hr.line,
+                       hr.sportsbook, hr.offered_american_odds, hr.matchup,
+                       cp.closing_sportsbook, cp.closing_american, cp.clv_probability,
+                       cp.clv_available, op.outcome
+                FROM official_picks op
+                JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
+                LEFT JOIN closing_prices cp ON cp.recommendation_id = op.recommendation_id
+                WHERE date(op.selected_at) = date('now') AND op.pick_status = 'ACTIVE'
+                ORDER BY op.official_rank
+            """).fetchall()
+        finally:
+            conn_clv2.close()
+
+        if not today_clv_rows:
+            st.info("No Top Picks today.")
+        else:
+            today_clv_table = [{
+                "Rank": r["official_rank"],
+                "Player": r["player_name"] or "",
+                "Pick": f"{_format_market_type(r['market_type'])} · {_format_pick_side_line(dict(r))}",
+                "Bet": f"{r['sportsbook']} {r['offered_american_odds']:+d}" if r["offered_american_odds"] is not None else r["sportsbook"] or "",
+                "CLV": (
+                    f"{r['clv_probability']:+.2%}" if r["clv_available"] and r["clv_probability"] is not None
+                    else "Not closed yet"
+                ),
+                "Result": r["outcome"] or "pending",
+            } for r in [dict(row) for row in today_clv_rows]]
+            st.dataframe(pd.DataFrame(today_clv_table), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Error loading today's CLV: {e}")
+
+    st.divider()
+
     try:
         import pandas as pd
         conn = _open_dashboard_connection(db_path)
