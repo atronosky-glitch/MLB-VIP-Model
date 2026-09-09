@@ -66,15 +66,21 @@ def test_arbitrage_and_middling_tables_show_freshness():
 def test_arbitrage_and_middling_tabs_have_a_sportsbook_selector():
     """2026-09-09 (operator request): each tab must let the operator pick
     which sportsbooks they hold accounts at, and only show opportunities
-    usable with those books (both legs at a selected book)."""
+    usable with those books (both legs at a selected book). Originally a
+    bright-lime st.multiselect; swapped for the shared popover picker
+    (src/sportsbook_picker.py) per operator feedback the same day -- a
+    tick-box dropdown with a colored badge per book, not the theme's
+    default accent color."""
     source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
     assert "def _books_in_opportunities(" in source
     assert "def _usable_with_books(" in source
-    assert 'st.multiselect(\n                "Which sportsbooks do you have accounts at?"' in source
+    assert "from src.sportsbook_picker import render_sportsbook_picker" in source
+    assert 'render_sportsbook_picker(arb_all_books, key_prefix="dash_arb")' in source
+    assert 'render_sportsbook_picker(mid_all_books, key_prefix="dash_mid")' in source
     assert 'arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")' in source
     assert 'mid_book_fields = ("over_sportsbook", "under_sportsbook")' in source
-    assert "arb_usable = _usable_with_books(active_arb, set(arb_selected_books), arb_book_fields)" in source
-    assert "mid_usable = _usable_with_books(active_mid, set(mid_selected_books), mid_book_fields)" in source
+    assert "arb_usable = _usable_with_books(active_arb, arb_selected_books, arb_book_fields)" in source
+    assert "mid_usable = _usable_with_books(active_mid, mid_selected_books, mid_book_fields)" in source
     assert "} for r in arb_usable]" in source
     assert "} for r in mid_usable]" in source
 

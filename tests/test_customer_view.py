@@ -84,9 +84,14 @@ class TestFreshnessLabel:
 
 
 def test_arbitrage_and_middling_pages_have_a_sportsbook_selector():
+    """2026-09-09 (operator feedback): a bright-lime multiselect didn't
+    fit the site's dark/gold theme and read as plain tag chips -- swapped
+    for the shared popover picker (src/sportsbook_picker.py), which shows
+    a tick-box row with a colored badge per book."""
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
-    assert 'st.multiselect(\n                "Which sportsbooks do you have accounts at?",\n                arb_all_books' in source
-    assert 'st.multiselect(\n                "Which sportsbooks do you have accounts at?",\n                mid_all_books' in source
+    assert "from src.sportsbook_picker import render_sportsbook_picker" in source
+    assert 'render_sportsbook_picker(arb_all_books, key_prefix="cust_arb")' in source
+    assert 'render_sportsbook_picker(mid_all_books, key_prefix="cust_mid")' in source
     assert "_usable_with_books(data[\"active_arbitrage\"]" in source
     assert "_usable_with_books(data[\"active_middles\"]" in source
 

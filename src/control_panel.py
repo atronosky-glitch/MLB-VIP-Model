@@ -13,6 +13,7 @@ import os
 import subprocess
 from database.connection import get_database_url
 from database.db_manager import get_connection
+from src.sportsbook_picker import render_sportsbook_picker
 import sys
 import threading
 import time
@@ -2780,11 +2781,8 @@ with tabs[9]:
         else:
             arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")
             arb_all_books = _books_in_opportunities(active_arb, arb_book_fields)
-            arb_selected_books = st.multiselect(
-                "Which sportsbooks do you have accounts at?",
-                arb_all_books, default=arb_all_books, key="dash_arb_books",
-            )
-            arb_usable = _usable_with_books(active_arb, set(arb_selected_books), arb_book_fields)
+            arb_selected_books = render_sportsbook_picker(arb_all_books, key_prefix="dash_arb")
+            arb_usable = _usable_with_books(active_arb, arb_selected_books, arb_book_fields)
             if not arb_usable:
                 st.warning("No arbitrage opportunities usable with the sportsbooks selected above.")
             else:
@@ -2885,11 +2883,8 @@ with tabs[10]:
         else:
             mid_book_fields = ("over_sportsbook", "under_sportsbook")
             mid_all_books = _books_in_opportunities(active_mid, mid_book_fields)
-            mid_selected_books = st.multiselect(
-                "Which sportsbooks do you have accounts at?",
-                mid_all_books, default=mid_all_books, key="dash_mid_books",
-            )
-            mid_usable = _usable_with_books(active_mid, set(mid_selected_books), mid_book_fields)
+            mid_selected_books = render_sportsbook_picker(mid_all_books, key_prefix="dash_mid")
+            mid_usable = _usable_with_books(active_mid, mid_selected_books, mid_book_fields)
             if not mid_usable:
                 st.warning("No middle opportunities usable with the sportsbooks selected above.")
             else:
