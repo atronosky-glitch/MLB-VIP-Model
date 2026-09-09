@@ -181,7 +181,8 @@ def db_conn():
             mapping_method      TEXT DEFAULT '',
             validation_reason   TEXT DEFAULT '',
             captured_at         TEXT,
-            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            league              TEXT DEFAULT 'MLB'
         );
         CREATE TABLE IF NOT EXISTS player_prop_mapping_audit (
             audit_id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,6 +376,80 @@ def db_conn():
             market_status TEXT,
             observed_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (official_pick_id) REFERENCES official_picks(recommendation_id)
+        );
+        CREATE TABLE IF NOT EXISTS player_stat_results (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id            TEXT NOT NULL,
+            player_id           TEXT NOT NULL,
+            player_name         TEXT,
+            market_type         TEXT NOT NULL,
+            final_stat_value    REAL,
+            result_source       TEXT,
+            source_observed_at  TEXT,
+            result_status       TEXT NOT NULL DEFAULT 'UNRESOLVED',
+            result_detail       TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(event_id, player_id, market_type)
+        );
+        CREATE TABLE IF NOT EXISTS arbitrage_opportunities (
+            opportunity_id TEXT PRIMARY KEY,
+            league TEXT NOT NULL DEFAULT 'MLB',
+            sport TEXT DEFAULT 'baseball',
+            event_id TEXT,
+            matchup TEXT,
+            event_start_time TEXT,
+            player_id TEXT,
+            player_name TEXT,
+            market_type TEXT,
+            line REAL,
+            side_a TEXT,
+            side_a_sportsbook TEXT,
+            side_a_price INTEGER,
+            side_a_decimal_odds REAL,
+            side_a_stake_pct REAL,
+            side_b TEXT,
+            side_b_sportsbook TEXT,
+            side_b_price INTEGER,
+            side_b_decimal_odds REAL,
+            side_b_stake_pct REAL,
+            guaranteed_roi_pct REAL,
+            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            outcome TEXT,
+            profit_units REAL,
+            graded_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS middle_opportunities (
+            opportunity_id TEXT PRIMARY KEY,
+            league TEXT NOT NULL DEFAULT 'MLB',
+            sport TEXT DEFAULT 'baseball',
+            event_id TEXT,
+            matchup TEXT,
+            event_start_time TEXT,
+            player_id TEXT,
+            player_name TEXT,
+            market_type TEXT,
+            over_line REAL,
+            over_sportsbook TEXT,
+            over_price INTEGER,
+            over_decimal_odds REAL,
+            over_stake_pct REAL,
+            under_line REAL,
+            under_sportsbook TEXT,
+            under_price INTEGER,
+            under_decimal_odds REAL,
+            under_stake_pct REAL,
+            window_width REAL,
+            worst_case_roi_pct REAL,
+            best_case_roi_pct REAL,
+            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            outcome TEXT,
+            profit_units REAL,
+            graded_at TEXT
         );
         CREATE TABLE IF NOT EXISTS scheduled_jobs (
             job_id TEXT PRIMARY KEY,

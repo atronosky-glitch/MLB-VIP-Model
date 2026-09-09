@@ -15,6 +15,19 @@ def test_customer_view_is_separate_from_admin_dashboard():
     assert "SPORTSODDS_API_KEY" not in source
 
 
+def test_arbitrage_and_middling_sections_are_subscriber_gated():
+    """2026-09-09: live arbitrage/middling opportunities must only be
+    shown in full to authorized subscribers -- publicly telegraphing a
+    live cross-book price gap invites it being raced/removed immediately
+    and undercuts the point of a subscription product."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert "Arbitrage & Middling" in source
+    assert "get_active_arbitrage_opportunities" in source
+    assert "get_active_middle_opportunities" in source
+    assert "Subscriber access unlocks live arbitrage and middling opportunities." in source
+    assert "if not authorized:" in source
+
+
 def test_research_picks_use_configured_timezone_not_utc_day():
     """Regression test (2026-09-06 fix): the customer-facing "Today's
     Research" list must use the Eastern (or whatever MLB_TIMEZONE says)

@@ -66,6 +66,10 @@ WNBA_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
 # games table rather than calling a live API, so this interval only
 # controls how often that cheap local check runs, not any API cost.
 MLB_PROPS_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
+# Arbitrage/middle detection only reads odds a normal scan already
+# ingested (no API cost), so this can run more often than the
+# credit-metered scans above without any budget concern.
+ARB_MIDDLE_SCAN_INTERVAL_MINUTES = 15
 
 TZ_NAME = os.environ.get("MLB_SCHEDULER_TIMEZONE", os.environ.get("MLB_TIMEZONE", "America/New_York"))
 
@@ -380,6 +384,23 @@ def _run_nfl_props_scan(config) -> dict:
     return {"status": "success" if exit_code in (0, 1) else "failed", "exit_code": exit_code}
 
 
+def _run_arb_middle_scan(conn: DB, config) -> dict:
+    """Arbitrage/middle detection (2026-09-09) — reads whatever odds a
+    normal scan already ingested for each league (zero extra API cost)
+    and syncs any opportunities found. Each league's pass is isolated so
+    one league's empty/thin data never blocks the others."""
+    from src.arb_middle_scan import run_scan
+
+    results: dict[str, dict] = {}
+    for league in ("MLB", "NFL", "WNBA"):
+        try:
+            results[league] = run_scan(conn, league=league)
+        except Exception:
+            logger.exception("[%s] Arbitrage/middle scan failed", league)
+            results[league] = {"error": True}
+    return {"status": "success", "results": results}
+
+
 def _run_grading(conn: DB, config) -> dict:
     """Catch up grading from verified stored final-stat results."""
     from src.automation import schedule_grading
@@ -585,6 +606,7 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "wnba-props-scan": lambda: _run_wnba_props_scan(config),
         "mlb-props-scan": lambda: _run_mlb_props_scan(config),
         "nfl-props-scan": lambda: _run_nfl_props_scan(config),
+        "arb-middle-scan": lambda: _run_arb_middle_scan(conn, config),
         "grading": lambda: _run_grading(conn, config),
         "backup": lambda: _run_backup(config),
         "adaptive-learning": lambda: _run_adaptive_learning(conn, config),
@@ -1067,6 +1089,7 @@ def run_worker_persistent(config) -> None:
     last_nfl_check = 0
     last_wnba_check = 0
     last_mlb_props_check = 0
+    last_arb_middle_check = 0
     last_backup_minute = -1
     last_maintenance_day = ""
 
@@ -1138,6 +1161,16 @@ def run_worker_persistent(config) -> None:
                 except Exception:
                     logger.exception("[MLB] Props scheduling check failed")
                 last_mlb_props_check = now
+
+            # Arbitrage/middle scan: reads whatever odds a normal scan
+            # already ingested, zero extra API cost, so this only needs
+            # a plain interval check, not a "should I run" decision the
+            # way the credit-metered scans above need.
+            if now - last_arb_middle_check >= ARB_MIDDLE_SCAN_INTERVAL_MINUTES * 60:
+                job_id = _create_job_if_not_queued(conn, "arb-middle-scan")
+                if job_id:
+                    logger.info("Scheduled arbitrage/middle scan: %s", job_id[:8])
+                last_arb_middle_check = now
 
             # Daily backup at 3:30 AM ET
             if _is_backup_time(now_local) and last_backup_minute != now_local.minute:

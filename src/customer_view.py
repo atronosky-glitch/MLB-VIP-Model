@@ -233,11 +233,29 @@ def load_customer_data(authorized: bool) -> dict:
                 ORDER BY model_score DESC, ev_pct DESC
                 LIMIT 25
             """, (get_today_in_configured_timezone(),)).fetchall()
+        active_arbitrage = []
+        graded_arbitrage = []
+        active_middles = []
+        graded_middles = []
+        if authorized:
+            from database.db_manager import (
+                get_active_arbitrage_opportunities, get_graded_arbitrage_opportunities,
+                get_active_middle_opportunities, get_graded_middle_opportunities,
+            )
+            active_arbitrage = get_active_arbitrage_opportunities(conn)
+            graded_arbitrage = get_graded_arbitrage_opportunities(conn)
+            active_middles = get_active_middle_opportunities(conn)
+            graded_middles = get_graded_middle_opportunities(conn)
+
         return {
             "settled": [dict(r) for r in settled],
             "locked": [dict(r) for r in locked],
             "upcoming": [dict(r) for r in upcoming],
             "research": [dict(r) for r in research],
+            "active_arbitrage": active_arbitrage,
+            "graded_arbitrage": graded_arbitrage,
+            "active_middles": active_middles,
+            "graded_middles": graded_middles,
         }
     finally:
         conn.close()
@@ -442,6 +460,91 @@ else:
         with st.expander("Full Board"):
             for pick in data["research"]:
                 _render_full_pick(pick)
+
+st.divider()
+st.subheader("Arbitrage & Middling")
+st.caption(
+    "Two-sided opportunities across different sportsbooks — bet both sides yourself. "
+    "Arbitrage guarantees a profit no matter the outcome. Middling risks a small, capped "
+    "amount for a shot at both sides winning. Neither is a \"pick\" to follow — you place "
+    "both bets."
+)
+if not authorized:
+    st.info("Subscriber access unlocks live arbitrage and middling opportunities.")
+else:
+    arb_col, mid_col = st.columns(2)
+    with arb_col:
+        st.markdown("##### Arbitrage — guaranteed profit")
+        if not data["active_arbitrage"]:
+            st.caption("None right now — rechecked every ~15 minutes.")
+        else:
+            for opp in data["active_arbitrage"][:5]:
+                pick_label = f"{_market_label(opp['market_type'])}" + (
+                    f" {opp['line']}" if opp.get("line") is not None else ""
+                )
+                st.markdown(f"""
+                <div class="pick">
+                  <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
+                  <div class="pick-meta">{pick_label}</div>
+                  <div class="pick-meta">{opp['side_a']} · {opp['side_a_sportsbook']} {opp['side_a_price']:+d}
+                    ({opp['side_a_stake_pct']:.0%} stake)</div>
+                  <div class="pick-meta">{opp['side_b']} · {opp['side_b_sportsbook']} {opp['side_b_price']:+d}
+                    ({opp['side_b_stake_pct']:.0%} stake)</div>
+                  <div class="unit-line">Guaranteed: <span class="result-win">+{opp['guaranteed_roi_pct']:.2f}%</span></div>
+                </div>
+                """, unsafe_allow_html=True)
+    with mid_col:
+        st.markdown("##### Middling — small guaranteed risk, big upside")
+        if not data["active_middles"]:
+            st.caption("None right now — rechecked every ~15 minutes.")
+        else:
+            for opp in data["active_middles"][:5]:
+                st.markdown(f"""
+                <div class="pick">
+                  <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])}</div>
+                  <div class="pick-meta">{_market_label(opp['market_type'])}</div>
+                  <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
+                  <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
+                  <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>
+                    · Best case: <span class="result-win">+{opp['best_case_roi_pct']:.2f}%</span></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    arb_chart_col, mid_chart_col = st.columns(2)
+    with arb_chart_col:
+        if data["graded_arbitrage"]:
+            df_arb = pd.DataFrame({
+                "Date": [r["graded_at"][:10] for r in data["graded_arbitrage"]],
+                "Profit": [r["profit_units"] or 0 for r in data["graded_arbitrage"]],
+            })
+            df_arb["Cumulative"] = df_arb["Profit"].cumsum()
+            df_arb["Date"] = pd.to_datetime(df_arb["Date"])
+            total = df_arb["Cumulative"].iloc[-1]
+            color = "#3ddc84" if total >= 0 else "#ff5468"
+            st.caption(f"Arbitrage track record: {total:+.2f}u")
+            chart = alt.Chart(df_arb).mark_area(
+                line={"color": color, "strokeWidth": 2}, color=color, opacity=0.14, interpolate="monotone",
+            ).encode(
+                x=alt.X("Date:T", title=None), y=alt.Y("Cumulative:Q", title="Units"),
+            )
+            st.altair_chart(chart, use_container_width=True)
+    with mid_chart_col:
+        if data["graded_middles"]:
+            df_mid = pd.DataFrame({
+                "Date": [r["graded_at"][:10] for r in data["graded_middles"]],
+                "Profit": [r["profit_units"] or 0 for r in data["graded_middles"]],
+            })
+            df_mid["Cumulative"] = df_mid["Profit"].cumsum()
+            df_mid["Date"] = pd.to_datetime(df_mid["Date"])
+            total = df_mid["Cumulative"].iloc[-1]
+            color = "#3ddc84" if total >= 0 else "#ff5468"
+            st.caption(f"Middling track record: {total:+.2f}u")
+            chart = alt.Chart(df_mid).mark_area(
+                line={"color": color, "strokeWidth": 2}, color=color, opacity=0.14, interpolate="monotone",
+            ).encode(
+                x=alt.X("Date:T", title=None), y=alt.Y("Cumulative:Q", title="Units"),
+            )
+            st.altair_chart(chart, use_container_width=True)
 
 st.divider()
 st.markdown('<div id="track-record"></div>', unsafe_allow_html=True)

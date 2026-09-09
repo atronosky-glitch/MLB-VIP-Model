@@ -987,6 +987,82 @@ def init_db(db_path: str | None = None) -> None:
     # Phase 17C: Variable staking - add risk_units to official_picks
     _add_columns_if_missing(conn, "official_picks", [("risk_units", "REAL")])
 
+    # Arbitrage and middle opportunities (2026-09-09). Both are read-only
+    # derived from player_prop_odds — never change what a book offers,
+    # only surface where two books (arbitrage) or two lines (middling)
+    # already disagree enough to matter. See src/arbitrage.py and
+    # src/middling.py for the actual math.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS arbitrage_opportunities (
+            opportunity_id TEXT PRIMARY KEY,
+            league TEXT NOT NULL DEFAULT 'MLB',
+            sport TEXT DEFAULT 'baseball',
+            event_id TEXT,
+            matchup TEXT,
+            event_start_time TEXT,
+            player_id TEXT,
+            player_name TEXT,
+            market_type TEXT,
+            line REAL,
+            side_a TEXT,
+            side_a_sportsbook TEXT,
+            side_a_price INTEGER,
+            side_a_decimal_odds REAL,
+            side_a_stake_pct REAL,
+            side_b TEXT,
+            side_b_sportsbook TEXT,
+            side_b_price INTEGER,
+            side_b_decimal_odds REAL,
+            side_b_stake_pct REAL,
+            guaranteed_roi_pct REAL,
+            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            outcome TEXT,
+            profit_units REAL,
+            graded_at TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_arb_status ON arbitrage_opportunities(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_arb_league ON arbitrage_opportunities(league)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_arb_detected ON arbitrage_opportunities(detected_at)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS middle_opportunities (
+            opportunity_id TEXT PRIMARY KEY,
+            league TEXT NOT NULL DEFAULT 'MLB',
+            sport TEXT DEFAULT 'baseball',
+            event_id TEXT,
+            matchup TEXT,
+            event_start_time TEXT,
+            player_id TEXT,
+            player_name TEXT,
+            market_type TEXT,
+            over_line REAL,
+            over_sportsbook TEXT,
+            over_price INTEGER,
+            over_decimal_odds REAL,
+            over_stake_pct REAL,
+            under_line REAL,
+            under_sportsbook TEXT,
+            under_price INTEGER,
+            under_decimal_odds REAL,
+            under_stake_pct REAL,
+            window_width REAL,
+            worst_case_roi_pct REAL,
+            best_case_roi_pct REAL,
+            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            outcome TEXT,
+            profit_units REAL,
+            graded_at TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_status ON middle_opportunities(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_league ON middle_opportunities(league)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_detected ON middle_opportunities(detected_at)")
+
     # Multi-league support: league/sport tags on every remaining table that
     # carries per-event or per-recommendation data, so results, settlement,
     # closing-line, and lifecycle records can be filtered/reported per
@@ -2260,6 +2336,294 @@ def get_official_picks_today(conn: DB, league: str | None = None) -> list[dict]:
     sql += " ORDER BY op.official_rank"
     rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Arbitrage / Middle opportunities ──────────────────────────────
+#
+# Both tables follow the same "sync" pattern as a fresh detection pass
+# comes in: upsert every currently-detected opportunity (refreshing its
+# prices and last_seen_at), then mark anything still ACTIVE from a prior
+# pass that wasn't found again this time as EXPIRED — so the "live
+# opportunities" views only ever show what a scan just confirmed is
+# still real, never a stale price from an hour ago.
+#
+# Scope note: only markets this module can later grade with certainty
+# are persisted — Over/Under player props, game totals, and moneyline
+# (a plain score comparison, no sign ambiguity). Spread/run-line markets
+# are deliberately excluded at the detection call site (see
+# src/arb_middle_scan.py) because correctly grading a spread needs the
+# SIGNED line (favorite negative / underdog positive), which isn't part
+# of the row shape src/arbitrage.py and src/middling.py consume — safer
+# to not offer a bet this code can't later verify than to guess later.
+
+
+def sync_arbitrage_opportunities(
+    conn: DB, league: str, opportunities: list[dict], scan_run_id: str | None = None,
+) -> dict:
+    """Upsert this scan's detected arbitrage opportunities and expire any
+    previously-ACTIVE one for this league not found again this pass."""
+    now = datetime.now(timezone.utc).isoformat()
+    current_ids: list[str] = []
+    for opp in opportunities:
+        opp_id = opp["group_key"]
+        current_ids.append(opp_id)
+        conn.execute("""
+            INSERT INTO arbitrage_opportunities (
+                opportunity_id, league, sport, event_id, matchup, event_start_time,
+                player_id, player_name, market_type, line,
+                side_a, side_a_sportsbook, side_a_price, side_a_decimal_odds, side_a_stake_pct,
+                side_b, side_b_sportsbook, side_b_price, side_b_decimal_odds, side_b_stake_pct,
+                guaranteed_roi_pct, detected_at, last_seen_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+            ON CONFLICT (opportunity_id) DO UPDATE SET
+                side_a_sportsbook = excluded.side_a_sportsbook,
+                side_a_price = excluded.side_a_price,
+                side_a_decimal_odds = excluded.side_a_decimal_odds,
+                side_a_stake_pct = excluded.side_a_stake_pct,
+                side_b_sportsbook = excluded.side_b_sportsbook,
+                side_b_price = excluded.side_b_price,
+                side_b_decimal_odds = excluded.side_b_decimal_odds,
+                side_b_stake_pct = excluded.side_b_stake_pct,
+                guaranteed_roi_pct = excluded.guaranteed_roi_pct,
+                last_seen_at = excluded.last_seen_at,
+                status = 'ACTIVE'
+        """, (
+            opp_id, league, opp.get("sport", "baseball"), opp.get("event_id"),
+            opp.get("matchup"), opp.get("event_start_time"),
+            opp.get("player_id"), opp.get("player_name"), opp.get("market_type"), opp.get("line"),
+            opp["side_a"], opp["side_a_book"], opp["side_a_price"], opp["side_a_decimal_odds"], opp["side_a_stake_pct"],
+            opp["side_b"], opp["side_b_book"], opp["side_b_price"], opp["side_b_decimal_odds"], opp["side_b_stake_pct"],
+            opp["guaranteed_roi_pct"], now, now,
+        ))
+    if current_ids:
+        placeholders = ",".join("?" * len(current_ids))
+        conn.execute(
+            f"""UPDATE arbitrage_opportunities SET status = 'EXPIRED'
+                WHERE league = ? AND status = 'ACTIVE' AND opportunity_id NOT IN ({placeholders})""",
+            (league, *current_ids),
+        )
+    else:
+        conn.execute(
+            "UPDATE arbitrage_opportunities SET status = 'EXPIRED' WHERE league = ? AND status = 'ACTIVE'",
+            (league,),
+        )
+    conn.commit()
+    return {"active": len(current_ids)}
+
+
+def sync_middle_opportunities(
+    conn: DB, league: str, opportunities: list[dict], scan_run_id: str | None = None,
+) -> dict:
+    """Same sync pattern as sync_arbitrage_opportunities, for middles."""
+    now = datetime.now(timezone.utc).isoformat()
+    current_ids: list[str] = []
+    for opp in opportunities:
+        opp_id = "|".join(str(x) for x in (
+            opp.get("event_id"), opp.get("player_id"), opp.get("market_type"),
+            opp["over_line"], opp["under_line"],
+        ))
+        current_ids.append(opp_id)
+        conn.execute("""
+            INSERT INTO middle_opportunities (
+                opportunity_id, league, sport, event_id, matchup, event_start_time,
+                player_id, player_name, market_type,
+                over_line, over_sportsbook, over_price, over_decimal_odds, over_stake_pct,
+                under_line, under_sportsbook, under_price, under_decimal_odds, under_stake_pct,
+                window_width, worst_case_roi_pct, best_case_roi_pct,
+                detected_at, last_seen_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+            ON CONFLICT (opportunity_id) DO UPDATE SET
+                over_sportsbook = excluded.over_sportsbook,
+                over_price = excluded.over_price,
+                over_decimal_odds = excluded.over_decimal_odds,
+                over_stake_pct = excluded.over_stake_pct,
+                under_sportsbook = excluded.under_sportsbook,
+                under_price = excluded.under_price,
+                under_decimal_odds = excluded.under_decimal_odds,
+                under_stake_pct = excluded.under_stake_pct,
+                worst_case_roi_pct = excluded.worst_case_roi_pct,
+                best_case_roi_pct = excluded.best_case_roi_pct,
+                last_seen_at = excluded.last_seen_at,
+                status = 'ACTIVE'
+        """, (
+            opp_id, league, opp.get("sport", "baseball"), opp.get("event_id"),
+            opp.get("matchup"), opp.get("event_start_time"),
+            opp.get("player_id"), opp.get("player_name"), opp.get("market_type"),
+            opp["over_line"], opp["over_sportsbook"], opp["over_price"], opp["over_decimal_odds"], opp["over_stake_pct"],
+            opp["under_line"], opp["under_sportsbook"], opp["under_price"], opp["under_decimal_odds"], opp["under_stake_pct"],
+            opp["window_width"], opp["worst_case_roi_pct"], opp["best_case_roi_pct"], now, now,
+        ))
+    if current_ids:
+        placeholders = ",".join("?" * len(current_ids))
+        conn.execute(
+            f"""UPDATE middle_opportunities SET status = 'EXPIRED'
+                WHERE league = ? AND status = 'ACTIVE' AND opportunity_id NOT IN ({placeholders})""",
+            (league, *current_ids),
+        )
+    else:
+        conn.execute(
+            "UPDATE middle_opportunities SET status = 'EXPIRED' WHERE league = ? AND status = 'ACTIVE'",
+            (league,),
+        )
+    conn.commit()
+    return {"active": len(current_ids)}
+
+
+def get_active_arbitrage_opportunities(conn: DB, league: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM arbitrage_opportunities WHERE status = 'ACTIVE'"
+    params: tuple = ()
+    if league:
+        sql += " AND league = ?"
+        params = (league,)
+    sql += " ORDER BY guaranteed_roi_pct DESC"
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def get_active_middle_opportunities(conn: DB, league: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM middle_opportunities WHERE status = 'ACTIVE'"
+    params: tuple = ()
+    if league:
+        sql += " AND league = ?"
+        params = (league,)
+    sql += " ORDER BY best_case_roi_pct DESC"
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def get_graded_arbitrage_opportunities(conn: DB, league: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM arbitrage_opportunities WHERE status = 'GRADED' AND graded_at IS NOT NULL"
+    params: tuple = ()
+    if league:
+        sql += " AND league = ?"
+        params = (league,)
+    sql += " ORDER BY graded_at"
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def get_graded_middle_opportunities(conn: DB, league: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM middle_opportunities WHERE status = 'GRADED' AND graded_at IS NOT NULL"
+    params: tuple = ()
+    if league:
+        sql += " AND league = ?"
+        params = (league,)
+    sql += " ORDER BY graded_at"
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def _leg_outcome(conn: DB, event_id: str | None, player_id: str | None,
+                  market_type: str | None, side: str, line: float | None) -> str | None:
+    """WIN/LOSS/PUSH for one leg of an arbitrage/middle pair, or None if
+    the underlying game/stat isn't final yet. Reuses the exact same
+    verified-fact tables (never re-derives a result) every other
+    settlement path in this codebase reads from."""
+    from src.grading import grade_ou, SETTLEMENT_WIN, SETTLEMENT_LOSS, SETTLEMENT_PUSH
+    from src.game_settlement import grade_moneyline, grade_total
+
+    side_u = (side or "").upper()
+    if side_u == "HOME" or side_u == "AWAY":
+        row = conn.execute(
+            "SELECT final_status, away_score, home_score FROM event_results WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if not row or (row["final_status"] or "").upper() not in ("FINAL", "STATUS_FINAL"):
+            return None
+        side_score = row["home_score"] if side_u == "HOME" else row["away_score"]
+        opp_score = row["away_score"] if side_u == "HOME" else row["home_score"]
+        result = grade_moneyline(side_u, side_score, opp_score)
+    elif player_id:
+        fact = conn.execute(
+            """SELECT final_stat_value, result_status FROM player_stat_results
+               WHERE event_id = ? AND player_id = ? AND market_type = ?""",
+            (event_id, player_id, market_type),
+        ).fetchone()
+        if not fact or (fact["result_status"] or "").upper() != "FINAL":
+            return None
+        result = grade_ou(fact["final_stat_value"], line, side_u)
+    else:
+        row = conn.execute(
+            "SELECT final_status, away_score, home_score FROM event_results WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if not row or (row["final_status"] or "").upper() not in ("FINAL", "STATUS_FINAL"):
+            return None
+        result = grade_total(side_u, row["away_score"], row["home_score"], line)
+
+    if result in (SETTLEMENT_WIN, SETTLEMENT_LOSS, SETTLEMENT_PUSH):
+        return result
+    return None
+
+
+def _two_leg_profit(
+    stake_a_pct: float, decimal_a: float, outcome_a: str,
+    stake_b_pct: float, decimal_b: float, outcome_b: str,
+) -> float:
+    """Realized profit in units on a 1-unit total stake split stake_a_pct
+    / stake_b_pct across two legs, given each leg's actual WIN/LOSS/PUSH."""
+    def payout(stake_pct, decimal_odds, outcome):
+        if outcome == "WIN":
+            return stake_pct * decimal_odds
+        if outcome == "PUSH":
+            return stake_pct
+        return 0.0
+    return payout(stake_a_pct, decimal_a, outcome_a) + payout(stake_b_pct, decimal_b, outcome_b) - 1.0
+
+
+def grade_arbitrage_opportunities(conn: DB) -> dict:
+    """Grade every still-ACTIVE or EXPIRED-but-ungraded arbitrage
+    opportunity whose underlying legs have both settled. EXPIRED (no
+    longer the best price available) is still gradeable — the bet, if
+    placed while it was ACTIVE, still happened."""
+    rows = conn.execute(
+        "SELECT * FROM arbitrage_opportunities WHERE status IN ('ACTIVE', 'EXPIRED')"
+    ).fetchall()
+    graded = 0
+    for row in rows:
+        r = dict(row)
+        outcome_a = _leg_outcome(conn, r["event_id"], r["player_id"], r["market_type"], r["side_a"], r["line"])
+        outcome_b = _leg_outcome(conn, r["event_id"], r["player_id"], r["market_type"], r["side_b"], r["line"])
+        if outcome_a is None or outcome_b is None:
+            continue
+        profit = _two_leg_profit(
+            r["side_a_stake_pct"], r["side_a_decimal_odds"], outcome_a,
+            r["side_b_stake_pct"], r["side_b_decimal_odds"], outcome_b,
+        )
+        conn.execute(
+            """UPDATE arbitrage_opportunities
+               SET status = 'GRADED', outcome = ?, profit_units = ?, graded_at = ?
+               WHERE opportunity_id = ?""",
+            (f"{outcome_a}/{outcome_b}", round(profit, 6),
+             datetime.now(timezone.utc).isoformat(), r["opportunity_id"]),
+        )
+        graded += 1
+    conn.commit()
+    return {"examined": len(rows), "graded": graded, "unresolved": len(rows) - graded}
+
+
+def grade_middle_opportunities(conn: DB) -> dict:
+    """Same as grade_arbitrage_opportunities, for middles."""
+    rows = conn.execute(
+        "SELECT * FROM middle_opportunities WHERE status IN ('ACTIVE', 'EXPIRED')"
+    ).fetchall()
+    graded = 0
+    for row in rows:
+        r = dict(row)
+        outcome_over = _leg_outcome(conn, r["event_id"], r["player_id"], r["market_type"], "OVER", r["over_line"])
+        outcome_under = _leg_outcome(conn, r["event_id"], r["player_id"], r["market_type"], "UNDER", r["under_line"])
+        if outcome_over is None or outcome_under is None:
+            continue
+        profit = _two_leg_profit(
+            r["over_stake_pct"], r["over_decimal_odds"], outcome_over,
+            r["under_stake_pct"], r["under_decimal_odds"], outcome_under,
+        )
+        conn.execute(
+            """UPDATE middle_opportunities
+               SET status = 'GRADED', outcome = ?, profit_units = ?, graded_at = ?
+               WHERE opportunity_id = ?""",
+            (f"{outcome_over}/{outcome_under}", round(profit, 6),
+             datetime.now(timezone.utc).isoformat(), r["opportunity_id"]),
+        )
+        graded += 1
+    conn.commit()
+    return {"examined": len(rows), "graded": graded, "unresolved": len(rows) - graded}
 
 
 def get_performance_baseline(conn: DB) -> str | None:

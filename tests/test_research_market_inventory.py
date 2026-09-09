@@ -43,3 +43,13 @@ def test_line_movement_tab_shows_a_clv_leaderboard():
     assert "FROM closing_prices cp" in source
     assert "ORDER BY cp.clv_probability DESC" in source
     assert "LIMIT 5" in source
+
+
+def test_admin_dashboard_has_arbitrage_and_middling_tabs():
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    assert ":material/balance: Arbitrage" in source
+    assert ":material/compress: Middling" in source
+    assert "get_active_arbitrage_opportunities" in source
+    assert "get_graded_arbitrage_opportunities" in source
+    assert "get_active_middle_opportunities" in source
+    assert "get_graded_middle_opportunities" in source

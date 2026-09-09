@@ -793,6 +793,8 @@ tabs = st.tabs([
     ":material/settings: Run & Operations",
     ":material/psychology: Adaptive Learning",
     ":material/monitor_heart: Multi-League Health",
+    ":material/balance: Arbitrage",
+    ":material/compress: Middling",
 ])
 
 # ==================================================================
@@ -2702,6 +2704,191 @@ with tabs[8]:
             _conn_lh.close()
     except Exception as e:
         st.error(f"Multi-league health unavailable: {e}")
+
+# ==================================================================
+# Tab 10: Arbitrage
+# ==================================================================
+with tabs[9]:
+    st.subheader(":material/balance: Arbitrage")
+    st.caption(
+        "Cross-book price mismatches where staking both sides guarantees a profit "
+        "regardless of outcome. Reads odds a normal scan already ingested — "
+        "reconfirmed roughly every 15 minutes, never a stale one-time snapshot."
+    )
+    try:
+        import pandas as pd
+        conn_arb = _open_dashboard_connection(db_path)
+        try:
+            from database.db_manager import (
+                get_active_arbitrage_opportunities, get_graded_arbitrage_opportunities,
+            )
+            active_arb = get_active_arbitrage_opportunities(conn_arb)
+            graded_arb = get_graded_arbitrage_opportunities(conn_arb)
+        finally:
+            conn_arb.close()
+
+        st.markdown("##### Live Opportunities")
+        if not active_arb:
+            st.info("No cross-book arbitrage detected right now — checked every ~15 minutes.")
+        else:
+            arb_table = [{
+                "League": r["league"],
+                "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                "Market": f"{_format_market_type(r['market_type'])}" + (f" {r['line']}" if r.get("line") is not None else ""),
+                "Side A": f"{r['side_a']} · {r['side_a_sportsbook']} {r['side_a_price']:+d}",
+                "Side B": f"{r['side_b']} · {r['side_b_sportsbook']} {r['side_b_price']:+d}",
+                "Stake Split": f"{r['side_a_stake_pct']:.0%} / {r['side_b_stake_pct']:.0%}",
+                "Guaranteed ROI": f"+{r['guaranteed_roi_pct']:.2f}%",
+                "Detected": (r.get("detected_at") or "")[:16],
+            } for r in active_arb]
+            st.dataframe(pd.DataFrame(arb_table), use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("##### Settled Results")
+        if not graded_arb:
+            st.info("No settled arbitrage opportunities yet.")
+        else:
+            settled_arb_table = [{
+                "League": r["league"],
+                "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                "Market": _format_market_type(r["market_type"]),
+                "Outcome": r["outcome"],
+                "Profit (u)": round(r["profit_units"], 4) if r["profit_units"] is not None else None,
+                "Graded": (r.get("graded_at") or "")[:16],
+            } for r in graded_arb]
+            st.dataframe(pd.DataFrame(settled_arb_table), use_container_width=True, hide_index=True)
+
+            try:
+                import altair as alt
+                df_arb = pd.DataFrame({
+                    "Date": [r["graded_at"][:10] for r in graded_arb],
+                    "Profit": [r["profit_units"] or 0 for r in graded_arb],
+                })
+                df_arb["Cumulative"] = df_arb["Profit"].cumsum()
+                df_arb["Date"] = pd.to_datetime(df_arb["Date"])
+                total_arb = df_arb["Cumulative"].iloc[-1]
+                accent = "#3ddc84" if total_arb >= 0 else "#ff5468"
+                st.markdown(f"""
+                <div style="background:linear-gradient(145deg, rgba(35,30,18,.95), rgba(18,15,10,.95));
+                            border:1px solid rgba(255,255,255,.08); border-radius:14px;
+                            padding:18px 22px; margin-bottom:10px;">
+                  <div style="color:#9a9488; text-transform:uppercase; letter-spacing:.09em;
+                              font-size:.72rem; font-weight:800;">
+                    Cumulative Result &mdash; All Settled Arbitrage
+                  </div>
+                  <div style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:2.6rem;
+                              letter-spacing:-.03em; color:{accent}; margin-top:4px;">
+                    {total_arb:+.2f}u
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+                base_arb = alt.Chart(df_arb)
+                area_arb = base_arb.mark_area(color="#3ddc84", opacity=0.14).encode(
+                    x=alt.X("Date:T", title="", axis=alt.Axis(format="%b %d")),
+                    y=alt.Y("Cumulative:Q", title="Cumulative PnL (u)"),
+                )
+                line_arb = base_arb.mark_line(stroke="#3ddc84", strokeWidth=2.5).encode(
+                    x=alt.X("Date:T", title="", axis=alt.Axis(format="%b %d")),
+                    y=alt.Y("Cumulative:Q", title="Cumulative PnL (u)"),
+                )
+                st.altair_chart(_theme_chart(area_arb + line_arb, height=300), use_container_width=True)
+            except Exception as e:
+                st.caption(f"Arbitrage PnL chart unavailable: {e}")
+    except Exception as e:
+        st.error(f"Arbitrage tab unavailable: {e}")
+
+# ==================================================================
+# Tab 11: Middling
+# ==================================================================
+with tabs[10]:
+    st.subheader(":material/compress: Middling")
+    st.caption(
+        "Over at a lower line and Under at a higher line, at two books. If the final "
+        "number lands in the window, both bets win. Outside it, the guaranteed worst "
+        "case is capped small — never a full loss on both legs."
+    )
+    try:
+        import pandas as pd
+        conn_mid = _open_dashboard_connection(db_path)
+        try:
+            from database.db_manager import (
+                get_active_middle_opportunities, get_graded_middle_opportunities,
+            )
+            active_mid = get_active_middle_opportunities(conn_mid)
+            graded_mid = get_graded_middle_opportunities(conn_mid)
+        finally:
+            conn_mid.close()
+
+        st.markdown("##### Live Opportunities")
+        if not active_mid:
+            st.info("No middle opportunities detected right now — checked every ~15 minutes.")
+        else:
+            mid_table = [{
+                "League": r["league"],
+                "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                "Market": _format_market_type(r["market_type"]),
+                "Over": f"{r['over_line']} · {r['over_sportsbook']} {r['over_price']:+d}",
+                "Under": f"{r['under_line']} · {r['under_sportsbook']} {r['under_price']:+d}",
+                "Window": r["window_width"],
+                "Worst Case": f"{r['worst_case_roi_pct']:+.2f}%",
+                "Best Case": f"{r['best_case_roi_pct']:+.2f}%",
+                "Detected": (r.get("detected_at") or "")[:16],
+            } for r in active_mid]
+            st.dataframe(pd.DataFrame(mid_table), use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("##### Settled Results")
+        if not graded_mid:
+            st.info("No settled middle opportunities yet.")
+        else:
+            settled_mid_table = [{
+                "League": r["league"],
+                "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                "Market": _format_market_type(r["market_type"]),
+                "Outcome": r["outcome"],
+                "Profit (u)": round(r["profit_units"], 4) if r["profit_units"] is not None else None,
+                "Graded": (r.get("graded_at") or "")[:16],
+            } for r in graded_mid]
+            st.dataframe(pd.DataFrame(settled_mid_table), use_container_width=True, hide_index=True)
+
+            try:
+                import altair as alt
+                df_mid = pd.DataFrame({
+                    "Date": [r["graded_at"][:10] for r in graded_mid],
+                    "Profit": [r["profit_units"] or 0 for r in graded_mid],
+                })
+                df_mid["Cumulative"] = df_mid["Profit"].cumsum()
+                df_mid["Date"] = pd.to_datetime(df_mid["Date"])
+                total_mid = df_mid["Cumulative"].iloc[-1]
+                accent = "#3ddc84" if total_mid >= 0 else "#ff5468"
+                st.markdown(f"""
+                <div style="background:linear-gradient(145deg, rgba(35,30,18,.95), rgba(18,15,10,.95));
+                            border:1px solid rgba(255,255,255,.08); border-radius:14px;
+                            padding:18px 22px; margin-bottom:10px;">
+                  <div style="color:#9a9488; text-transform:uppercase; letter-spacing:.09em;
+                              font-size:.72rem; font-weight:800;">
+                    Cumulative Result &mdash; All Settled Middles
+                  </div>
+                  <div style="font-family:'JetBrains Mono',monospace; font-weight:800; font-size:2.6rem;
+                              letter-spacing:-.03em; color:{accent}; margin-top:4px;">
+                    {total_mid:+.2f}u
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+                base_mid = alt.Chart(df_mid)
+                area_mid = base_mid.mark_area(color="#3ddc84", opacity=0.14).encode(
+                    x=alt.X("Date:T", title="", axis=alt.Axis(format="%b %d")),
+                    y=alt.Y("Cumulative:Q", title="Cumulative PnL (u)"),
+                )
+                line_mid = base_mid.mark_line(stroke="#3ddc84", strokeWidth=2.5).encode(
+                    x=alt.X("Date:T", title="", axis=alt.Axis(format="%b %d")),
+                    y=alt.Y("Cumulative:Q", title="Cumulative PnL (u)"),
+                )
+                st.altair_chart(_theme_chart(area_mid + line_mid, height=300), use_container_width=True)
+            except Exception as e:
+                st.caption(f"Middling PnL chart unavailable: {e}")
+    except Exception as e:
+        st.error(f"Middling tab unavailable: {e}")
 
 # ── Footer ─────────────────────────────────────────────────────────
 st.divider()
