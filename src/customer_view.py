@@ -87,7 +87,15 @@ p,div,span,button { font-family:'DM Sans',sans-serif; }
 
 
 def _authorized_request() -> bool:
-    """Staging entitlement adapter; replace with billing webhook/provider later."""
+    """Staging entitlement adapter; replace with billing webhook/provider later.
+
+    2026-09-09: full site access opened to everyone (operator decision —
+    no paywall while the product is still being validated). To restore
+    the token-gated behavior below, set MLB_CUSTOMER_FREE_ACCESS=false
+    on the customer-site service — no code change needed either way.
+    """
+    if os.getenv("MLB_CUSTOMER_FREE_ACCESS", "true").strip().lower() != "false":
+        return True
     expected = os.getenv("MLB_CUSTOMER_ACCESS_TOKEN", "")
     supplied = st.query_params.get("access", "")
     return bool(expected and supplied and hmac.compare_digest(supplied, expected))
@@ -427,7 +435,7 @@ st.markdown(f"""
     <a href="#today-picks" class="btn-primary">View Today's Picks &rarr;</a>
     <a href="#track-record" class="btn-secondary">See the Track Record</a>
   </div>
-  <span class="pill">{today} · {'SUBSCRIBER VIEW' if authorized else 'PUBLIC VIEW'}</span>
+  <span class="pill">{today} · {'FULL ACCESS' if authorized else 'PUBLIC VIEW'}</span>
 </div>
 <div id="today-picks"></div>
 """, unsafe_allow_html=True)

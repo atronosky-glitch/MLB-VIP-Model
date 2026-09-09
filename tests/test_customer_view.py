@@ -15,6 +15,18 @@ def test_customer_view_is_separate_from_admin_dashboard():
     assert "SPORTSODDS_API_KEY" not in source
 
 
+def test_full_access_is_open_by_default_and_reversible():
+    """2026-09-09 (operator decision): no paywall for now -- everyone gets
+    full access by default. Must stay reversible via an env var (no code
+    change needed to turn the paywall back on later), and the original
+    token-check path must still exist rather than being deleted."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'os.getenv("MLB_CUSTOMER_FREE_ACCESS", "true")' in source
+    assert '!= "false":\n        return True' in source
+    assert "MLB_CUSTOMER_ACCESS_TOKEN" in source  # original gate still present, just bypassed
+    assert "hmac.compare_digest" in source
+
+
 def test_arbitrage_and_middling_sections_are_subscriber_gated():
     """2026-09-09: live arbitrage/middling opportunities must only be
     shown in full to authorized subscribers -- publicly telegraphing a
