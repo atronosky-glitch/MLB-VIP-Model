@@ -465,6 +465,31 @@ def _get_data_freshness(db_path: str, threshold_seconds: int = 3600) -> str:
         return "No data"
 
 
+def _opportunity_freshness(timestamp: str | None, threshold_seconds: int = 900) -> str:
+    """Same "Fresh (Xm ago)" / "Stale (Xh ago)" convention as
+    _get_data_freshness, for one arbitrage/middle opportunity's own
+    last_seen_at — so these read as live-reconfirmed numbers the same
+    way EV Picks' own freshness already does, not a static one-time
+    snapshot. 900s (15 min) matches src/arb_middle_scan.py's real
+    recheck interval."""
+    if not timestamp:
+        return "No data"
+    try:
+        seen = timestamp if isinstance(timestamp, datetime) else datetime.fromisoformat(
+            str(timestamp).replace("Z", "+00:00")
+        )
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        age = max(0, int((datetime.now(timezone.utc) - seen).total_seconds()))
+    except (TypeError, ValueError):
+        return "No data"
+    if age > threshold_seconds:
+        return f"Stale ({age // 3600}h ago)" if age >= 3600 else f"Stale ({age // 60}m ago)"
+    if age < 60:
+        return "Fresh (just now)"
+    return f"Fresh ({age // 60}m ago)"
+
+
 def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict[str, Any]:
     """Get today's game schedule summary from the games table.
 
@@ -2739,6 +2764,7 @@ with tabs[9]:
                 "Side B": f"{r['side_b']} · {r['side_b_sportsbook']} {r['side_b_price']:+d}",
                 "Stake Split": f"{r['side_a_stake_pct']:.0%} / {r['side_b_stake_pct']:.0%}",
                 "Guaranteed ROI": f"+{r['guaranteed_roi_pct']:.2f}%",
+                "Freshness": _opportunity_freshness(r.get("last_seen_at")),
                 "Detected": (r.get("detected_at") or "")[:16],
             } for r in active_arb]
             st.dataframe(pd.DataFrame(arb_table), use_container_width=True, hide_index=True)
@@ -2832,6 +2858,7 @@ with tabs[10]:
                 "Window": r["window_width"],
                 "Worst Case": f"{r['worst_case_roi_pct']:+.2f}%",
                 "Best Case": f"{r['best_case_roi_pct']:+.2f}%",
+                "Freshness": _opportunity_freshness(r.get("last_seen_at")),
                 "Detected": (r.get("detected_at") or "")[:16],
             } for r in active_mid]
             st.dataframe(pd.DataFrame(mid_table), use_container_width=True, hide_index=True)

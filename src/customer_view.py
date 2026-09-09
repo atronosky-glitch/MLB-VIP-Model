@@ -150,6 +150,28 @@ def _side_line_label(pick: dict) -> str:
     return side
 
 
+def _freshness_label(timestamp: str | None, threshold_seconds: int = 900) -> str:
+    """Human-readable age for a timestamp — same "Fresh (Xm ago)" /
+    "Stale (Xh ago)" convention the admin dashboard uses for scan data,
+    so Arbitrage/Middling cards read the numbers are just as live as the
+    EV Picks are. 900s (15 min) default matches how often
+    src/arb_middle_scan.py actually reconfirms these opportunities."""
+    if not timestamp:
+        return "Fresh"
+    try:
+        seen = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        age = max(0, int((datetime.now(timezone.utc) - seen).total_seconds()))
+    except (TypeError, ValueError):
+        return "Fresh"
+    if age > threshold_seconds:
+        return f"Stale ({age // 3600}h ago)" if age >= 3600 else f"Stale ({age // 60}m ago)"
+    if age < 60:
+        return "Fresh (just now)"
+    return f"Fresh ({age // 60}m ago)"
+
+
 def public_lock_view(row: dict) -> dict:
     """Project only non-sensitive pre-settlement fields for public display."""
     return {
@@ -435,10 +457,11 @@ def _render_arbitrage_card(opp: dict) -> None:
     pick_label = f"{_market_label(opp['market_type'])}" + (
         f" {opp['line']}" if opp.get("line") is not None else ""
     )
+    fresh = _freshness_label(opp.get("last_seen_at"))
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
-      <div class="pick-meta">{opp.get('matchup', '')} · {pick_label}</div>
+      <div class="pick-meta">{opp.get('matchup', '')} · {pick_label} · <span class="edge">{fresh}</span></div>
       <div class="pick-meta">{opp['side_a']} · {opp['side_a_sportsbook']} {opp['side_a_price']:+d}
         ({opp['side_a_stake_pct']:.0%} stake)</div>
       <div class="pick-meta">{opp['side_b']} · {opp['side_b_sportsbook']} {opp['side_b_price']:+d}
@@ -449,10 +472,11 @@ def _render_arbitrage_card(opp: dict) -> None:
 
 
 def _render_middle_card(opp: dict) -> None:
+    fresh = _freshness_label(opp.get("last_seen_at"))
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])}</div>
-      <div class="pick-meta">{opp.get('matchup', '')} · {_market_label(opp['market_type'])}</div>
+      <div class="pick-meta">{opp.get('matchup', '')} · {_market_label(opp['market_type'])} · <span class="edge">{fresh}</span></div>
       <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
       <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
       <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>

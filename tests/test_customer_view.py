@@ -40,6 +40,55 @@ def test_arbitrage_and_middling_sections_are_subscriber_gated():
     assert "if not authorized:" in source
 
 
+def _load_freshness_label():
+    """Same AST-extraction pattern as _load_apply_filters -- customer_view.py
+    runs Streamlit page code at import time, so this avoids importing it."""
+    import ast
+
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func_node = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_freshness_label"
+    )
+    from datetime import datetime, timezone
+    namespace = {"datetime": datetime, "timezone": timezone}
+    exec(compile(ast.Module(body=[func_node], type_ignores=[]), "<extracted>", "exec"), namespace)
+    return namespace["_freshness_label"]
+
+
+class TestFreshnessLabel:
+    """2026-09-09 (operator request): Arbitrage/Middling opportunities
+    must show they're just as live-reconfirmed as EV Picks' own
+    freshness — not a static one-time snapshot."""
+
+    def test_just_now(self):
+        from datetime import datetime, timezone
+        freshness_label = _load_freshness_label()
+        assert freshness_label(datetime.now(timezone.utc).isoformat()) == "Fresh (just now)"
+
+    def test_a_few_minutes_ago_is_fresh(self):
+        from datetime import datetime, timezone, timedelta
+        freshness_label = _load_freshness_label()
+        five_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        assert freshness_label(five_min_ago) == "Fresh (5m ago)"
+
+    def test_past_the_15_minute_scan_interval_is_stale(self):
+        from datetime import datetime, timezone, timedelta
+        freshness_label = _load_freshness_label()
+        old = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        assert freshness_label(old).startswith("Stale")
+
+    def test_missing_timestamp_defaults_to_fresh_not_an_error(self):
+        freshness_label = _load_freshness_label()
+        assert freshness_label(None) == "Fresh"
+
+
+def test_arbitrage_and_middle_cards_show_freshness():
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'fresh = _freshness_label(opp.get("last_seen_at"))' in source
+    assert source.count('fresh = _freshness_label(opp.get("last_seen_at"))') == 2
+
+
 def test_landing_page_is_three_independent_mode_boxes():
     """2026-09-09 (operator request): the customer site opens on a picker
     -- EV Picks / Arbitrage / Middling -- each its own independent page,

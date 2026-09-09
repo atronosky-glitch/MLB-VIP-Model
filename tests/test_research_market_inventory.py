@@ -53,3 +53,51 @@ def test_admin_dashboard_has_arbitrage_and_middling_tabs():
     assert "get_graded_arbitrage_opportunities" in source
     assert "get_active_middle_opportunities" in source
     assert "get_graded_middle_opportunities" in source
+
+
+def test_arbitrage_and_middling_tables_show_freshness():
+    """2026-09-09 (operator request): live opportunities must read as
+    just as reconfirmed/live as EV Picks' own freshness indicator."""
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    assert '"Freshness": _opportunity_freshness(r.get("last_seen_at"))' in source
+    assert source.count('"Freshness": _opportunity_freshness(r.get("last_seen_at"))') == 2
+
+
+def _load_opportunity_freshness():
+    """AST-extracts just _opportunity_freshness, avoiding importing
+    control_panel.py as a module (it runs Streamlit page code — a live
+    DB connection and st.set_page_config -- at import time)."""
+    import ast
+    from datetime import datetime, timezone
+
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func_node = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_opportunity_freshness"
+    )
+    namespace = {"datetime": datetime, "timezone": timezone}
+    exec(compile(ast.Module(body=[func_node], type_ignores=[]), "<extracted>", "exec"), namespace)
+    return namespace["_opportunity_freshness"]
+
+
+class TestOpportunityFreshness:
+    def test_just_now(self):
+        from datetime import datetime, timezone
+        opportunity_freshness = _load_opportunity_freshness()
+        assert opportunity_freshness(datetime.now(timezone.utc).isoformat()) == "Fresh (just now)"
+
+    def test_a_few_minutes_ago_is_fresh(self):
+        from datetime import datetime, timezone, timedelta
+        opportunity_freshness = _load_opportunity_freshness()
+        five_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        assert opportunity_freshness(five_min_ago) == "Fresh (5m ago)"
+
+    def test_past_the_15_minute_scan_interval_is_stale(self):
+        from datetime import datetime, timezone, timedelta
+        opportunity_freshness = _load_opportunity_freshness()
+        old = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        assert opportunity_freshness(old).startswith("Stale")
+
+    def test_missing_timestamp_is_no_data_not_an_error(self):
+        opportunity_freshness = _load_opportunity_freshness()
+        assert opportunity_freshness(None) == "No data"
