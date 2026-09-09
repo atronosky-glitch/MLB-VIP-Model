@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from src.line_plausibility import consensus_lines, is_plausible_line
+
 
 def _implied_prob(decimal_odds: float) -> float:
     return 1.0 / decimal_odds
@@ -108,6 +110,14 @@ def find_middle_opportunities(
     callers wanting a strict middle-only list should also check
     ``best_case_roi_pct > worst_case_roi_pct`` (true here by construction
     whenever a real window exists).
+
+    Both lines of a candidate pair must be plausible relative to this
+    market's own consensus number (see src/line_plausibility.py) — found
+    live 2026-09-09: a far-out alternate line can carry unreliable
+    near-even-money pricing instead of the extreme odds a line that far
+    from the truth would actually have, which otherwise looks like a
+    "small guaranteed risk" middle with a huge fake window instead of the
+    unreliable data it actually is.
     """
     groups: dict[tuple, dict[float, dict[str, dict]]] = defaultdict(lambda: defaultdict(dict))
     meta: dict[tuple, dict] = {}
@@ -135,18 +145,26 @@ def find_middle_opportunities(
             "market_type": row.get("market_type"),
         })
 
+    consensus = consensus_lines(rows)
+
     opportunities = []
     for key, lines_map in groups.items():
         distinct_lines = sorted(lines_map.keys())
         if len(distinct_lines) < 2:
             continue
+        market_type = meta[key]["market_type"]
+        group_consensus = consensus.get(key)
         for i, over_line in enumerate(distinct_lines):
+            if group_consensus is not None and not is_plausible_line(market_type, over_line, group_consensus):
+                continue
             over_books = lines_map[over_line]["OVER"]
             if not over_books:
                 continue
             best_over_book = max(over_books, key=lambda b: over_books[b]["decimal_odds"])
             over_price = over_books[best_over_book]
             for under_line in distinct_lines[i + 1:]:
+                if group_consensus is not None and not is_plausible_line(market_type, under_line, group_consensus):
+                    continue
                 under_books = lines_map[under_line]["UNDER"]
                 if not under_books:
                     continue

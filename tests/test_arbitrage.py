@@ -94,3 +94,43 @@ def test_find_arbitrage_opportunities_sorted_by_roi_descending():
     results = find_arbitrage_opportunities(rows)
     assert len(results) == 2
     assert results[0]["guaranteed_roi_pct"] > results[1]["guaranteed_roi_pct"]
+
+
+def test_find_arbitrage_opportunities_rejects_an_implausible_far_out_line():
+    """Real bug, found live 2026-09-09: a game whose real total sits
+    around 8.5-9.0 (many books clustered there, normal vig) also had a
+    "4.5" line priced near even money -- unreliable/placeholder data on
+    a far-out alternate, not a real cross-book disagreement. A
+    mathematically valid-looking arbitrage on that 4.5 line must be
+    rejected because it's implausibly far from the game's own
+    consensus, even though the two-sided math checks out in isolation."""
+    rows = [
+        # Establish a tight, sane consensus around 8.5-9.0 -- no arb here.
+        _row("E1", "GAME", "game_total_ou", "g_8.5", "OVER", "BookC", -110, 1.9091, line=8.5),
+        _row("E1", "GAME", "game_total_ou", "g_8.5", "UNDER", "BookC", -110, 1.9091, line=8.5),
+        _row("E1", "GAME", "game_total_ou", "g_9.0", "OVER", "BookD", -115, 1.8696, line=9.0),
+        _row("E1", "GAME", "game_total_ou", "g_9.0", "UNDER", "BookD", -105, 1.9524, line=9.0),
+        # A far-out 4.5 line with unreliable near-even-money pricing that
+        # happens to form a "real" arbitrage mathematically.
+        _row("E1", "GAME", "game_total_ou", "g_4.5", "OVER", "BookA", 110, 2.10, line=4.5),
+        _row("E1", "GAME", "game_total_ou", "g_4.5", "UNDER", "BookB", 130, 2.30, line=4.5),
+    ]
+    results = find_arbitrage_opportunities(rows)
+    assert all(r["line"] != 4.5 for r in results)
+
+
+def test_find_arbitrage_opportunities_keeps_a_plausible_nearby_line():
+    """A line reasonably close to the consensus (unlike the 4.5 case
+    above) must still be found -- this isn't a blanket ban on alt lines,
+    only implausibly far ones."""
+    rows = [
+        _row("E1", "GAME", "game_total_ou", "g_8.5", "OVER", "BookC", -110, 1.9091, line=8.5),
+        _row("E1", "GAME", "game_total_ou", "g_8.5", "UNDER", "BookC", -110, 1.9091, line=8.5),
+        _row("E1", "GAME", "game_total_ou", "g_9.0", "OVER", "BookD", -115, 1.8696, line=9.0),
+        _row("E1", "GAME", "game_total_ou", "g_9.0", "UNDER", "BookD", -105, 1.9524, line=9.0),
+        # 7.5 is only ~1 run from the 8.75ish consensus -- plausible.
+        _row("E1", "GAME", "game_total_ou", "g_7.5", "OVER", "BookA", 110, 2.10, line=7.5),
+        _row("E1", "GAME", "game_total_ou", "g_7.5", "UNDER", "BookB", 130, 2.30, line=7.5),
+    ]
+    results = find_arbitrage_opportunities(rows)
+    assert any(r["line"] == 7.5 for r in results)

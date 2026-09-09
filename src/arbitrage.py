@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from src.line_plausibility import consensus_lines, is_plausible_line
+
 
 def _implied_prob(decimal_odds: float) -> float:
     return 1.0 / decimal_odds
@@ -99,6 +101,13 @@ def find_arbitrage_opportunities(rows: list[dict]) -> list[dict]:
     independently. A market with more than two distinct side labels
     (shouldn't happen for a well-formed two-outcome market) is skipped
     rather than guessed at.
+
+    A group whose line is implausibly far from this market's own
+    consensus (see src/line_plausibility.py) is skipped too — found
+    live 2026-09-09: far-out alternate lines can carry unreliable
+    near-even-money pricing instead of the extreme odds a line that far
+    from the true number would actually have, which can otherwise look
+    like a "guaranteed profit" arbitrage that isn't real.
     """
     groups: dict[str, dict[str, dict[str, dict]]] = defaultdict(lambda: defaultdict(dict))
     meta: dict[str, dict] = {}
@@ -121,11 +130,22 @@ def find_arbitrage_opportunities(rows: list[dict]) -> list[dict]:
             "line": row.get("line"),
         })
 
+    consensus = consensus_lines(rows)
+
     opportunities = []
     for key, sides in groups.items():
         side_labels = list(sides.keys())
         if len(side_labels) != 2:
             continue
+
+        line = meta[key].get("line")
+        if line is not None:
+            market_type = meta[key].get("market_type")
+            consensus_key = (meta[key].get("event_id"), meta[key].get("player_id"), market_type)
+            group_consensus = consensus.get(consensus_key)
+            if group_consensus is not None and not is_plausible_line(market_type, line, group_consensus):
+                continue
+
         side_a, side_b = side_labels
         result = find_arbitrage_in_group(key, sides[side_a], sides[side_b])
         if result is None:

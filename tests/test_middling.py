@@ -92,3 +92,41 @@ def test_find_middle_opportunities_needs_at_least_two_distinct_lines():
         _row("E1", "P1", "batting_totalBases_ou", "UNDER", "BookB", -110, 1.909, 1.5),
     ]
     assert find_middle_opportunities(rows) == []
+
+
+def test_find_middle_opportunities_rejects_an_implausible_far_out_line():
+    """Real bug, found live 2026-09-09: a "Game Total 4.5" line priced
+    near even money right next to that same game's 8.5/9.0 lines (also
+    near even money) is physically impossible for MLB combined runs --
+    unreliable/placeholder pricing on a far-out alternate, not a real
+    two-sided market. Must not produce a "huge window, small guaranteed
+    risk" middle card built on that bad data."""
+    rows = [
+        # Tight, sane consensus around 8.5-9.0.
+        _row("E1", "GAME", "game_total_ou", "OVER", "BookC", -110, 1.9091, 8.5),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "BookC", -110, 1.9091, 8.5),
+        _row("E1", "GAME", "game_total_ou", "OVER", "BookD", -115, 1.8696, 9.0),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "BookD", -105, 1.9524, 9.0),
+        # The real card that triggered this fix: Over 4.5 / Under 7.5,
+        # both priced near even money.
+        _row("E1", "GAME", "game_total_ou", "OVER", "betrivers", 102, 2.02, 4.5),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "betmgm", 100, 2.00, 7.5),
+    ]
+    results = find_middle_opportunities(rows)
+    assert all(r["over_line"] != 4.5 for r in results)
+
+
+def test_find_middle_opportunities_keeps_a_plausible_nearby_pair():
+    """Not a blanket ban on alt lines -- a pair reasonably close to the
+    consensus (unlike the 4.5/7.5 case above) must still be found."""
+    rows = [
+        _row("E1", "GAME", "game_total_ou", "OVER", "BookC", -110, 1.9091, 8.5),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "BookC", -110, 1.9091, 8.5),
+        _row("E1", "GAME", "game_total_ou", "OVER", "BookD", -115, 1.8696, 9.0),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "BookD", -105, 1.9524, 9.0),
+        # 7.5/9.5 are within the game_total_ou plausibility band (2.0).
+        _row("E1", "GAME", "game_total_ou", "OVER", "BookA", 110, 2.10, 7.5),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "BookB", 130, 2.30, 9.5),
+    ]
+    results = find_middle_opportunities(rows)
+    assert any(r["over_line"] == 7.5 and r["under_line"] == 9.5 for r in results)
