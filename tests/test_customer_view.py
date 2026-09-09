@@ -33,11 +33,28 @@ def test_arbitrage_and_middling_sections_are_subscriber_gated():
     live cross-book price gap invites it being raced/removed immediately
     and undercuts the point of a subscription product."""
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
-    assert "Arbitrage & Middling" in source
     assert "get_active_arbitrage_opportunities" in source
     assert "get_active_middle_opportunities" in source
-    assert "Subscriber access unlocks live arbitrage and middling opportunities." in source
+    assert "Subscriber access unlocks live arbitrage opportunities." in source
+    assert "Subscriber access unlocks live middling opportunities." in source
     assert "if not authorized:" in source
+
+
+def test_landing_page_is_three_independent_mode_boxes():
+    """2026-09-09 (operator request): the customer site opens on a picker
+    -- EV Picks / Arbitrage / Middling -- each its own independent page,
+    not everything stacked on one long scroll."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'st.session_state.view_mode = "ev"' in source
+    assert 'st.session_state.view_mode = "arbitrage"' in source
+    assert 'st.session_state.view_mode = "middling"' in source
+    assert 'elif st.session_state.view_mode == "ev":' in source
+    assert 'elif st.session_state.view_mode == "arbitrage":' in source
+    assert 'elif st.session_state.view_mode == "middling":' in source
+    assert "← All Options" in source
+    # Each mode keeps its own separate cumulative track record.
+    assert '_cumulative_chart(data["graded_arbitrage"], "Arbitrage")' in source
+    assert '_cumulative_chart(data["graded_middles"], "Middling")' in source
 
 
 def test_research_picks_use_configured_timezone_not_utc_day():

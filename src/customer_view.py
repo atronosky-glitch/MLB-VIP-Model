@@ -401,6 +401,66 @@ def _render_locked_pick(lock: dict) -> None:
     """, unsafe_allow_html=True)
 
 
+def _cumulative_chart(rows: list[dict], label: str) -> None:
+    """Small cumulative-units chart shared by the Arbitrage and Middling
+    pages -- each track record is kept separate from the main EV Picks
+    performance chart and from each other, on purpose."""
+    if not rows:
+        st.caption(f"No settled {label.lower()} yet.")
+        return
+    df = pd.DataFrame({
+        "Date": [r["graded_at"][:10] for r in rows],
+        "Profit": [r["profit_units"] or 0 for r in rows],
+    })
+    df["Cumulative"] = df["Profit"].cumsum()
+    df["Date"] = pd.to_datetime(df["Date"])
+    total = df["Cumulative"].iloc[-1]
+    color = "#3ddc84" if total >= 0 else "#ff5468"
+    st.markdown(f"""
+    <div class="results-panel">
+      <div class="results-eyebrow">{label} Track Record</div>
+      <div class="results-number" style="color:{color};">{total:+.2f}u</div>
+      <div class="results-caption">Cumulative result of every settled {label.lower()} opportunity, in order.</div>
+    </div>
+    """, unsafe_allow_html=True)
+    chart = alt.Chart(df).mark_area(
+        line={"color": color, "strokeWidth": 2.5}, color=color, opacity=0.16, interpolate="monotone",
+    ).encode(
+        x=alt.X("Date:T", title=None), y=alt.Y("Cumulative:Q", title="Cumulative units"),
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_arbitrage_card(opp: dict) -> None:
+    pick_label = f"{_market_label(opp['market_type'])}" + (
+        f" {opp['line']}" if opp.get("line") is not None else ""
+    )
+    st.markdown(f"""
+    <div class="pick">
+      <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
+      <div class="pick-meta">{opp.get('matchup', '')} · {pick_label}</div>
+      <div class="pick-meta">{opp['side_a']} · {opp['side_a_sportsbook']} {opp['side_a_price']:+d}
+        ({opp['side_a_stake_pct']:.0%} stake)</div>
+      <div class="pick-meta">{opp['side_b']} · {opp['side_b_sportsbook']} {opp['side_b_price']:+d}
+        ({opp['side_b_stake_pct']:.0%} stake)</div>
+      <div class="unit-line">Guaranteed: <span class="result-win">+{opp['guaranteed_roi_pct']:.2f}%</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _render_middle_card(opp: dict) -> None:
+    st.markdown(f"""
+    <div class="pick">
+      <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])}</div>
+      <div class="pick-meta">{opp.get('matchup', '')} · {_market_label(opp['market_type'])}</div>
+      <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
+      <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
+      <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>
+        · Best case: <span class="result-win">+{opp['best_case_roi_pct']:.2f}%</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 authorized = _authorized_request()
 try:
     data = load_customer_data(authorized)
@@ -409,6 +469,9 @@ except Exception:
     st.error("The model data is temporarily unavailable. Please check back shortly.")
     st.stop()
 
+if "view_mode" not in st.session_state:
+    st.session_state.view_mode = None
+
 today = datetime.now(timezone.utc).strftime("%B %d, %Y")
 st.markdown(f"""
 <div class="topnav">
@@ -416,247 +479,249 @@ st.markdown(f"""
     <span class="topnav-mark">VIP</span>
     <span class="topnav-word">Sharp Market Intelligence</span>
   </div>
-  <div class="topnav-links">
-    <a href="#today-picks">Today's Picks</a>
-    <a href="#track-record">Track Record</a>
-  </div>
 </div>
 <div class="hero">
   <div class="hero-watermark">VIP</div>
   <div class="eyebrow">VIP · Sharp Market Intelligence · MLB · NFL · WNBA</div>
   <h1>Stop guessing.<br><em>Find the number.</em></h1>
   <p>Thousands of sportsbook prices are screened for fair value, market quality, and closing-line evidence. The model does not need a play every day.</p>
-  <div class="hero-checklist">
-    <div class="check-item"><span class="check-mark">&#10003;</span> Every price checked against Pinnacle and the wider market</div>
-    <div class="check-item"><span class="check-mark">&#10003;</span> Closing-line value tracked on every settled pick</div>
-    <div class="check-item"><span class="check-mark">&#10003;</span> Wins and losses shown equally &mdash; nothing hidden</div>
-  </div>
-  <div class="hero-cta">
-    <a href="#today-picks" class="btn-primary">View Today's Picks &rarr;</a>
-    <a href="#track-record" class="btn-secondary">See the Track Record</a>
-  </div>
   <span class="pill">{today} · {'FULL ACCESS' if authorized else 'PUBLIC VIEW'}</span>
 </div>
-<div id="today-picks"></div>
 """, unsafe_allow_html=True)
 
-if not authorized:
-    st.info("Top plays are posted when the slate qualifies. Subscriber access unlocks the exact wager before the game; settled picks become public automatically for full accountability.")
-    st.subheader("Today's Top Picks")
-    if data["locked"]:
-        for lock in data["locked"]:
-            _render_locked_pick(lock)
-        st.button("Unlock Today's Picks", type="primary", use_container_width=True, disabled=True)
-    else:
-        st.success("No Top Picks Yet")
-        st.caption("The model has not identified an opportunity meeting today's qualification standards.")
-else:
-    st.subheader("Today's Top Picks — Upcoming")
-    if data["upcoming"]:
-        with st.expander("Filter upcoming picks", expanded=False):
-            up_filters = render_pick_filters(data["upcoming"], "upcoming")
-        filtered_upcoming = _apply_filters(data["upcoming"], up_filters)
-        if filtered_upcoming:
-            for pick in filtered_upcoming:
-                _render_full_pick(pick)
-        else:
-            st.caption("No upcoming picks match the current filters.")
-    else:
-        st.success("No Top Picks Yet")
-        st.caption("The model has not identified an opportunity meeting today's qualification standards.")
-    if data["research"]:
-        with st.expander("Full Board"):
-            for pick in data["research"]:
-                _render_full_pick(pick)
+if st.session_state.view_mode is not None:
+    if st.button("← All Options", key="back_to_menu"):
+        st.session_state.view_mode = None
+        st.rerun()
+    st.divider()
 
-st.divider()
-st.subheader("Arbitrage & Middling")
-st.caption(
-    "Two-sided opportunities across different sportsbooks — bet both sides yourself. "
-    "Arbitrage guarantees a profit no matter the outcome. Middling risks a small, capped "
-    "amount for a shot at both sides winning. Neither is a \"pick\" to follow — you place "
-    "both bets."
-)
-if not authorized:
-    st.info("Subscriber access unlocks live arbitrage and middling opportunities.")
-else:
-    arb_col, mid_col = st.columns(2)
-    with arb_col:
-        st.markdown("##### Arbitrage — guaranteed profit")
+# ==================================================================
+# Menu — three boxes, pick a mode
+# ==================================================================
+if st.session_state.view_mode is None:
+    st.subheader("What do you want to see?")
+    st.caption("Three independent ways to use this model. Pick one.")
+    menu_cols = st.columns(3)
+
+    with menu_cols[0]:
+        with st.container(border=True):
+            st.markdown("### 📈 EV Picks")
+            st.markdown(
+                "The model's own top-scored plays, checked against Pinnacle and the "
+                "wider market. A verified, nothing-hidden track record."
+            )
+            st.metric("Live today", len(data["upcoming"]) if authorized else len(data["locked"]))
+            if st.button("View EV Picks →", key="choose_ev", use_container_width=True, type="primary"):
+                st.session_state.view_mode = "ev"
+                st.rerun()
+
+    with menu_cols[1]:
+        with st.container(border=True):
+            st.markdown("### ⚖️ Arbitrage")
+            st.markdown(
+                "Cross-book price mismatches. Bet both sides yourself — a guaranteed "
+                "profit no matter which side wins."
+            )
+            st.metric("Live now", len(data["active_arbitrage"]))
+            if st.button("View Arbitrage →", key="choose_arb", use_container_width=True, type="primary"):
+                st.session_state.view_mode = "arbitrage"
+                st.rerun()
+
+    with menu_cols[2]:
+        with st.container(border=True):
+            st.markdown("### ⚡ Middling")
+            st.markdown(
+                "Over at one line, Under at a higher line, two different books. Small "
+                "capped risk, big upside if the number lands in between."
+            )
+            st.metric("Live now", len(data["active_middles"]))
+            if st.button("View Middling →", key="choose_mid", use_container_width=True, type="primary"):
+                st.session_state.view_mode = "middling"
+                st.rerun()
+
+# ==================================================================
+# EV Picks
+# ==================================================================
+elif st.session_state.view_mode == "ev":
+    if not authorized:
+        st.info("Top plays are posted when the slate qualifies. Subscriber access unlocks the exact wager before the game; settled picks become public automatically for full accountability.")
+        st.subheader("Today's Top Picks")
+        if data["locked"]:
+            for lock in data["locked"]:
+                _render_locked_pick(lock)
+            st.button("Unlock Today's Picks", type="primary", use_container_width=True, disabled=True)
+        else:
+            st.success("No Top Picks Yet")
+            st.caption("The model has not identified an opportunity meeting today's qualification standards.")
+    else:
+        st.subheader("Today's Top Picks — Upcoming")
+        if data["upcoming"]:
+            with st.expander("Filter upcoming picks", expanded=False):
+                up_filters = render_pick_filters(data["upcoming"], "upcoming")
+            filtered_upcoming = _apply_filters(data["upcoming"], up_filters)
+            if filtered_upcoming:
+                for pick in filtered_upcoming:
+                    _render_full_pick(pick)
+            else:
+                st.caption("No upcoming picks match the current filters.")
+        else:
+            st.success("No Top Picks Yet")
+            st.caption("The model has not identified an opportunity meeting today's qualification standards.")
+        if data["research"]:
+            with st.expander("Full Board"):
+                for pick in data["research"]:
+                    _render_full_pick(pick)
+
+    st.divider()
+    st.subheader("Verified Track Record — Past Picks")
+    st.caption("Settled Top Picks only. Winners and losses are included equally; no results are manually selected or hidden.")
+    if data["settled"]:
+        with st.expander("Filter settled picks", expanded=False):
+            settled_filters = render_pick_filters(data["settled"], "settled")
+        filtered_settled = _apply_filters(data["settled"], settled_filters)
+
+        summary = performance_summary(filtered_settled)
+        period = st.radio("Performance period", ["7D", "30D", "ALL"], horizontal=True, index=2)
+        series = performance_series(filtered_settled, period)
+        if not series.empty:
+            chart_df = series.rename(columns={
+                "expected_cumulative": "Expected Units",
+                "actual_cumulative": "Actual Units",
+            }).reset_index().rename(columns={"posted": "Date"})
+
+            period_units = chart_df["Actual Units"].iloc[-1]
+            positive = period_units >= 0
+            line_color = "#3ddc84" if positive else "#ff5468"
+
+            st.markdown(f"""
+            <div class="results-panel">
+              <div class="results-eyebrow">Real Results — {period}</div>
+              <div class="results-number" style="color:{line_color};">{period_units:+.2f}u</div>
+              <div class="results-caption">Cumulative result if every Top Pick were followed at its recorded stake.
+              Every settled pick counts — wins and losses included equally, nothing hidden or cherry-picked.</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            area = alt.Chart(chart_df).mark_area(
+                line={"color": line_color, "strokeWidth": 2.5},
+                color=line_color, opacity=0.16, interpolate="monotone",
+            ).encode(
+                x=alt.X("Date:T", title=None,
+                        axis=alt.Axis(grid=False, labelColor="#9a9488", tickColor="#2c2a22", domainColor="#2c2a22")),
+                y=alt.Y("Actual Units:Q", title="Cumulative units",
+                        axis=alt.Axis(grid=True, gridColor="#211d14", labelColor="#9a9488", titleColor="#9a9488")),
+                tooltip=[alt.Tooltip("Date:T", title="Date"), alt.Tooltip("Actual Units:Q", format="+.2f")],
+            )
+            expected_line = alt.Chart(chart_df).mark_line(
+                color="#b3a687", strokeDash=[4, 3], strokeWidth=1.6, interpolate="monotone", opacity=0.85,
+            ).encode(
+                x="Date:T",
+                y="Expected Units:Q",
+                tooltip=[alt.Tooltip("Date:T", title="Date"),
+                         alt.Tooltip("Expected Units:Q", format="+.2f", title="Expected Units")],
+            )
+            st.caption("Solid area: actual settled profit. Dashed line: expected units from each pick's recorded EV and stake.")
+            st.altair_chart(
+                (area + expected_line).properties(height=300)
+                .configure_view(strokeWidth=0)
+                .configure(background="transparent"),
+                width="stretch",
+            )
+
+        if filtered_settled:
+            with st.expander(f"View all {len(filtered_settled)} settled picks", expanded=False):
+                for pick in filtered_settled[:10]:
+                    _render_full_pick(pick, settled=True)
+        else:
+            st.caption("No settled picks match the current filters.")
+
+        st.markdown("#### Performance Dashboard")
+        cols = st.columns(6)
+        cols[0].metric("Record", f"{summary['wins']}-{summary['losses']}-{summary['pushes']}")
+        cols[1].metric("Settled Picks", summary["settled"])
+        cols[2].metric("Units", f"{summary['units_won']:+.2f}")
+        cols[3].metric("ROI", f"{summary['roi']:.1%}" if summary["units_risked"] else "—")
+        cols[4].metric("Avg CLV", f"{summary['avg_clv_probability']:+.2%}" if summary["avg_clv_probability"] is not None else "—")
+        cols[5].metric("Beat Close %", f"{summary['pct_beating_close']:.1%}" if summary["pct_beating_close"] is not None else "—")
+        st.caption(f"Average EV at recommendation: {summary['avg_ev_pct']:+.2f}%")
+
+        with st.expander("Performance breakdown by sport / market / sportsbook / confidence / EV"):
+            for field, label in [("sport", "Sport"), ("market_type", "Market"),
+                                  ("sportsbook", "Sportsbook"), ("confidence_grade", "Confidence Grade")]:
+                groups = breakdown_by_field(filtered_settled, field)
+                if not groups:
+                    continue
+                st.markdown(f"**By {label}**")
+                table = pd.DataFrame([
+                    {label: key, "Record": f"{g['wins']}-{g['losses']}-{g['pushes']}",
+                     "Units": round(g["units_won"], 2), "ROI": f"{g['roi']:.1%}" if g["units_risked"] else "—",
+                     "Avg EV%": g["avg_ev_pct"], "Beat Close %":
+                         f"{g['pct_beating_close']:.1%}" if g["pct_beating_close"] is not None else "—"}
+                    for key, g in sorted(groups.items())
+                ])
+                st.dataframe(table, hide_index=True, use_container_width=True)
+
+            ev_bucketed = [{**r, "_ev_bucket": assign_bucket(r.get("ev_pct") or 0.0, EV_BUCKETS)}
+                           for r in filtered_settled]
+            ev_groups = breakdown_by_field(ev_bucketed, "_ev_bucket")
+            if ev_groups:
+                st.markdown("**By EV Bucket**")
+                table = pd.DataFrame([
+                    {"EV Bucket": key, "Record": f"{g['wins']}-{g['losses']}-{g['pushes']}",
+                     "Units": round(g["units_won"], 2), "ROI": f"{g['roi']:.1%}" if g["units_risked"] else "—"}
+                    for key, g in sorted(ev_groups.items())
+                ])
+                st.dataframe(table, hide_index=True, use_container_width=True)
+    else:
+        st.info("BUILDING VERIFIED TRACK RECORD · Performance appears after Top Picks settle.")
+
+# ==================================================================
+# Arbitrage
+# ==================================================================
+elif st.session_state.view_mode == "arbitrage":
+    st.subheader("⚖️ Arbitrage — guaranteed profit")
+    st.caption(
+        "Cross-book price mismatches — bet both sides yourself, at the two books shown. "
+        "The combined stake guarantees a profit no matter which side wins. Not a \"pick\" "
+        "to follow; you place both bets."
+    )
+    if not authorized:
+        st.info("Subscriber access unlocks live arbitrage opportunities.")
+    else:
         if not data["active_arbitrage"]:
-            st.caption("None right now — rechecked every ~15 minutes.")
+            st.success("No arbitrage opportunities right now.")
+            st.caption("Rechecked every ~15 minutes as odds move.")
         else:
-            for opp in data["active_arbitrage"][:5]:
-                pick_label = f"{_market_label(opp['market_type'])}" + (
-                    f" {opp['line']}" if opp.get("line") is not None else ""
-                )
-                st.markdown(f"""
-                <div class="pick">
-                  <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
-                  <div class="pick-meta">{pick_label}</div>
-                  <div class="pick-meta">{opp['side_a']} · {opp['side_a_sportsbook']} {opp['side_a_price']:+d}
-                    ({opp['side_a_stake_pct']:.0%} stake)</div>
-                  <div class="pick-meta">{opp['side_b']} · {opp['side_b_sportsbook']} {opp['side_b_price']:+d}
-                    ({opp['side_b_stake_pct']:.0%} stake)</div>
-                  <div class="unit-line">Guaranteed: <span class="result-win">+{opp['guaranteed_roi_pct']:.2f}%</span></div>
-                </div>
-                """, unsafe_allow_html=True)
-    with mid_col:
-        st.markdown("##### Middling — small guaranteed risk, big upside")
-        if not data["active_middles"]:
-            st.caption("None right now — rechecked every ~15 minutes.")
-        else:
-            for opp in data["active_middles"][:5]:
-                st.markdown(f"""
-                <div class="pick">
-                  <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])}</div>
-                  <div class="pick-meta">{_market_label(opp['market_type'])}</div>
-                  <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
-                  <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
-                  <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>
-                    · Best case: <span class="result-win">+{opp['best_case_roi_pct']:.2f}%</span></div>
-                </div>
-                """, unsafe_allow_html=True)
+            arb_cols = st.columns(2)
+            for i, opp in enumerate(data["active_arbitrage"]):
+                with arb_cols[i % 2]:
+                    _render_arbitrage_card(opp)
+        st.divider()
+        _cumulative_chart(data["graded_arbitrage"], "Arbitrage")
 
-    arb_chart_col, mid_chart_col = st.columns(2)
-    with arb_chart_col:
-        if data["graded_arbitrage"]:
-            df_arb = pd.DataFrame({
-                "Date": [r["graded_at"][:10] for r in data["graded_arbitrage"]],
-                "Profit": [r["profit_units"] or 0 for r in data["graded_arbitrage"]],
-            })
-            df_arb["Cumulative"] = df_arb["Profit"].cumsum()
-            df_arb["Date"] = pd.to_datetime(df_arb["Date"])
-            total = df_arb["Cumulative"].iloc[-1]
-            color = "#3ddc84" if total >= 0 else "#ff5468"
-            st.caption(f"Arbitrage track record: {total:+.2f}u")
-            chart = alt.Chart(df_arb).mark_area(
-                line={"color": color, "strokeWidth": 2}, color=color, opacity=0.14, interpolate="monotone",
-            ).encode(
-                x=alt.X("Date:T", title=None), y=alt.Y("Cumulative:Q", title="Units"),
-            )
-            st.altair_chart(chart, use_container_width=True)
-    with mid_chart_col:
-        if data["graded_middles"]:
-            df_mid = pd.DataFrame({
-                "Date": [r["graded_at"][:10] for r in data["graded_middles"]],
-                "Profit": [r["profit_units"] or 0 for r in data["graded_middles"]],
-            })
-            df_mid["Cumulative"] = df_mid["Profit"].cumsum()
-            df_mid["Date"] = pd.to_datetime(df_mid["Date"])
-            total = df_mid["Cumulative"].iloc[-1]
-            color = "#3ddc84" if total >= 0 else "#ff5468"
-            st.caption(f"Middling track record: {total:+.2f}u")
-            chart = alt.Chart(df_mid).mark_area(
-                line={"color": color, "strokeWidth": 2}, color=color, opacity=0.14, interpolate="monotone",
-            ).encode(
-                x=alt.X("Date:T", title=None), y=alt.Y("Cumulative:Q", title="Units"),
-            )
-            st.altair_chart(chart, use_container_width=True)
-
-st.divider()
-st.markdown('<div id="track-record"></div>', unsafe_allow_html=True)
-st.subheader("Verified Track Record — Past Picks")
-st.caption("Settled Top Picks only. Winners and losses are included equally; no results are manually selected or hidden.")
-if data["settled"]:
-    with st.expander("Filter settled picks", expanded=False):
-        settled_filters = render_pick_filters(data["settled"], "settled")
-    filtered_settled = _apply_filters(data["settled"], settled_filters)
-
-    summary = performance_summary(filtered_settled)
-    period = st.radio("Performance period", ["7D", "30D", "ALL"], horizontal=True, index=2)
-    series = performance_series(filtered_settled, period)
-    if not series.empty:
-        chart_df = series.rename(columns={
-            "expected_cumulative": "Expected Units",
-            "actual_cumulative": "Actual Units",
-        }).reset_index().rename(columns={"posted": "Date"})
-
-        period_units = chart_df["Actual Units"].iloc[-1]
-        positive = period_units >= 0
-        line_color = "#3ddc84" if positive else "#ff5468"
-
-        st.markdown(f"""
-        <div class="results-panel">
-          <div class="results-eyebrow">Real Results — {period}</div>
-          <div class="results-number" style="color:{line_color};">{period_units:+.2f}u</div>
-          <div class="results-caption">Cumulative result if every Top Pick were followed at its recorded stake.
-          Every settled pick counts — wins and losses included equally, nothing hidden or cherry-picked.</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        area = alt.Chart(chart_df).mark_area(
-            line={"color": line_color, "strokeWidth": 2.5},
-            color=line_color, opacity=0.16, interpolate="monotone",
-        ).encode(
-            x=alt.X("Date:T", title=None,
-                    axis=alt.Axis(grid=False, labelColor="#9a9488", tickColor="#2c2a22", domainColor="#2c2a22")),
-            y=alt.Y("Actual Units:Q", title="Cumulative units",
-                    axis=alt.Axis(grid=True, gridColor="#211d14", labelColor="#9a9488", titleColor="#9a9488")),
-            tooltip=[alt.Tooltip("Date:T", title="Date"), alt.Tooltip("Actual Units:Q", format="+.2f")],
-        )
-        expected_line = alt.Chart(chart_df).mark_line(
-            color="#b3a687", strokeDash=[4, 3], strokeWidth=1.6, interpolate="monotone", opacity=0.85,
-        ).encode(
-            x="Date:T",
-            y="Expected Units:Q",
-            tooltip=[alt.Tooltip("Date:T", title="Date"),
-                     alt.Tooltip("Expected Units:Q", format="+.2f", title="Expected Units")],
-        )
-        st.caption("Solid area: actual settled profit. Dashed line: expected units from each pick's recorded EV and stake.")
-        st.altair_chart(
-            (area + expected_line).properties(height=300)
-            .configure_view(strokeWidth=0)
-            .configure(background="transparent"),
-            width="stretch",
-        )
-
-    if filtered_settled:
-        with st.expander(f"View all {len(filtered_settled)} settled picks", expanded=False):
-            for pick in filtered_settled[:10]:
-                _render_full_pick(pick, settled=True)
+# ==================================================================
+# Middling
+# ==================================================================
+elif st.session_state.view_mode == "middling":
+    st.subheader("⚡ Middling — small guaranteed risk, big upside")
+    st.caption(
+        "Over at a lower line, Under at a higher line, two different books. If the final "
+        "number lands in the window, both bets win. Outside it, the guaranteed worst case "
+        "is capped small — never a full loss on both legs."
+    )
+    if not authorized:
+        st.info("Subscriber access unlocks live middling opportunities.")
     else:
-        st.caption("No settled picks match the current filters.")
-
-    st.markdown("#### Performance Dashboard")
-    cols = st.columns(6)
-    cols[0].metric("Record", f"{summary['wins']}-{summary['losses']}-{summary['pushes']}")
-    cols[1].metric("Settled Picks", summary["settled"])
-    cols[2].metric("Units", f"{summary['units_won']:+.2f}")
-    cols[3].metric("ROI", f"{summary['roi']:.1%}" if summary["units_risked"] else "—")
-    cols[4].metric("Avg CLV", f"{summary['avg_clv_probability']:+.2%}" if summary["avg_clv_probability"] is not None else "—")
-    cols[5].metric("Beat Close %", f"{summary['pct_beating_close']:.1%}" if summary["pct_beating_close"] is not None else "—")
-    st.caption(f"Average EV at recommendation: {summary['avg_ev_pct']:+.2f}%")
-
-    with st.expander("Performance breakdown by sport / market / sportsbook / confidence / EV"):
-        for field, label in [("sport", "Sport"), ("market_type", "Market"),
-                              ("sportsbook", "Sportsbook"), ("confidence_grade", "Confidence Grade")]:
-            groups = breakdown_by_field(filtered_settled, field)
-            if not groups:
-                continue
-            st.markdown(f"**By {label}**")
-            table = pd.DataFrame([
-                {label: key, "Record": f"{g['wins']}-{g['losses']}-{g['pushes']}",
-                 "Units": round(g["units_won"], 2), "ROI": f"{g['roi']:.1%}" if g["units_risked"] else "—",
-                 "Avg EV%": g["avg_ev_pct"], "Beat Close %":
-                     f"{g['pct_beating_close']:.1%}" if g["pct_beating_close"] is not None else "—"}
-                for key, g in sorted(groups.items())
-            ])
-            st.dataframe(table, hide_index=True, use_container_width=True)
-
-        ev_bucketed = [{**r, "_ev_bucket": assign_bucket(r.get("ev_pct") or 0.0, EV_BUCKETS)}
-                       for r in filtered_settled]
-        ev_groups = breakdown_by_field(ev_bucketed, "_ev_bucket")
-        if ev_groups:
-            st.markdown("**By EV Bucket**")
-            table = pd.DataFrame([
-                {"EV Bucket": key, "Record": f"{g['wins']}-{g['losses']}-{g['pushes']}",
-                 "Units": round(g["units_won"], 2), "ROI": f"{g['roi']:.1%}" if g["units_risked"] else "—"}
-                for key, g in sorted(ev_groups.items())
-            ])
-            st.dataframe(table, hide_index=True, use_container_width=True)
-else:
-    st.info("BUILDING VERIFIED TRACK RECORD · Performance appears after Top Picks settle.")
+        if not data["active_middles"]:
+            st.success("No middle opportunities right now.")
+            st.caption("Rechecked every ~15 minutes as odds move.")
+        else:
+            mid_cols = st.columns(2)
+            for i, opp in enumerate(data["active_middles"]):
+                with mid_cols[i % 2]:
+                    _render_middle_card(opp)
+        st.divider()
+        _cumulative_chart(data["graded_middles"], "Middling")
 
 st.divider()
 features = st.columns(4)
