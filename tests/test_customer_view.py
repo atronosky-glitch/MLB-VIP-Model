@@ -83,6 +83,14 @@ class TestFreshnessLabel:
         assert freshness_label(None) == "Fresh"
 
 
+def test_arbitrage_and_middling_pages_have_a_sportsbook_selector():
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'st.multiselect(\n                "Which sportsbooks do you have accounts at?",\n                arb_all_books' in source
+    assert 'st.multiselect(\n                "Which sportsbooks do you have accounts at?",\n                mid_all_books' in source
+    assert "_usable_with_books(data[\"active_arbitrage\"]" in source
+    assert "_usable_with_books(data[\"active_middles\"]" in source
+
+
 def test_arbitrage_and_middle_cards_show_freshness():
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert 'fresh = _freshness_label(opp.get("last_seen_at"))' in source
@@ -183,8 +191,8 @@ def test_customer_view_has_performance_dashboard_breakdowns():
     assert "breakdown_by_field(filtered_settled" in source
 
 
-def _load_apply_filters():
-    """Extract and exec just the _apply_filters function body, without
+def _load_function(name: str):
+    """Extract and exec just one top-level function body, without
     importing customer_view.py as a module — that module runs Streamlit
     page code (st.set_page_config, a live DB load) at import time, which
     this file deliberately avoids triggering (see module docstring)."""
@@ -193,11 +201,15 @@ def _load_apply_filters():
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func_node = next(
-        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_apply_filters"
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name
     )
     namespace = {}
     exec(compile(ast.Module(body=[func_node], type_ignores=[]), "<extracted>", "exec"), namespace)
-    return namespace["_apply_filters"]
+    return namespace[name]
+
+
+def _load_apply_filters():
+    return _load_function("_apply_filters")
 
 
 def test_apply_filters_pure_function_behavior():
@@ -220,3 +232,44 @@ def test_apply_filters_pure_function_behavior():
     # A losing/negative-EV pick narrowed OUT by an explicit filter is a
     # deliberate user choice, not the page hiding it by default.
     assert apply_filters(picks, {"min_ev": 0.0})[0]["ev_pct"] == 5.0
+
+
+class TestBookAvailabilityFilter:
+    """2026-09-09 (operator request): an arbitrage/middle only counts as
+    usable if the viewer actually has accounts at BOTH books it needs."""
+
+    def test_books_in_opportunities_unions_both_legs(self):
+        books_in_opportunities = _load_function("_books_in_opportunities")
+        opps = [
+            {"side_a_sportsbook": "DraftKings", "side_b_sportsbook": "FanDuel"},
+            {"side_a_sportsbook": "BetMGM", "side_b_sportsbook": "FanDuel"},
+        ]
+        result = books_in_opportunities(opps, ("side_a_sportsbook", "side_b_sportsbook"))
+        assert result == ["BetMGM", "DraftKings", "FanDuel"]
+
+    def test_usable_with_books_requires_both_legs_available(self):
+        usable_with_books = _load_function("_usable_with_books")
+        opps = [
+            {"id": 1, "side_a_sportsbook": "DraftKings", "side_b_sportsbook": "FanDuel"},
+            {"id": 2, "side_a_sportsbook": "DraftKings", "side_b_sportsbook": "BetMGM"},
+        ]
+        fields = ("side_a_sportsbook", "side_b_sportsbook")
+        # Has DraftKings and FanDuel, but not BetMGM -- only opp 1 is usable.
+        result = usable_with_books(opps, {"DraftKings", "FanDuel"}, fields)
+        assert [o["id"] for o in result] == [1]
+
+    def test_usable_with_books_empty_selection_hides_everything(self):
+        usable_with_books = _load_function("_usable_with_books")
+        opps = [{"id": 1, "side_a_sportsbook": "DraftKings", "side_b_sportsbook": "FanDuel"}]
+        result = usable_with_books(opps, set(), ("side_a_sportsbook", "side_b_sportsbook"))
+        assert result == []
+
+    def test_usable_with_books_all_books_selected_keeps_everything(self):
+        usable_with_books = _load_function("_usable_with_books")
+        opps = [
+            {"id": 1, "side_a_sportsbook": "DraftKings", "side_b_sportsbook": "FanDuel"},
+            {"id": 2, "over_sportsbook": "BetMGM", "under_sportsbook": "Bovada"},
+        ]
+        fields = ("side_a_sportsbook", "side_b_sportsbook")
+        result = usable_with_books(opps, {"DraftKings", "FanDuel"}, fields)
+        assert [o["id"] for o in result] == [1]

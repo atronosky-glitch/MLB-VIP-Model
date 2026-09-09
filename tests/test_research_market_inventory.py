@@ -63,6 +63,76 @@ def test_arbitrage_and_middling_tables_show_freshness():
     assert source.count('"Freshness": _opportunity_freshness(r.get("last_seen_at"))') == 2
 
 
+def test_arbitrage_and_middling_tabs_have_a_sportsbook_selector():
+    """2026-09-09 (operator request): each tab must let the operator pick
+    which sportsbooks they hold accounts at, and only show opportunities
+    usable with those books (both legs at a selected book)."""
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    assert "def _books_in_opportunities(" in source
+    assert "def _usable_with_books(" in source
+    assert 'st.multiselect(\n                "Which sportsbooks do you have accounts at?"' in source
+    assert 'arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")' in source
+    assert 'mid_book_fields = ("over_sportsbook", "under_sportsbook")' in source
+    assert "arb_usable = _usable_with_books(active_arb, set(arb_selected_books), arb_book_fields)" in source
+    assert "mid_usable = _usable_with_books(active_mid, set(mid_selected_books), mid_book_fields)" in source
+    assert "} for r in arb_usable]" in source
+    assert "} for r in mid_usable]" in source
+
+
+def _load_book_filter_functions():
+    """AST-extracts _books_in_opportunities and _usable_with_books,
+    avoiding importing control_panel.py as a module (it runs Streamlit
+    page code at import time)."""
+    import ast
+
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {"_books_in_opportunities", "_usable_with_books"}
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    namespace = {}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "<extracted>", "exec"), namespace)
+    return namespace["_books_in_opportunities"], namespace["_usable_with_books"]
+
+
+class TestBookAvailabilityFilterDashboard:
+    def test_books_in_opportunities_unions_both_legs(self):
+        books_in_opportunities, _ = _load_book_filter_functions()
+        opps = [
+            {"side_a_sportsbook": "draftkings", "side_b_sportsbook": "fanduel"},
+            {"side_a_sportsbook": "betmgm", "side_b_sportsbook": "fanduel"},
+        ]
+        assert books_in_opportunities(opps, ("side_a_sportsbook", "side_b_sportsbook")) == [
+            "betmgm", "draftkings", "fanduel",
+        ]
+
+    def test_usable_with_books_requires_both_legs_available(self):
+        _, usable_with_books = _load_book_filter_functions()
+        opps = [
+            {"id": 1, "side_a_sportsbook": "draftkings", "side_b_sportsbook": "fanduel"},
+            {"id": 2, "side_a_sportsbook": "betmgm", "side_b_sportsbook": "fanduel"},
+        ]
+        fields = ("side_a_sportsbook", "side_b_sportsbook")
+        result = usable_with_books(opps, {"draftkings", "fanduel"}, fields)
+        assert [o["id"] for o in result] == [1]
+
+    def test_usable_with_books_empty_selection_hides_everything(self):
+        _, usable_with_books = _load_book_filter_functions()
+        opps = [{"side_a_sportsbook": "draftkings", "side_b_sportsbook": "fanduel"}]
+        fields = ("side_a_sportsbook", "side_b_sportsbook")
+        assert usable_with_books(opps, set(), fields) == []
+
+    def test_usable_with_books_all_books_selected_keeps_everything(self):
+        _, usable_with_books = _load_book_filter_functions()
+        opps = [
+            {"id": 1, "over_sportsbook": "draftkings", "under_sportsbook": "fanduel"},
+            {"id": 2, "over_sportsbook": "betmgm", "under_sportsbook": "caesars"},
+        ]
+        fields = ("over_sportsbook", "under_sportsbook")
+        all_books = {"draftkings", "fanduel", "betmgm", "caesars"}
+        result = usable_with_books(opps, all_books, fields)
+        assert [o["id"] for o in result] == [1, 2]
+
+
 def _load_opportunity_freshness():
     """AST-extracts just _opportunity_freshness, avoiding importing
     control_panel.py as a module (it runs Streamlit page code — a live

@@ -490,6 +490,28 @@ def _opportunity_freshness(timestamp: str | None, threshold_seconds: int = 900) 
     return f"Fresh ({age // 60}m ago)"
 
 
+def _books_in_opportunities(opportunities: list[dict], book_fields: tuple[str, str]) -> list[str]:
+    """Every distinct sportsbook appearing on either leg across a list of
+    arbitrage/middle opportunities — the multiselect's option list."""
+    field_a, field_b = book_fields
+    books = {o.get(field_a) for o in opportunities if o.get(field_a)}
+    books |= {o.get(field_b) for o in opportunities if o.get(field_b)}
+    return sorted(books)
+
+
+def _usable_with_books(
+    opportunities: list[dict], available_books: set[str], book_fields: tuple[str, str],
+) -> list[dict]:
+    """Keep only opportunities where BOTH legs are at a book the operator
+    actually selected — an arbitrage or middle isn't usable unless both
+    bets can actually be placed."""
+    field_a, field_b = book_fields
+    return [
+        o for o in opportunities
+        if o.get(field_a) in available_books and o.get(field_b) in available_books
+    ]
+
+
 def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict[str, Any]:
     """Get today's game schedule summary from the games table.
 
@@ -2756,18 +2778,30 @@ with tabs[9]:
         if not active_arb:
             st.info("No cross-book arbitrage detected right now — checked every ~15 minutes.")
         else:
-            arb_table = [{
-                "League": r["league"],
-                "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
-                "Market": f"{_format_market_type(r['market_type'])}" + (f" {r['line']}" if r.get("line") is not None else ""),
-                "Side A": f"{r['side_a']} · {r['side_a_sportsbook']} {r['side_a_price']:+d}",
-                "Side B": f"{r['side_b']} · {r['side_b_sportsbook']} {r['side_b_price']:+d}",
-                "Stake Split": f"{r['side_a_stake_pct']:.0%} / {r['side_b_stake_pct']:.0%}",
-                "Guaranteed ROI": f"+{r['guaranteed_roi_pct']:.2f}%",
-                "Freshness": _opportunity_freshness(r.get("last_seen_at")),
-                "Detected": (r.get("detected_at") or "")[:16],
-            } for r in active_arb]
-            st.dataframe(pd.DataFrame(arb_table), use_container_width=True, hide_index=True)
+            arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")
+            arb_all_books = _books_in_opportunities(active_arb, arb_book_fields)
+            arb_selected_books = st.multiselect(
+                "Which sportsbooks do you have accounts at?",
+                arb_all_books, default=arb_all_books, key="dash_arb_books",
+            )
+            arb_usable = _usable_with_books(active_arb, set(arb_selected_books), arb_book_fields)
+            if not arb_usable:
+                st.warning("No arbitrage opportunities usable with the sportsbooks selected above.")
+            else:
+                if len(arb_usable) < len(active_arb):
+                    st.caption(f"{len(arb_usable)} of {len(active_arb)} opportunities usable with the selected books.")
+                arb_table = [{
+                    "League": r["league"],
+                    "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                    "Market": f"{_format_market_type(r['market_type'])}" + (f" {r['line']}" if r.get("line") is not None else ""),
+                    "Side A": f"{r['side_a']} · {r['side_a_sportsbook']} {r['side_a_price']:+d}",
+                    "Side B": f"{r['side_b']} · {r['side_b_sportsbook']} {r['side_b_price']:+d}",
+                    "Stake Split": f"{r['side_a_stake_pct']:.0%} / {r['side_b_stake_pct']:.0%}",
+                    "Guaranteed ROI": f"+{r['guaranteed_roi_pct']:.2f}%",
+                    "Freshness": _opportunity_freshness(r.get("last_seen_at")),
+                    "Detected": (r.get("detected_at") or "")[:16],
+                } for r in arb_usable]
+                st.dataframe(pd.DataFrame(arb_table), use_container_width=True, hide_index=True)
 
         st.divider()
         st.markdown("##### Settled Results")
@@ -2849,19 +2883,31 @@ with tabs[10]:
         if not active_mid:
             st.info("No middle opportunities detected right now — checked every ~15 minutes.")
         else:
-            mid_table = [{
-                "League": r["league"],
-                "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
-                "Market": _format_market_type(r["market_type"]),
-                "Over": f"{r['over_line']} · {r['over_sportsbook']} {r['over_price']:+d}",
-                "Under": f"{r['under_line']} · {r['under_sportsbook']} {r['under_price']:+d}",
-                "Window": r["window_width"],
-                "Worst Case": f"{r['worst_case_roi_pct']:+.2f}%",
-                "Best Case": f"{r['best_case_roi_pct']:+.2f}%",
-                "Freshness": _opportunity_freshness(r.get("last_seen_at")),
-                "Detected": (r.get("detected_at") or "")[:16],
-            } for r in active_mid]
-            st.dataframe(pd.DataFrame(mid_table), use_container_width=True, hide_index=True)
+            mid_book_fields = ("over_sportsbook", "under_sportsbook")
+            mid_all_books = _books_in_opportunities(active_mid, mid_book_fields)
+            mid_selected_books = st.multiselect(
+                "Which sportsbooks do you have accounts at?",
+                mid_all_books, default=mid_all_books, key="dash_mid_books",
+            )
+            mid_usable = _usable_with_books(active_mid, set(mid_selected_books), mid_book_fields)
+            if not mid_usable:
+                st.warning("No middle opportunities usable with the sportsbooks selected above.")
+            else:
+                if len(mid_usable) < len(active_mid):
+                    st.caption(f"{len(mid_usable)} of {len(active_mid)} opportunities usable with the selected books.")
+                mid_table = [{
+                    "League": r["league"],
+                    "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                    "Market": _format_market_type(r["market_type"]),
+                    "Over": f"{r['over_line']} · {r['over_sportsbook']} {r['over_price']:+d}",
+                    "Under": f"{r['under_line']} · {r['under_sportsbook']} {r['under_price']:+d}",
+                    "Window": r["window_width"],
+                    "Worst Case": f"{r['worst_case_roi_pct']:+.2f}%",
+                    "Best Case": f"{r['best_case_roi_pct']:+.2f}%",
+                    "Freshness": _opportunity_freshness(r.get("last_seen_at")),
+                    "Detected": (r.get("detected_at") or "")[:16],
+                } for r in mid_usable]
+                st.dataframe(pd.DataFrame(mid_table), use_container_width=True, hide_index=True)
 
         st.divider()
         st.markdown("##### Settled Results")

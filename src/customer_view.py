@@ -291,6 +291,29 @@ def load_customer_data(authorized: bool) -> dict:
         conn.close()
 
 
+def _books_in_opportunities(opportunities: list[dict], book_fields: tuple[str, str]) -> list[str]:
+    """Every distinct sportsbook appearing on either leg across a list of
+    arbitrage/middle opportunities — the multiselect's option list."""
+    field_a, field_b = book_fields
+    books = {o.get(field_a) for o in opportunities if o.get(field_a)}
+    books |= {o.get(field_b) for o in opportunities if o.get(field_b)}
+    return sorted(books)
+
+
+def _usable_with_books(
+    opportunities: list[dict], available_books: set[str], book_fields: tuple[str, str],
+) -> list[dict]:
+    """Keep only opportunities where BOTH legs are at a book the viewer
+    actually selected — an arbitrage or middle isn't usable unless you
+    can place both bets, so an opportunity requiring even one book
+    outside what you picked doesn't belong in the list."""
+    field_a, field_b = book_fields
+    return [
+        o for o in opportunities
+        if o.get(field_a) in available_books and o.get(field_b) in available_books
+    ]
+
+
 def _apply_filters(rows: list[dict], filters: dict) -> list[dict]:
     """Filter a list of pick dicts by sport/sportsbook/market/EV/confidence/date."""
     out = rows
@@ -716,10 +739,22 @@ elif st.session_state.view_mode == "arbitrage":
             st.success("No arbitrage opportunities right now.")
             st.caption("Rechecked every ~15 minutes as odds move.")
         else:
-            arb_cols = st.columns(2)
-            for i, opp in enumerate(data["active_arbitrage"]):
-                with arb_cols[i % 2]:
-                    _render_arbitrage_card(opp)
+            arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")
+            arb_all_books = _books_in_opportunities(data["active_arbitrage"], arb_book_fields)
+            arb_selected_books = st.multiselect(
+                "Which sportsbooks do you have accounts at?",
+                arb_all_books, default=arb_all_books, key="arb_books",
+            )
+            arb_usable = _usable_with_books(data["active_arbitrage"], set(arb_selected_books), arb_book_fields)
+            if not arb_usable:
+                st.warning("No arbitrage opportunities usable with the sportsbooks selected above.")
+            else:
+                if len(arb_usable) < len(data["active_arbitrage"]):
+                    st.caption(f"{len(arb_usable)} of {len(data['active_arbitrage'])} opportunities usable with your selected books.")
+                arb_cols = st.columns(2)
+                for i, opp in enumerate(arb_usable):
+                    with arb_cols[i % 2]:
+                        _render_arbitrage_card(opp)
         st.divider()
         _cumulative_chart(data["graded_arbitrage"], "Arbitrage")
 
@@ -740,10 +775,22 @@ elif st.session_state.view_mode == "middling":
             st.success("No middle opportunities right now.")
             st.caption("Rechecked every ~15 minutes as odds move.")
         else:
-            mid_cols = st.columns(2)
-            for i, opp in enumerate(data["active_middles"]):
-                with mid_cols[i % 2]:
-                    _render_middle_card(opp)
+            mid_book_fields = ("over_sportsbook", "under_sportsbook")
+            mid_all_books = _books_in_opportunities(data["active_middles"], mid_book_fields)
+            mid_selected_books = st.multiselect(
+                "Which sportsbooks do you have accounts at?",
+                mid_all_books, default=mid_all_books, key="mid_books",
+            )
+            mid_usable = _usable_with_books(data["active_middles"], set(mid_selected_books), mid_book_fields)
+            if not mid_usable:
+                st.warning("No middle opportunities usable with the sportsbooks selected above.")
+            else:
+                if len(mid_usable) < len(data["active_middles"]):
+                    st.caption(f"{len(mid_usable)} of {len(data['active_middles'])} opportunities usable with your selected books.")
+                mid_cols = st.columns(2)
+                for i, opp in enumerate(mid_usable):
+                    with mid_cols[i % 2]:
+                        _render_middle_card(opp)
         st.divider()
         _cumulative_chart(data["graded_middles"], "Middling")
 
