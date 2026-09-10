@@ -92,6 +92,18 @@ p,div,span,button { font-family:'Inter',sans-serif; }
 [data-testid="stBaseButton-primary"]:hover {
   background-color:var(--accent-soft) !important; border-color:var(--accent-soft) !important; color:#fff !important;
 }
+/* Real bug, found live 2026-09-10 (operator screenshot: "← All Options"
+   unreadable on the Middling page): secondary buttons inherit this
+   page's dark ink color for their text (from .stApp's own color rule)
+   but keep the SHARED dark theme's near-black background -- dark text
+   on a near-black button, unreadable. Primary buttons above were fixed
+   already; this is the same class of bug for secondary ones. */
+[data-testid="stBaseButton-secondary"] {
+  background-color:#ffffff !important; border-color:var(--line) !important; color:var(--ink) !important;
+}
+[data-testid="stBaseButton-secondary"]:hover {
+  background-color:var(--panel) !important; border-color:var(--ink) !important; color:var(--ink) !important;
+}
 [data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color:var(--ink) !important; }
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * { color:var(--muted) !important; }
 [data-testid="stAlertContentInfo"], [data-testid="stAlertContentSuccess"],

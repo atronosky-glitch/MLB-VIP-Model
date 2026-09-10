@@ -367,3 +367,15 @@ def test_arbitrage_and_middle_cards_show_a_live_or_pregame_badge():
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert 'status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"' in source
     assert source.count('status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"') == 2
+
+
+def test_secondary_buttons_have_a_light_theme_override():
+    """Real bug, found live 2026-09-10 from an operator screenshot: the
+    "All Options" secondary button was unreadable (dark text, inherited
+    from .stApp's own color rule, on the shared dark theme's near-black
+    secondary-button background -- dark on dark). Primary buttons already
+    had a light-theme override; secondary ones didn't. Confirmed live
+    after the fix: the button renders as white with dark, readable text."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert '[data-testid="stBaseButton-secondary"]' in source
+    assert "background-color:#ffffff !important" in source
