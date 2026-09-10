@@ -22,6 +22,7 @@ from database.db_manager import (
 )
 from src.grading import performance_summary, breakdown_by_field, assign_bucket, EV_BUCKETS
 from src.sportsbook_picker import render_sportsbook_picker
+from src.odds_api_client import TRACKED_BOOKMAKERS
 
 logger = logging.getLogger(__name__)
 
@@ -368,15 +369,6 @@ def load_customer_data(authorized: bool) -> dict:
         }
     finally:
         conn.close()
-
-
-def _books_in_opportunities(opportunities: list[dict], book_fields: tuple[str, str]) -> list[str]:
-    """Every distinct sportsbook appearing on either leg across a list of
-    arbitrage/middle opportunities — the multiselect's option list."""
-    field_a, field_b = book_fields
-    books = {o.get(field_a) for o in opportunities if o.get(field_a)}
-    books |= {o.get(field_b) for o in opportunities if o.get(field_b)}
-    return sorted(books)
 
 
 def _usable_with_books(
@@ -847,8 +839,7 @@ elif st.session_state.view_mode == "arbitrage":
                 st.info(f"No {arb_status.lower()} arbitrage opportunities right now.")
             else:
                 arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")
-                arb_all_books = _books_in_opportunities(arb_status_filtered, arb_book_fields)
-                arb_selected_books = render_sportsbook_picker(arb_all_books, key_prefix="cust_arb")
+                arb_selected_books = render_sportsbook_picker(sorted(TRACKED_BOOKMAKERS.split(",")), key_prefix="cust_arb")
                 arb_usable = _usable_with_books(arb_status_filtered, arb_selected_books, arb_book_fields)
                 if not arb_usable:
                     st.warning("No arbitrage opportunities usable with the sportsbooks selected above.")
@@ -889,8 +880,7 @@ elif st.session_state.view_mode == "middling":
                 st.info(f"No {mid_status.lower()} middle opportunities right now.")
             else:
                 mid_book_fields = ("over_sportsbook", "under_sportsbook")
-                mid_all_books = _books_in_opportunities(mid_status_filtered, mid_book_fields)
-                mid_selected_books = render_sportsbook_picker(mid_all_books, key_prefix="cust_mid")
+                mid_selected_books = render_sportsbook_picker(sorted(TRACKED_BOOKMAKERS.split(",")), key_prefix="cust_mid")
                 mid_usable = _usable_with_books(mid_status_filtered, mid_selected_books, mid_book_fields)
                 if not mid_usable:
                     st.warning("No middle opportunities usable with the sportsbooks selected above.")

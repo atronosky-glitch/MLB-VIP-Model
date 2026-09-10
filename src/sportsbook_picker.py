@@ -49,7 +49,7 @@ def render_sportsbook_picker(
     st.markdown(_PICKER_CSS, unsafe_allow_html=True)
 
     with st.popover(f"🎚️ {label}"):
-        st.caption(f"Untick a book you don't have an account at — {len(all_books)} in play right now.")
+        st.caption(f"Untick a book you don't have an account at — {len(all_books)} tracked.")
         pick_col, clear_col = st.columns(2)
         if pick_col.button("Select all", key=f"{key_prefix}_pick_all", use_container_width=True):
             for book in all_books:

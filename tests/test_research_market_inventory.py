@@ -79,13 +79,18 @@ def test_arbitrage_and_middling_tabs_have_a_sportsbook_selector():
     bright-lime st.multiselect; swapped for the shared popover picker
     (src/sportsbook_picker.py) per operator feedback the same day -- a
     tick-box dropdown with a colored badge per book, not the theme's
-    default accent color."""
+    default accent color.
+
+    2026-09-10 (follow-up operator request): the picker always shows the
+    full TRACKED_BOOKMAKERS roster now (not just books in currently live
+    opportunities, via the since-removed _books_in_opportunities) -- a
+    book with nothing live right now is harmless to show as an option."""
     source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
-    assert "def _books_in_opportunities(" in source
     assert "def _usable_with_books(" in source
     assert "from src.sportsbook_picker import render_sportsbook_picker" in source
-    assert 'render_sportsbook_picker(arb_all_books, key_prefix="dash_arb")' in source
-    assert 'render_sportsbook_picker(mid_all_books, key_prefix="dash_mid")' in source
+    assert "from src.odds_api_client import TRACKED_BOOKMAKERS" in source
+    assert 'render_sportsbook_picker(sorted(TRACKED_BOOKMAKERS.split(",")), key_prefix="dash_arb")' in source
+    assert 'render_sportsbook_picker(sorted(TRACKED_BOOKMAKERS.split(",")), key_prefix="dash_mid")' in source
     assert 'arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")' in source
     assert 'mid_book_fields = ("over_sportsbook", "under_sportsbook")' in source
     assert "arb_usable = _usable_with_books(arb_status_filtered, arb_selected_books, arb_book_fields)" in source
@@ -94,34 +99,25 @@ def test_arbitrage_and_middling_tabs_have_a_sportsbook_selector():
     assert "} for r in mid_usable]" in source
 
 
-def _load_book_filter_functions():
-    """AST-extracts _books_in_opportunities and _usable_with_books,
-    avoiding importing control_panel.py as a module (it runs Streamlit
-    page code at import time)."""
+def _load_usable_with_books():
+    """AST-extracts _usable_with_books, avoiding importing
+    control_panel.py as a module (it runs Streamlit page code at import
+    time)."""
     import ast
 
     source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    wanted = {"_books_in_opportunities", "_usable_with_books"}
-    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    func_node = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_usable_with_books"
+    )
     namespace = {}
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), "<extracted>", "exec"), namespace)
-    return namespace["_books_in_opportunities"], namespace["_usable_with_books"]
+    exec(compile(ast.Module(body=[func_node], type_ignores=[]), "<extracted>", "exec"), namespace)
+    return namespace["_usable_with_books"]
 
 
 class TestBookAvailabilityFilterDashboard:
-    def test_books_in_opportunities_unions_both_legs(self):
-        books_in_opportunities, _ = _load_book_filter_functions()
-        opps = [
-            {"side_a_sportsbook": "draftkings", "side_b_sportsbook": "fanduel"},
-            {"side_a_sportsbook": "betmgm", "side_b_sportsbook": "fanduel"},
-        ]
-        assert books_in_opportunities(opps, ("side_a_sportsbook", "side_b_sportsbook")) == [
-            "betmgm", "draftkings", "fanduel",
-        ]
-
     def test_usable_with_books_requires_both_legs_available(self):
-        _, usable_with_books = _load_book_filter_functions()
+        usable_with_books = _load_usable_with_books()
         opps = [
             {"id": 1, "side_a_sportsbook": "draftkings", "side_b_sportsbook": "fanduel"},
             {"id": 2, "side_a_sportsbook": "betmgm", "side_b_sportsbook": "fanduel"},
@@ -131,13 +127,13 @@ class TestBookAvailabilityFilterDashboard:
         assert [o["id"] for o in result] == [1]
 
     def test_usable_with_books_empty_selection_hides_everything(self):
-        _, usable_with_books = _load_book_filter_functions()
+        usable_with_books = _load_usable_with_books()
         opps = [{"side_a_sportsbook": "draftkings", "side_b_sportsbook": "fanduel"}]
         fields = ("side_a_sportsbook", "side_b_sportsbook")
         assert usable_with_books(opps, set(), fields) == []
 
     def test_usable_with_books_all_books_selected_keeps_everything(self):
-        _, usable_with_books = _load_book_filter_functions()
+        usable_with_books = _load_usable_with_books()
         opps = [
             {"id": 1, "over_sportsbook": "draftkings", "under_sportsbook": "fanduel"},
             {"id": 2, "over_sportsbook": "betmgm", "under_sportsbook": "caesars"},

@@ -87,11 +87,17 @@ def test_arbitrage_and_middling_pages_have_a_sportsbook_selector():
     """2026-09-09 (operator feedback): a bright-lime multiselect didn't
     fit the site's dark/gold theme and read as plain tag chips -- swapped
     for the shared popover picker (src/sportsbook_picker.py), which shows
-    a tick-box row with a colored badge per book."""
+    a tick-box row with a colored badge per book.
+
+    2026-09-10 (follow-up operator request): the picker always shows the
+    full TRACKED_BOOKMAKERS roster now, not just books in currently live
+    opportunities -- a book with nothing live right now is harmless to
+    show as an option."""
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert "from src.sportsbook_picker import render_sportsbook_picker" in source
-    assert 'render_sportsbook_picker(arb_all_books, key_prefix="cust_arb")' in source
-    assert 'render_sportsbook_picker(mid_all_books, key_prefix="cust_mid")' in source
+    assert "from src.odds_api_client import TRACKED_BOOKMAKERS" in source
+    assert 'render_sportsbook_picker(sorted(TRACKED_BOOKMAKERS.split(",")), key_prefix="cust_arb")' in source
+    assert 'render_sportsbook_picker(sorted(TRACKED_BOOKMAKERS.split(",")), key_prefix="cust_mid")' in source
     assert "_usable_with_books(arb_status_filtered" in source
     assert "_usable_with_books(mid_status_filtered" in source
 
@@ -252,16 +258,15 @@ def test_apply_filters_pure_function_behavior():
 
 class TestBookAvailabilityFilter:
     """2026-09-09 (operator request): an arbitrage/middle only counts as
-    usable if the viewer actually has accounts at BOTH books it needs."""
+    usable if the viewer actually has accounts at BOTH books it needs.
 
-    def test_books_in_opportunities_unions_both_legs(self):
-        books_in_opportunities = _load_function("_books_in_opportunities")
-        opps = [
-            {"side_a_sportsbook": "DraftKings", "side_b_sportsbook": "FanDuel"},
-            {"side_a_sportsbook": "BetMGM", "side_b_sportsbook": "FanDuel"},
-        ]
-        result = books_in_opportunities(opps, ("side_a_sportsbook", "side_b_sportsbook"))
-        assert result == ["BetMGM", "DraftKings", "FanDuel"]
+    2026-09-10 (follow-up operator request): the picker's own option list
+    used to be derived from whichever books happened to be in currently
+    LIVE opportunities (_books_in_opportunities, removed) -- switched to
+    always showing the full TRACKED_BOOKMAKERS roster instead, since a
+    book with zero current opportunities is harmless to show (nothing to
+    filter, no effect) and a fixed list is simpler than one that shifts
+    membership as opportunities come and go."""
 
     def test_usable_with_books_requires_both_legs_available(self):
         usable_with_books = _load_function("_usable_with_books")
