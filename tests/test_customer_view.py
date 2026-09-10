@@ -92,8 +92,8 @@ def test_arbitrage_and_middling_pages_have_a_sportsbook_selector():
     assert "from src.sportsbook_picker import render_sportsbook_picker" in source
     assert 'render_sportsbook_picker(arb_all_books, key_prefix="cust_arb")' in source
     assert 'render_sportsbook_picker(mid_all_books, key_prefix="cust_mid")' in source
-    assert "_usable_with_books(data[\"active_arbitrage\"]" in source
-    assert "_usable_with_books(data[\"active_middles\"]" in source
+    assert "_usable_with_books(arb_status_filtered" in source
+    assert "_usable_with_books(mid_status_filtered" in source
 
 
 def test_arbitrage_and_middle_cards_show_freshness():
@@ -289,3 +289,81 @@ class TestBookAvailabilityFilter:
         fields = ("side_a_sportsbook", "side_b_sportsbook")
         result = usable_with_books(opps, {"DraftKings", "FanDuel"}, fields)
         assert [o["id"] for o in result] == [1]
+
+
+def _load_filter_by_game_status():
+    """Same AST-extraction as _load_function, but pre-seeds the real
+    database.db_manager.is_event_live into the exec namespace since
+    _filter_by_game_status calls it -- an empty namespace would raise
+    NameError the moment the extracted function actually runs."""
+    import ast
+    from database.db_manager import is_event_live
+
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func_node = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_filter_by_game_status"
+    )
+    namespace = {"is_event_live": is_event_live}
+    exec(compile(ast.Module(body=[func_node], type_ignores=[]), "<extracted>", "exec"), namespace)
+    return namespace["_filter_by_game_status"]
+
+
+class TestGameStatusFilter:
+    """2026-09-10 (operator request): a dropdown on the Arbitrage/Middling
+    pages to split pregame vs. live opportunities -- the operator's own
+    stated preference is pregame only, since live prices move faster and
+    can be less reliable."""
+
+    def _opp(self, event_start_time):
+        return {"id": event_start_time, "event_start_time": event_start_time}
+
+    def test_pregame_keeps_only_future_start_times(self):
+        from datetime import datetime, timedelta, timezone
+        filter_by_game_status = _load_filter_by_game_status()
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        opps = [self._opp(future), self._opp(past)]
+        result = filter_by_game_status(opps, "Pregame")
+        assert [o["id"] for o in result] == [future]
+
+    def test_live_keeps_only_past_start_times(self):
+        from datetime import datetime, timedelta, timezone
+        filter_by_game_status = _load_filter_by_game_status()
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        opps = [self._opp(future), self._opp(past)]
+        result = filter_by_game_status(opps, "Live")
+        assert [o["id"] for o in result] == [past]
+
+    def test_all_is_a_pass_through(self):
+        from datetime import datetime, timedelta, timezone
+        filter_by_game_status = _load_filter_by_game_status()
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        opps = [self._opp(future), self._opp(past)]
+        result = filter_by_game_status(opps, "All")
+        assert len(result) == 2
+
+    def test_missing_start_time_counts_as_pregame_not_hidden(self):
+        """A missing/unknown game time must stay visible in the default
+        Pregame view rather than silently vanish because it couldn't be
+        classified as live."""
+        filter_by_game_status = _load_filter_by_game_status()
+        opps = [{"id": "unknown", "event_start_time": None}]
+        assert filter_by_game_status(opps, "Pregame") == opps
+        assert filter_by_game_status(opps, "Live") == []
+
+
+def test_arbitrage_and_middling_pages_have_a_game_status_dropdown():
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'st.selectbox(\n                "Game status", ["Pregame", "Live", "All"]' in source
+    assert source.count('st.selectbox(\n                "Game status", ["Pregame", "Live", "All"]') == 2
+    assert '_filter_by_game_status(data["active_arbitrage"], arb_status)' in source
+    assert '_filter_by_game_status(data["active_middles"], mid_status)' in source
+
+
+def test_arbitrage_and_middle_cards_show_a_live_or_pregame_badge():
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"' in source
+    assert source.count('status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"') == 2

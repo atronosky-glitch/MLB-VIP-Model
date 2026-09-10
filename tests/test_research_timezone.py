@@ -139,6 +139,57 @@ class TestFormatEventStartLocal:
         assert format_event_start_local("2026-09-10T00:00:00Z") == "Sep 10, 12:00 AM UTC"
 
 
+class TestIsEventLive:
+    """2026-09-10 (operator request): a Pregame/Live dropdown on the
+    Arbitrage/Middling pages needs to classify each opportunity by
+    whether its game has already started."""
+
+    def test_future_start_time_is_not_live(self):
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import is_event_live
+
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        assert is_event_live(future) is False
+
+    def test_past_start_time_is_live(self):
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import is_event_live
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        assert is_event_live(past) is True
+
+    def test_accepts_z_suffix_and_offset_form(self):
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import is_event_live
+
+        past_z = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        assert is_event_live(past_z) is True
+
+    def test_missing_timestamp_is_not_live(self):
+        """Unknown game time must default to "not live" (pregame bucket)
+        so it stays visible in the default Pregame view instead of
+        silently disappearing."""
+        from database.db_manager import is_event_live
+
+        assert is_event_live(None) is False
+        assert is_event_live("") is False
+
+    def test_unparseable_timestamp_is_not_live(self):
+        from database.db_manager import is_event_live
+
+        assert is_event_live("not-a-timestamp") is False
+
+    def test_naive_datetime_is_treated_as_utc(self):
+        """A timestamp with no timezone info must be treated as UTC, same
+        convention format_event_start_local already uses -- comparing a
+        naive datetime against an aware one raises TypeError otherwise."""
+        from datetime import datetime, timedelta, timezone
+        from database.db_manager import is_event_live
+
+        naive_past = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+        assert is_event_live(naive_past) is True
+
+
 class TestGetResearchPicksTodayUsesConfiguredTimezone:
     def test_filters_by_the_configured_timezone_day_not_a_hardcoded_utc_day(self, db_conn):
         """Integration check: get_research_picks_today must actually use

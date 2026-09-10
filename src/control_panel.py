@@ -12,7 +12,7 @@ import json
 import os
 import subprocess
 from database.connection import get_database_url
-from database.db_manager import get_connection
+from database.db_manager import get_connection, is_event_live
 from src.sportsbook_picker import render_sportsbook_picker
 import sys
 import threading
@@ -511,6 +511,17 @@ def _usable_with_books(
         o for o in opportunities
         if o.get(field_a) in available_books and o.get(field_b) in available_books
     ]
+
+
+def _filter_by_game_status(opportunities: list[dict], status: str) -> list[dict]:
+    """Split arbitrage/middle opportunities into pregame vs. live games
+    (operator request 2026-09-10 — personal preference for pregame only,
+    since live prices move fast and can be less reliable). "All" is a
+    pass-through."""
+    if status == "All":
+        return opportunities
+    want_live = status == "Live"
+    return [o for o in opportunities if is_event_live(o.get("event_start_time")) == want_live]
 
 
 def _get_schedule_summary(db_path: str, run_summary: dict | None = None) -> dict[str, Any]:
@@ -2780,28 +2791,36 @@ with tabs[9]:
         if not active_arb:
             st.info("No cross-book arbitrage detected right now — checked every ~15 minutes.")
         else:
-            arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")
-            arb_all_books = _books_in_opportunities(active_arb, arb_book_fields)
-            arb_selected_books = render_sportsbook_picker(arb_all_books, key_prefix="dash_arb")
-            arb_usable = _usable_with_books(active_arb, arb_selected_books, arb_book_fields)
-            if not arb_usable:
-                st.warning("No arbitrage opportunities usable with the sportsbooks selected above.")
+            arb_status = st.selectbox(
+                "Game status", ["Pregame", "Live", "All"], index=0, key="dash_arb_status",
+            )
+            arb_status_filtered = _filter_by_game_status(active_arb, arb_status)
+            if not arb_status_filtered:
+                st.info(f"No {arb_status.lower()} arbitrage opportunities right now.")
             else:
-                if len(arb_usable) < len(active_arb):
-                    st.caption(f"{len(arb_usable)} of {len(active_arb)} opportunities usable with the selected books.")
-                arb_table = [{
-                    "League": r["league"],
-                    "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
-                    "Market": f"{_format_market_type(r['market_type'])}" + (f" {r['line']}" if r.get("line") is not None else ""),
-                    "Game Starts": format_event_start_local(r.get("event_start_time")),
-                    "Side A": f"{r['side_a']} · {r['side_a_sportsbook']} {r['side_a_price']:+d}",
-                    "Side B": f"{r['side_b']} · {r['side_b_sportsbook']} {r['side_b_price']:+d}",
-                    "Stake Split": f"{r['side_a_stake_pct']:.0%} / {r['side_b_stake_pct']:.0%}",
-                    "Guaranteed ROI": f"+{r['guaranteed_roi_pct']:.2f}%",
-                    "Freshness": _opportunity_freshness(r.get("last_seen_at")),
-                    "Detected": (r.get("detected_at") or "")[:16],
-                } for r in arb_usable]
-                st.dataframe(pd.DataFrame(arb_table), use_container_width=True, hide_index=True)
+                arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")
+                arb_all_books = _books_in_opportunities(arb_status_filtered, arb_book_fields)
+                arb_selected_books = render_sportsbook_picker(arb_all_books, key_prefix="dash_arb")
+                arb_usable = _usable_with_books(arb_status_filtered, arb_selected_books, arb_book_fields)
+                if not arb_usable:
+                    st.warning("No arbitrage opportunities usable with the sportsbooks selected above.")
+                else:
+                    if len(arb_usable) < len(arb_status_filtered):
+                        st.caption(f"{len(arb_usable)} of {len(arb_status_filtered)} opportunities usable with the selected books.")
+                    arb_table = [{
+                        "League": r["league"],
+                        "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                        "Market": f"{_format_market_type(r['market_type'])}" + (f" {r['line']}" if r.get("line") is not None else ""),
+                        "Status": "🔴 LIVE" if is_event_live(r.get("event_start_time")) else "PREGAME",
+                        "Game Starts": format_event_start_local(r.get("event_start_time")),
+                        "Side A": f"{r['side_a']} · {r['side_a_sportsbook']} {r['side_a_price']:+d}",
+                        "Side B": f"{r['side_b']} · {r['side_b_sportsbook']} {r['side_b_price']:+d}",
+                        "Stake Split": f"{r['side_a_stake_pct']:.0%} / {r['side_b_stake_pct']:.0%}",
+                        "Guaranteed ROI": f"+{r['guaranteed_roi_pct']:.2f}%",
+                        "Freshness": _opportunity_freshness(r.get("last_seen_at")),
+                        "Detected": (r.get("detected_at") or "")[:16],
+                    } for r in arb_usable]
+                    st.dataframe(pd.DataFrame(arb_table), use_container_width=True, hide_index=True)
 
         st.divider()
         st.markdown("##### Settled Results")
@@ -2884,29 +2903,37 @@ with tabs[10]:
         if not active_mid:
             st.info("No middle opportunities detected right now — checked every ~15 minutes.")
         else:
-            mid_book_fields = ("over_sportsbook", "under_sportsbook")
-            mid_all_books = _books_in_opportunities(active_mid, mid_book_fields)
-            mid_selected_books = render_sportsbook_picker(mid_all_books, key_prefix="dash_mid")
-            mid_usable = _usable_with_books(active_mid, mid_selected_books, mid_book_fields)
-            if not mid_usable:
-                st.warning("No middle opportunities usable with the sportsbooks selected above.")
+            mid_status = st.selectbox(
+                "Game status", ["Pregame", "Live", "All"], index=0, key="dash_mid_status",
+            )
+            mid_status_filtered = _filter_by_game_status(active_mid, mid_status)
+            if not mid_status_filtered:
+                st.info(f"No {mid_status.lower()} middle opportunities right now.")
             else:
-                if len(mid_usable) < len(active_mid):
-                    st.caption(f"{len(mid_usable)} of {len(active_mid)} opportunities usable with the selected books.")
-                mid_table = [{
-                    "League": r["league"],
-                    "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
-                    "Market": _format_market_type(r["market_type"]),
-                    "Game Starts": format_event_start_local(r.get("event_start_time")),
-                    "Over": f"{r['over_line']} · {r['over_sportsbook']} {r['over_price']:+d}",
-                    "Under": f"{r['under_line']} · {r['under_sportsbook']} {r['under_price']:+d}",
-                    "Window": r["window_width"],
-                    "Worst Case": f"{r['worst_case_roi_pct']:+.2f}%",
-                    "Best Case": f"{r['best_case_roi_pct']:+.2f}%",
-                    "Freshness": _opportunity_freshness(r.get("last_seen_at")),
-                    "Detected": (r.get("detected_at") or "")[:16],
-                } for r in mid_usable]
-                st.dataframe(pd.DataFrame(mid_table), use_container_width=True, hide_index=True)
+                mid_book_fields = ("over_sportsbook", "under_sportsbook")
+                mid_all_books = _books_in_opportunities(mid_status_filtered, mid_book_fields)
+                mid_selected_books = render_sportsbook_picker(mid_all_books, key_prefix="dash_mid")
+                mid_usable = _usable_with_books(mid_status_filtered, mid_selected_books, mid_book_fields)
+                if not mid_usable:
+                    st.warning("No middle opportunities usable with the sportsbooks selected above.")
+                else:
+                    if len(mid_usable) < len(mid_status_filtered):
+                        st.caption(f"{len(mid_usable)} of {len(mid_status_filtered)} opportunities usable with the selected books.")
+                    mid_table = [{
+                        "League": r["league"],
+                        "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                        "Market": _format_market_type(r["market_type"]),
+                        "Status": "🔴 LIVE" if is_event_live(r.get("event_start_time")) else "PREGAME",
+                        "Game Starts": format_event_start_local(r.get("event_start_time")),
+                        "Over": f"{r['over_line']} · {r['over_sportsbook']} {r['over_price']:+d}",
+                        "Under": f"{r['under_line']} · {r['under_sportsbook']} {r['under_price']:+d}",
+                        "Window": r["window_width"],
+                        "Worst Case": f"{r['worst_case_roi_pct']:+.2f}%",
+                        "Best Case": f"{r['best_case_roi_pct']:+.2f}%",
+                        "Freshness": _opportunity_freshness(r.get("last_seen_at")),
+                        "Detected": (r.get("detected_at") or "")[:16],
+                    } for r in mid_usable]
+                    st.dataframe(pd.DataFrame(mid_table), use_container_width=True, hide_index=True)
 
         st.divider()
         st.markdown("##### Settled Results")

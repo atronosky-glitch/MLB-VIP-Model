@@ -88,8 +88,8 @@ def test_arbitrage_and_middling_tabs_have_a_sportsbook_selector():
     assert 'render_sportsbook_picker(mid_all_books, key_prefix="dash_mid")' in source
     assert 'arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")' in source
     assert 'mid_book_fields = ("over_sportsbook", "under_sportsbook")' in source
-    assert "arb_usable = _usable_with_books(active_arb, arb_selected_books, arb_book_fields)" in source
-    assert "mid_usable = _usable_with_books(active_mid, mid_selected_books, mid_book_fields)" in source
+    assert "arb_usable = _usable_with_books(arb_status_filtered, arb_selected_books, arb_book_fields)" in source
+    assert "mid_usable = _usable_with_books(mid_status_filtered, mid_selected_books, mid_book_fields)" in source
     assert "} for r in arb_usable]" in source
     assert "} for r in mid_usable]" in source
 
@@ -186,3 +186,64 @@ class TestOpportunityFreshness:
     def test_missing_timestamp_is_no_data_not_an_error(self):
         opportunity_freshness = _load_opportunity_freshness()
         assert opportunity_freshness(None) == "No data"
+
+
+def _load_filter_by_game_status():
+    """AST-extracts _filter_by_game_status, pre-seeding the real
+    database.db_manager.is_event_live into the exec namespace since the
+    function calls it -- same reasoning as _load_opportunity_freshness's
+    own docstring for avoiding a full control_panel.py import."""
+    import ast
+    from database.db_manager import is_event_live
+
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func_node = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_filter_by_game_status"
+    )
+    namespace = {"is_event_live": is_event_live}
+    exec(compile(ast.Module(body=[func_node], type_ignores=[]), "<extracted>", "exec"), namespace)
+    return namespace["_filter_by_game_status"]
+
+
+class TestFilterByGameStatus:
+    """2026-09-10 (operator request): a Pregame/Live dropdown on the
+    Arbitrage/Middling tabs, mirroring src/customer_view.py's own
+    identical filter -- the operator's stated preference is pregame only."""
+
+    def _opp(self, event_start_time):
+        return {"id": event_start_time, "event_start_time": event_start_time}
+
+    def test_pregame_keeps_only_future_start_times(self):
+        from datetime import datetime, timedelta, timezone
+        filter_by_game_status = _load_filter_by_game_status()
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        result = filter_by_game_status([self._opp(future), self._opp(past)], "Pregame")
+        assert [o["id"] for o in result] == [future]
+
+    def test_live_keeps_only_past_start_times(self):
+        from datetime import datetime, timedelta, timezone
+        filter_by_game_status = _load_filter_by_game_status()
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        result = filter_by_game_status([self._opp(future), self._opp(past)], "Live")
+        assert [o["id"] for o in result] == [past]
+
+    def test_all_is_a_pass_through(self):
+        from datetime import datetime, timedelta, timezone
+        filter_by_game_status = _load_filter_by_game_status()
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        result = filter_by_game_status([self._opp(future), self._opp(past)], "All")
+        assert len(result) == 2
+
+
+def test_arbitrage_and_middling_tabs_have_a_game_status_dropdown():
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    assert 'st.selectbox(\n                "Game status", ["Pregame", "Live", "All"], index=0, key="dash_arb_status",' in source
+    assert 'st.selectbox(\n                "Game status", ["Pregame", "Live", "All"], index=0, key="dash_mid_status",' in source
+    assert '_filter_by_game_status(active_arb, arb_status)' in source
+    assert '_filter_by_game_status(active_mid, mid_status)' in source
+    assert '"Status": "🔴 LIVE" if is_event_live(r.get("event_start_time")) else "PREGAME"' in source
+    assert source.count('"Status": "🔴 LIVE" if is_event_live(r.get("event_start_time")) else "PREGAME"') == 2

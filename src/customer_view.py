@@ -18,7 +18,7 @@ import streamlit as st
 
 from database.db_manager import (
     get_connection, init_db, get_performance_baseline, get_today_in_configured_timezone,
-    format_event_start_local,
+    format_event_start_local, is_event_live,
 )
 from src.grading import performance_summary, breakdown_by_field, assign_bucket, EV_BUCKETS
 from src.sportsbook_picker import render_sportsbook_picker
@@ -102,6 +102,14 @@ div[data-baseweb="slider"] div[role="slider"] { background-color:var(--accent) !
 div[data-testid="stSlider"] div[data-testid="stTickBar"] + div > div { background:var(--accent) !important; }
 label[data-baseweb="radio"] [aria-checked="true"] > div:first-child { border-color:var(--accent) !important; }
 label[data-baseweb="radio"] [aria-checked="true"] > div:first-child > div { background-color:var(--accent) !important; }
+[data-testid="stSelectbox"] .react-aria-ComboBox > div[role="group"] {
+    background-color: #ffffff !important; border: 1px solid var(--line) !important;
+}
+[data-testid="stSelectbox"] .react-aria-ComboBox input { color: var(--ink) !important; }
+[data-testid="stSelectboxVirtualDropdown"], [data-testid="stSelectboxVirtualDropdown"] * {
+    background-color: #ffffff !important; color: var(--ink) !important;
+}
+[data-testid="stSelectboxVirtualDropdown"] [aria-selected="true"] { background-color: var(--panel) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -334,6 +342,17 @@ def _usable_with_books(
     ]
 
 
+def _filter_by_game_status(opportunities: list[dict], status: str) -> list[dict]:
+    """Split arbitrage/middle opportunities into pregame vs. live games
+    (operator request 2026-09-10 — personal preference for pregame only,
+    since live prices move fast and can be less reliable). "All" is a
+    pass-through."""
+    if status == "All":
+        return opportunities
+    want_live = status == "Live"
+    return [o for o in opportunities if is_event_live(o.get("event_start_time")) == want_live]
+
+
 def _apply_filters(rows: list[dict], filters: dict) -> list[dict]:
     """Filter a list of pick dicts by sport/sportsbook/market/EV/confidence/date."""
     out = rows
@@ -491,8 +510,11 @@ def _cumulative_chart(rows: list[dict], label: str) -> None:
     chart = alt.Chart(df).mark_area(
         line={"color": color, "strokeWidth": 2.5}, color=color, opacity=0.16, interpolate="monotone",
     ).encode(
-        x=alt.X("Date:T", title=None), y=alt.Y("Cumulative:Q", title="Cumulative units"),
-    )
+        x=alt.X("Date:T", title=None,
+                axis=alt.Axis(grid=False, labelColor="#6b7280", tickColor="#e5e7eb", domainColor="#e5e7eb")),
+        y=alt.Y("Cumulative:Q", title="Cumulative units",
+                axis=alt.Axis(grid=True, gridColor="#f0f1f3", labelColor="#6b7280", titleColor="#6b7280")),
+    ).configure_view(strokeWidth=0).configure(background="transparent")
     st.altair_chart(chart, use_container_width=True)
 
 
@@ -502,11 +524,12 @@ def _render_arbitrage_card(opp: dict) -> None:
     )
     fresh = _freshness_label(opp.get("last_seen_at"))
     game_time = format_event_start_local(opp.get("event_start_time"))
+    status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
       <div class="pick-meta">{opp.get('matchup', '')} · {pick_label} · <span class="edge">{fresh}</span></div>
-      <div class="pick-meta">Game starts: {game_time}</div>
+      <div class="pick-meta">{status_label} · Game starts: {game_time}</div>
       <div class="pick-meta">{opp['side_a']} · {opp['side_a_sportsbook']} {opp['side_a_price']:+d}
         ({opp['side_a_stake_pct']:.0%} stake)</div>
       <div class="pick-meta">{opp['side_b']} · {opp['side_b_sportsbook']} {opp['side_b_price']:+d}
@@ -519,11 +542,12 @@ def _render_arbitrage_card(opp: dict) -> None:
 def _render_middle_card(opp: dict) -> None:
     fresh = _freshness_label(opp.get("last_seen_at"))
     game_time = format_event_start_local(opp.get("event_start_time"))
+    status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])}</div>
       <div class="pick-meta">{opp.get('matchup', '')} · {_market_label(opp['market_type'])} · <span class="edge">{fresh}</span></div>
-      <div class="pick-meta">Game starts: {game_time}</div>
+      <div class="pick-meta">{status_label} · Game starts: {game_time}</div>
       <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
       <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
       <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>
@@ -762,19 +786,28 @@ elif st.session_state.view_mode == "arbitrage":
             st.success("No arbitrage opportunities right now.")
             st.caption("Rechecked every ~15 minutes as odds move.")
         else:
-            arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")
-            arb_all_books = _books_in_opportunities(data["active_arbitrage"], arb_book_fields)
-            arb_selected_books = render_sportsbook_picker(arb_all_books, key_prefix="cust_arb")
-            arb_usable = _usable_with_books(data["active_arbitrage"], arb_selected_books, arb_book_fields)
-            if not arb_usable:
-                st.warning("No arbitrage opportunities usable with the sportsbooks selected above.")
+            arb_status = st.selectbox(
+                "Game status", ["Pregame", "Live", "All"], index=0, key="cust_arb_status",
+                help="Pregame: before first pitch/kickoff. Live: game already underway — "
+                     "prices move faster and can be less reliable.",
+            )
+            arb_status_filtered = _filter_by_game_status(data["active_arbitrage"], arb_status)
+            if not arb_status_filtered:
+                st.info(f"No {arb_status.lower()} arbitrage opportunities right now.")
             else:
-                if len(arb_usable) < len(data["active_arbitrage"]):
-                    st.caption(f"{len(arb_usable)} of {len(data['active_arbitrage'])} opportunities usable with your selected books.")
-                arb_cols = st.columns(2)
-                for i, opp in enumerate(arb_usable):
-                    with arb_cols[i % 2]:
-                        _render_arbitrage_card(opp)
+                arb_book_fields = ("side_a_sportsbook", "side_b_sportsbook")
+                arb_all_books = _books_in_opportunities(arb_status_filtered, arb_book_fields)
+                arb_selected_books = render_sportsbook_picker(arb_all_books, key_prefix="cust_arb")
+                arb_usable = _usable_with_books(arb_status_filtered, arb_selected_books, arb_book_fields)
+                if not arb_usable:
+                    st.warning("No arbitrage opportunities usable with the sportsbooks selected above.")
+                else:
+                    if len(arb_usable) < len(arb_status_filtered):
+                        st.caption(f"{len(arb_usable)} of {len(arb_status_filtered)} opportunities usable with your selected books.")
+                    arb_cols = st.columns(2)
+                    for i, opp in enumerate(arb_usable):
+                        with arb_cols[i % 2]:
+                            _render_arbitrage_card(opp)
         st.divider()
         _cumulative_chart(data["graded_arbitrage"], "Arbitrage")
 
@@ -795,19 +828,28 @@ elif st.session_state.view_mode == "middling":
             st.success("No middle opportunities right now.")
             st.caption("Rechecked every ~15 minutes as odds move.")
         else:
-            mid_book_fields = ("over_sportsbook", "under_sportsbook")
-            mid_all_books = _books_in_opportunities(data["active_middles"], mid_book_fields)
-            mid_selected_books = render_sportsbook_picker(mid_all_books, key_prefix="cust_mid")
-            mid_usable = _usable_with_books(data["active_middles"], mid_selected_books, mid_book_fields)
-            if not mid_usable:
-                st.warning("No middle opportunities usable with the sportsbooks selected above.")
+            mid_status = st.selectbox(
+                "Game status", ["Pregame", "Live", "All"], index=0, key="cust_mid_status",
+                help="Pregame: before first pitch/kickoff. Live: game already underway — "
+                     "prices move faster and can be less reliable.",
+            )
+            mid_status_filtered = _filter_by_game_status(data["active_middles"], mid_status)
+            if not mid_status_filtered:
+                st.info(f"No {mid_status.lower()} middle opportunities right now.")
             else:
-                if len(mid_usable) < len(data["active_middles"]):
-                    st.caption(f"{len(mid_usable)} of {len(data['active_middles'])} opportunities usable with your selected books.")
-                mid_cols = st.columns(2)
-                for i, opp in enumerate(mid_usable):
-                    with mid_cols[i % 2]:
-                        _render_middle_card(opp)
+                mid_book_fields = ("over_sportsbook", "under_sportsbook")
+                mid_all_books = _books_in_opportunities(mid_status_filtered, mid_book_fields)
+                mid_selected_books = render_sportsbook_picker(mid_all_books, key_prefix="cust_mid")
+                mid_usable = _usable_with_books(mid_status_filtered, mid_selected_books, mid_book_fields)
+                if not mid_usable:
+                    st.warning("No middle opportunities usable with the sportsbooks selected above.")
+                else:
+                    if len(mid_usable) < len(mid_status_filtered):
+                        st.caption(f"{len(mid_usable)} of {len(mid_status_filtered)} opportunities usable with your selected books.")
+                    mid_cols = st.columns(2)
+                    for i, opp in enumerate(mid_usable):
+                        with mid_cols[i % 2]:
+                            _render_middle_card(opp)
         st.divider()
         _cumulative_chart(data["graded_middles"], "Middling")
 

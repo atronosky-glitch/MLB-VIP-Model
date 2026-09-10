@@ -2683,6 +2683,30 @@ def format_event_start_local(event_start_time: str | None) -> str:
     return f"{local.strftime('%b')} {local.day}, {hour12}:{local.strftime('%M %p %Z')}"
 
 
+def is_event_live(event_start_time: str | None) -> bool:
+    """Whether an event has already started (its UTC ISO event_start_time
+    is at or before now) -- used to split arbitrage/middle opportunities
+    into "pregame" vs "live" (operator request 2026-09-10: exchange
+    venues in particular showed much wider, faster-moving prices once a
+    game is underway; the arb/middle math itself doesn't distinguish, so
+    the UI needs to).
+
+    Missing/unparseable timestamps return False (treated as pregame,
+    never as live) -- an opportunity whose game time we don't know
+    should stay visible in the default pregame view rather than silently
+    vanish because a live-only check couldn't classify it.
+    """
+    if not event_start_time:
+        return False
+    try:
+        dt = datetime.fromisoformat(event_start_time.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    return dt <= datetime.now(timezone.utc)
+
+
 def get_research_picks_today(conn: DB) -> list[dict]:
     """Get today's research-only recommendations (Eastern calendar day —
     see get_today_in_configured_timezone)."""
