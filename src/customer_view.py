@@ -30,60 +30,78 @@ st.set_page_config(page_title="VIP | Sharp Market Intelligence", page_icon="🎯
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 :root {
-  --ink:#f5f1e6; --muted:#9a9488; --line:#2c2a22; --panel:#141310;
-  --gold:#e8b923; --gold-soft:#caa23a; --win:#3ddc84; --loss:#ff5468; --ref:#b3a687;
+  --ink:#111827; --muted:#6b7280; --line:#e5e7eb; --panel:#f9fafb;
+  --accent:#111827; --accent-soft:#374151; --win:#16a34a; --loss:#dc2626; --ref:#9ca3af;
 }
-.stApp { background: radial-gradient(circle at 85% 0%, #211b0c 0, #0d0b07 38%, #080705 100%); color:var(--ink); }
-[data-testid="stHeader"] { background:rgba(8,7,5,.75); }
-h1,h2,h3 { font-family:'Space Grotesk',sans-serif !important; letter-spacing:-.045em; color:var(--ink) !important; }
-p,div,span,button { font-family:'DM Sans',sans-serif; }
+.stApp { background:#ffffff; color:var(--ink); }
+[data-testid="stHeader"] { background:rgba(255,255,255,.92); }
+h1,h2,h3 { font-family:'Space Grotesk',sans-serif !important; letter-spacing:-.02em; color:var(--ink) !important; }
+p,div,span,button { font-family:'Inter',sans-serif; }
 .topnav { display:flex; align-items:center; justify-content:space-between; padding:1.1rem 0; border-bottom:1px solid var(--line); flex-wrap:wrap; gap:.9rem; }
 .topnav-brand { display:flex; align-items:center; gap:.65rem; }
-.topnav-mark { display:inline-flex; align-items:center; justify-content:center; width:2.1rem; height:2.1rem; border-radius:8px; background:linear-gradient(135deg,var(--gold),#c9861f); color:#151006; font-weight:800; font-family:'Space Grotesk'; font-size:.85rem; }
+.topnav-mark { display:inline-flex; align-items:center; justify-content:center; width:2.1rem; height:2.1rem; border-radius:8px; background:var(--accent); color:#fff; font-weight:800; font-family:'Space Grotesk'; font-size:.85rem; }
 .topnav-word { color:var(--ink); font-weight:700; font-size:.95rem; letter-spacing:-.01em; }
 .topnav-links { display:flex; gap:1.7rem; }
 .topnav-links a { color:var(--muted); font-weight:700; font-size:.85rem; text-decoration:none; letter-spacing:.01em; }
-.hero { position:relative; padding:3rem 0 1.8rem; overflow:hidden; }
-.hero-watermark { position:absolute; right:-3rem; top:-3.5rem; font-size:24rem; font-weight:800; font-family:'Space Grotesk',sans-serif; color:var(--gold); opacity:.045; line-height:1; z-index:0; pointer-events:none; user-select:none; }
-.hero > *:not(.hero-watermark) { position:relative; z-index:1; }
-.eyebrow { color:var(--gold); font-weight:700; letter-spacing:.16em; font-size:.7rem; text-transform:uppercase; }
-.hero h1 { font-family:'Playfair Display',serif !important; font-style:italic; font-weight:700 !important; font-size:clamp(2.6rem,6.4vw,5.6rem); line-height:1.08; margin:.55rem 0 1.1rem; letter-spacing:-.01em !important; }
-.hero h1 em { color:var(--gold); font-style:italic; }
-.hero p { color:var(--muted); font-size:1.05rem; max-width:680px; line-height:1.65; }
-.pill { display:inline-block; padding:.42rem .72rem; border:1px solid var(--gold-soft); border-radius:999px; color:var(--gold); font-size:.72rem; font-weight:700; letter-spacing:.08em; }
-.pick { background:linear-gradient(135deg,#1c1810,#120f0a); border:1px solid var(--line); border-radius:20px; padding:1.15rem 1.25rem; margin:.65rem 0; box-shadow:0 16px 38px rgba(0,0,0,.3); }
-.pick.settled { border-color:#3a3320; }
-.pick.win { background:linear-gradient(135deg,#122a1c,#0d1d15); border-color:#2f9e72; }
-.pick.loss { background:linear-gradient(135deg,#2c151c,#1c1013); border-color:#c94b5c; }
-.pick.push, .pick.void { background:linear-gradient(135deg,#221f19,#161410); border-color:#5c5646; }
-.pick.locked { background:linear-gradient(135deg,#221c10,#15120b); border-color:#5c4c22; }
-.pick.research { background:#18150e; border-color:#5d4e2c; }
-.pick-title { font-family:'Space Grotesk'; font-size:1.18rem; font-weight:700; color:var(--ink); }
-.pick-meta { color:var(--muted); font-size:.88rem; margin-top:.4rem; }
-.edge { color:var(--gold); font-weight:700; }
-.result-win { color:var(--win); font-weight:800; letter-spacing:.04em; }
-.result-loss { color:var(--loss); font-weight:800; letter-spacing:.04em; }
-.unit-line { color:var(--ink); font-family:'Space Grotesk'; font-size:1rem; font-weight:700; margin-top:.55rem; }
-.gold { color:var(--gold); font-weight:700; }
+.hero { padding:2.4rem 0 1.6rem; }
+.eyebrow { color:var(--muted); font-weight:700; letter-spacing:.1em; font-size:.7rem; text-transform:uppercase; }
+.hero h1 { font-weight:700 !important; font-size:clamp(2rem,4vw,2.9rem); line-height:1.2; margin:.6rem 0 .9rem; letter-spacing:-.02em !important; }
+.hero p { color:var(--muted); font-size:1rem; max-width:680px; line-height:1.6; }
+.pill { display:inline-block; padding:.4rem .7rem; border:1px solid var(--line); border-radius:6px; color:var(--muted); font-size:.72rem; font-weight:600; letter-spacing:.03em; }
+.pick { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--line); border-radius:8px; padding:1.1rem 1.2rem; margin:.6rem 0; }
+.pick.settled { border-left-color:var(--line); }
+.pick.win { border-left-color:var(--win); }
+.pick.loss { border-left-color:var(--loss); }
+.pick.push, .pick.void { border-left-color:var(--ref); }
+.pick.locked { border-left-color:var(--accent); }
+.pick.research { border-left-color:var(--line); }
+.pick-title { font-family:'Space Grotesk'; font-size:1.1rem; font-weight:700; color:var(--ink); }
+.pick-meta { color:var(--muted); font-size:.87rem; margin-top:.35rem; }
+.edge { color:var(--ink); font-weight:700; }
+.result-win { color:var(--win); font-weight:700; }
+.result-loss { color:var(--loss); font-weight:700; }
+.unit-line { color:var(--ink); font-family:'Space Grotesk'; font-size:.98rem; font-weight:700; margin-top:.5rem; }
+.gold { color:var(--ink); font-weight:700; }
 .section-note { color:var(--muted); font-size:.9rem; line-height:1.5; }
-.lock-copy { color:#e2dbc8; font-family:'Space Grotesk'; font-weight:600; letter-spacing:.02em; }
-.feature { background:rgba(23,21,16,.72); border:1px solid var(--line); border-radius:16px; padding:1rem; min-height:120px; }
-.feature-title { color:var(--gold); font-weight:700; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase; }
-.results-panel { background:linear-gradient(135deg,#191509,#100d07); border:1px solid var(--line); border-radius:20px; padding:1.4rem 1.5rem 1.1rem; margin:.8rem 0 1.2rem; }
+.lock-copy { color:var(--ink); font-family:'Space Grotesk'; font-weight:600; letter-spacing:.01em; }
+.feature { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:1rem; min-height:120px; }
+.feature-title { color:var(--muted); font-weight:700; font-size:.8rem; letter-spacing:.05em; text-transform:uppercase; }
+.results-panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:1.3rem 1.4rem 1rem; margin:.8rem 0 1.2rem; }
 .hero-checklist { margin:.9rem 0 1.4rem; }
-.check-item { color:var(--ink); font-size:.98rem; margin:.45rem 0; display:flex; align-items:center; gap:.6rem; }
-.check-mark { display:inline-flex; align-items:center; justify-content:center; width:1.3rem; height:1.3rem; border-radius:50%; border:1px solid var(--gold-soft); color:var(--gold); font-size:.72rem; font-weight:800; flex:none; }
+.check-item { color:var(--ink); font-size:.96rem; margin:.4rem 0; display:flex; align-items:center; gap:.6rem; }
+.check-mark { display:inline-flex; align-items:center; justify-content:center; width:1.25rem; height:1.25rem; border-radius:4px; border:1px solid var(--accent); color:var(--accent); font-size:.7rem; font-weight:800; flex:none; }
 .hero-cta { margin:.3rem 0 1.4rem; display:flex; gap:.75rem; flex-wrap:wrap; }
-.btn-primary { background:var(--gold); color:#151006; font-weight:800; padding:.72rem 1.35rem; border-radius:10px; text-decoration:none; font-size:.92rem; display:inline-block; }
-.btn-secondary { background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:700; padding:.68rem 1.3rem; border-radius:10px; text-decoration:none; font-size:.92rem; display:inline-block; }
+.btn-primary { background:var(--accent); color:#fff; font-weight:700; padding:.68rem 1.3rem; border-radius:6px; text-decoration:none; font-size:.9rem; display:inline-block; }
+.btn-secondary { background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:600; padding:.64rem 1.25rem; border-radius:6px; text-decoration:none; font-size:.9rem; display:inline-block; }
 .footer-band { border-top:1px solid var(--line); padding:1.6rem 0 .4rem; margin-top:.6rem; }
-.footer-label { color:var(--muted); font-size:.7rem; letter-spacing:.14em; text-transform:uppercase; font-weight:700; }
-.footer-books { color:var(--ink); font-size:.95rem; margin-top:.5rem; letter-spacing:.01em; opacity:.85; }
-.results-eyebrow { color:var(--gold); font-weight:700; letter-spacing:.14em; font-size:.68rem; text-transform:uppercase; }
-.results-number { font-family:'Space Grotesk',sans-serif; font-size:3rem; font-weight:700; line-height:1.05; margin:.3rem 0 .2rem; }
+.footer-label { color:var(--muted); font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; font-weight:600; }
+.footer-books { color:var(--ink); font-size:.92rem; margin-top:.5rem; letter-spacing:0; opacity:.8; }
+.results-eyebrow { color:var(--muted); font-weight:700; letter-spacing:.1em; font-size:.68rem; text-transform:uppercase; }
+.results-number { font-family:'Space Grotesk',sans-serif; font-size:2.5rem; font-weight:700; line-height:1.05; margin:.3rem 0 .2rem; }
 .results-caption { color:var(--muted); font-size:.85rem; max-width:520px; line-height:1.5; }
+/* Streamlit's own theme (.streamlit/config.toml) is dark with a bright
+   lime primaryColor, shared with the admin dashboard -- this page forces
+   its own light theme instead, so every native widget that would
+   otherwise pick up the dark-theme defaults (bright lime accents, white
+   text meant for a dark background) needs an explicit override here. */
+[data-testid="stBaseButton-primary"] {
+  background-color:var(--accent) !important; border-color:var(--accent) !important; color:#fff !important;
+}
+[data-testid="stBaseButton-primary"]:hover {
+  background-color:var(--accent-soft) !important; border-color:var(--accent-soft) !important; color:#fff !important;
+}
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color:var(--ink) !important; }
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * { color:var(--muted) !important; }
+[data-testid="stAlertContentInfo"], [data-testid="stAlertContentSuccess"],
+[data-testid="stAlertContentWarning"], [data-testid="stAlertContentError"] { color:var(--ink) !important; }
+[data-testid="stExpander"] summary { color:var(--ink) !important; }
+[data-testid="stSliderThumbValue"], [data-testid="stTickBarMin"], [data-testid="stTickBarMax"] { color:var(--muted) !important; }
+div[data-baseweb="slider"] div[role="slider"] { background-color:var(--accent) !important; }
+div[data-testid="stSlider"] div[data-testid="stTickBar"] + div > div { background:var(--accent) !important; }
+label[data-baseweb="radio"] [aria-checked="true"] > div:first-child { border-color:var(--accent) !important; }
+label[data-baseweb="radio"] [aria-checked="true"] > div:first-child > div { background-color:var(--accent) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -462,7 +480,7 @@ def _cumulative_chart(rows: list[dict], label: str) -> None:
     df["Cumulative"] = df["Profit"].cumsum()
     df["Date"] = pd.to_datetime(df["Date"])
     total = df["Cumulative"].iloc[-1]
-    color = "#3ddc84" if total >= 0 else "#ff5468"
+    color = "#16a34a" if total >= 0 else "#dc2626"
     st.markdown(f"""
     <div class="results-panel">
       <div class="results-eyebrow">{label} Track Record</div>
@@ -534,10 +552,9 @@ st.markdown(f"""
   </div>
 </div>
 <div class="hero">
-  <div class="hero-watermark">VIP</div>
-  <div class="eyebrow">VIP · Sharp Market Intelligence · MLB · NFL · WNBA</div>
-  <h1>Stop guessing.<br><em>Find the number.</em></h1>
-  <p>Thousands of sportsbook prices are screened for fair value, market quality, and closing-line evidence. The model does not need a play every day.</p>
+  <div class="eyebrow">MLB · NFL · WNBA</div>
+  <h1>Multi-book odds analysis</h1>
+  <p>Every price is screened against fair value and market quality before it's shown. Every result — win or loss — is tracked and published in full.</p>
   <span class="pill">{today} · {'FULL ACCESS' if authorized else 'PUBLIC VIEW'}</span>
 </div>
 """, unsafe_allow_html=True)
@@ -644,7 +661,7 @@ elif st.session_state.view_mode == "ev":
 
             period_units = chart_df["Actual Units"].iloc[-1]
             positive = period_units >= 0
-            line_color = "#3ddc84" if positive else "#ff5468"
+            line_color = "#16a34a" if positive else "#dc2626"
 
             st.markdown(f"""
             <div class="results-panel">
@@ -660,13 +677,13 @@ elif st.session_state.view_mode == "ev":
                 color=line_color, opacity=0.16, interpolate="monotone",
             ).encode(
                 x=alt.X("Date:T", title=None,
-                        axis=alt.Axis(grid=False, labelColor="#9a9488", tickColor="#2c2a22", domainColor="#2c2a22")),
+                        axis=alt.Axis(grid=False, labelColor="#6b7280", tickColor="#e5e7eb", domainColor="#e5e7eb")),
                 y=alt.Y("Actual Units:Q", title="Cumulative units",
-                        axis=alt.Axis(grid=True, gridColor="#211d14", labelColor="#9a9488", titleColor="#9a9488")),
+                        axis=alt.Axis(grid=True, gridColor="#f0f1f3", labelColor="#6b7280", titleColor="#6b7280")),
                 tooltip=[alt.Tooltip("Date:T", title="Date"), alt.Tooltip("Actual Units:Q", format="+.2f")],
             )
             expected_line = alt.Chart(chart_df).mark_line(
-                color="#b3a687", strokeDash=[4, 3], strokeWidth=1.6, interpolate="monotone", opacity=0.85,
+                color="#9ca3af", strokeDash=[4, 3], strokeWidth=1.6, interpolate="monotone", opacity=0.85,
             ).encode(
                 x="Date:T",
                 y="Expected Units:Q",
