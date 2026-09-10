@@ -21,6 +21,13 @@ class TestSportsbookDisplay:
         """The odds API reports Caesars under the legacy 'williamhill' key."""
         assert sportsbook_display("williamhill") == "Caesars"
 
+    def test_williamhill_us_slug_displays_as_caesars(self):
+        """Regression (2026-09-09): production's actual sportsbook value is
+        'williamhill_us', not 'williamhill' -- confirmed live against
+        player_prop_odds. The bare 'williamhill' key alone missed this and
+        fell through to the generic fallback, showing 'Williamhill Us'."""
+        assert sportsbook_display("williamhill_us") == "Caesars"
+
     def test_unknown_slug_falls_back_to_title_cased_words(self):
         assert sportsbook_display("some_new_book") == "Some New Book"
 

@@ -102,6 +102,17 @@ def test_arbitrage_and_middle_cards_show_freshness():
     assert source.count('fresh = _freshness_label(opp.get("last_seen_at"))') == 2
 
 
+def test_arbitrage_and_middle_cards_show_game_start_time():
+    """2026-09-09 (operator request): both legs have to be placed before
+    kickoff, so each card shows when the game starts."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert "from database.db_manager import (" in source
+    assert "format_event_start_local" in source
+    assert 'game_time = format_event_start_local(opp.get("event_start_time"))' in source
+    assert source.count('game_time = format_event_start_local(opp.get("event_start_time"))') == 2
+    assert "Game starts: {game_time}" in source
+
+
 def test_landing_page_is_three_independent_mode_boxes():
     """2026-09-09 (operator request): the customer site opens on a picker
     -- EV Picks / Arbitrage / Middling -- each its own independent page,

@@ -18,6 +18,7 @@ _BRAND_TABLE: dict[str, tuple[str, str, str]] = {
     "betmgm":      ("BetMGM",       "MGM", "#c084fc"),
     "caesars":     ("Caesars",      "CZ",  "#d9c08a"),
     "williamhill": ("Caesars",      "CZ",  "#d9c08a"),
+    "williamhill_us": ("Caesars",   "CZ",  "#d9c08a"),
     "betrivers":   ("BetRivers",    "BR",  "#2dd4bf"),
     "pointsbet":   ("PointsBet",    "PB",  "#ff8a65"),
     "espnbet":     ("ESPN BET",     "ES",  "#7c9eff"),

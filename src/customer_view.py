@@ -18,6 +18,7 @@ import streamlit as st
 
 from database.db_manager import (
     get_connection, init_db, get_performance_baseline, get_today_in_configured_timezone,
+    format_event_start_local,
 )
 from src.grading import performance_summary, breakdown_by_field, assign_bucket, EV_BUCKETS
 from src.sportsbook_picker import render_sportsbook_picker
@@ -482,10 +483,12 @@ def _render_arbitrage_card(opp: dict) -> None:
         f" {opp['line']}" if opp.get("line") is not None else ""
     )
     fresh = _freshness_label(opp.get("last_seen_at"))
+    game_time = format_event_start_local(opp.get("event_start_time"))
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
       <div class="pick-meta">{opp.get('matchup', '')} · {pick_label} · <span class="edge">{fresh}</span></div>
+      <div class="pick-meta">Game starts: {game_time}</div>
       <div class="pick-meta">{opp['side_a']} · {opp['side_a_sportsbook']} {opp['side_a_price']:+d}
         ({opp['side_a_stake_pct']:.0%} stake)</div>
       <div class="pick-meta">{opp['side_b']} · {opp['side_b_sportsbook']} {opp['side_b_price']:+d}
@@ -497,10 +500,12 @@ def _render_arbitrage_card(opp: dict) -> None:
 
 def _render_middle_card(opp: dict) -> None:
     fresh = _freshness_label(opp.get("last_seen_at"))
+    game_time = format_event_start_local(opp.get("event_start_time"))
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])}</div>
       <div class="pick-meta">{opp.get('matchup', '')} · {_market_label(opp['market_type'])} · <span class="edge">{fresh}</span></div>
+      <div class="pick-meta">Game starts: {game_time}</div>
       <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
       <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
       <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>

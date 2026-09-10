@@ -2658,6 +2658,31 @@ def get_today_in_configured_timezone() -> str:
     return datetime.now(zoneinfo.ZoneInfo(tz_name)).date().isoformat()
 
 
+def format_event_start_local(event_start_time: str | None) -> str:
+    """Human-readable local game time for a UTC ISO event_start_time, e.g.
+    "Sep 9, 7:10 PM EDT" -- same configured timezone as
+    get_today_in_configured_timezone (MLB_SCHEDULER_TIMEZONE /
+    MLB_TIMEZONE, default America/New_York). Used to show when an
+    arbitrage/middle opportunity's game starts, since the guaranteed
+    profit only holds if both legs get placed before kickoff.
+    """
+    if not event_start_time:
+        return "Time TBD"
+    import zoneinfo
+    try:
+        dt = datetime.fromisoformat(event_start_time.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return "Time TBD"
+    tz_name = os.environ.get(
+        "MLB_SCHEDULER_TIMEZONE", os.environ.get("MLB_TIMEZONE", "America/New_York")
+    )
+    local = dt.astimezone(zoneinfo.ZoneInfo(tz_name))
+    hour12 = local.hour % 12 or 12
+    return f"{local.strftime('%b')} {local.day}, {hour12}:{local.strftime('%M %p %Z')}"
+
+
 def get_research_picks_today(conn: DB) -> list[dict]:
     """Get today's research-only recommendations (Eastern calendar day —
     see get_today_in_configured_timezone)."""

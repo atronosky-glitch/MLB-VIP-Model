@@ -2769,6 +2769,7 @@ with tabs[9]:
         try:
             from database.db_manager import (
                 get_active_arbitrage_opportunities, get_graded_arbitrage_opportunities,
+                format_event_start_local,
             )
             active_arb = get_active_arbitrage_opportunities(conn_arb)
             graded_arb = get_graded_arbitrage_opportunities(conn_arb)
@@ -2792,6 +2793,7 @@ with tabs[9]:
                     "League": r["league"],
                     "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
                     "Market": f"{_format_market_type(r['market_type'])}" + (f" {r['line']}" if r.get("line") is not None else ""),
+                    "Game Starts": format_event_start_local(r.get("event_start_time")),
                     "Side A": f"{r['side_a']} · {r['side_a_sportsbook']} {r['side_a_price']:+d}",
                     "Side B": f"{r['side_b']} · {r['side_b_sportsbook']} {r['side_b_price']:+d}",
                     "Stake Split": f"{r['side_a_stake_pct']:.0%} / {r['side_b_stake_pct']:.0%}",
@@ -2871,6 +2873,7 @@ with tabs[10]:
         try:
             from database.db_manager import (
                 get_active_middle_opportunities, get_graded_middle_opportunities,
+                format_event_start_local,
             )
             active_mid = get_active_middle_opportunities(conn_mid)
             graded_mid = get_graded_middle_opportunities(conn_mid)
@@ -2894,6 +2897,7 @@ with tabs[10]:
                     "League": r["league"],
                     "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
                     "Market": _format_market_type(r["market_type"]),
+                    "Game Starts": format_event_start_local(r.get("event_start_time")),
                     "Over": f"{r['over_line']} · {r['over_sportsbook']} {r['over_price']:+d}",
                     "Under": f"{r['under_line']} · {r['under_sportsbook']} {r['under_price']:+d}",
                     "Window": r["window_width"],

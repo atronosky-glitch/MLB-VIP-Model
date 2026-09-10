@@ -94,6 +94,51 @@ class TestGetTodayInConfiguredTimezone:
         assert result == "2026-09-05"
 
 
+class TestFormatEventStartLocal:
+    """2026-09-09 (operator request): arbitrage/middle opportunity cards
+    and tables show when the game starts, since both legs have to be
+    placed before kickoff for the guaranteed math to hold."""
+
+    def test_converts_utc_iso_to_configured_local_timezone(self, monkeypatch):
+        from database.db_manager import format_event_start_local
+
+        monkeypatch.setenv("MLB_SCHEDULER_TIMEZONE", "America/New_York")
+        # 2026-09-10 00:10 UTC is 2026-09-09 20:10 EDT.
+        assert format_event_start_local("2026-09-10T00:10:00Z") == "Sep 9, 8:10 PM EDT"
+
+    def test_accepts_offset_form_not_just_z_suffix(self, monkeypatch):
+        from database.db_manager import format_event_start_local
+
+        monkeypatch.setenv("MLB_SCHEDULER_TIMEZONE", "America/New_York")
+        assert format_event_start_local("2026-09-09T17:05:00+00:00") == "Sep 9, 1:05 PM EDT"
+
+    def test_respects_mlb_timezone_env_override(self, monkeypatch):
+        from database.db_manager import format_event_start_local
+
+        monkeypatch.delenv("MLB_SCHEDULER_TIMEZONE", raising=False)
+        monkeypatch.setenv("MLB_TIMEZONE", "UTC")
+        assert format_event_start_local("2026-09-10T00:10:00Z") == "Sep 10, 12:10 AM UTC"
+
+    def test_missing_timestamp_is_time_tbd_not_an_error(self):
+        from database.db_manager import format_event_start_local
+
+        assert format_event_start_local(None) == "Time TBD"
+        assert format_event_start_local("") == "Time TBD"
+
+    def test_unparseable_timestamp_is_time_tbd_not_an_error(self):
+        from database.db_manager import format_event_start_local
+
+        assert format_event_start_local("not-a-timestamp") == "Time TBD"
+
+    def test_midnight_hour_displays_as_twelve_not_zero(self, monkeypatch):
+        """Regression guard for the hour12 = local.hour % 12 or 12 logic --
+        naive '% 12' alone would render midnight as '0:xx AM'."""
+        from database.db_manager import format_event_start_local
+
+        monkeypatch.setenv("MLB_SCHEDULER_TIMEZONE", "UTC")
+        assert format_event_start_local("2026-09-10T00:00:00Z") == "Sep 10, 12:00 AM UTC"
+
+
 class TestGetResearchPicksTodayUsesConfiguredTimezone:
     def test_filters_by_the_configured_timezone_day_not_a_hardcoded_utc_day(self, db_conn):
         """Integration check: get_research_picks_today must actually use

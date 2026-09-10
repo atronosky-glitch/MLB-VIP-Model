@@ -55,6 +55,15 @@ def test_admin_dashboard_has_arbitrage_and_middling_tabs():
     assert "get_graded_middle_opportunities" in source
 
 
+def test_arbitrage_and_middling_tables_show_game_start_time():
+    """2026-09-09 (operator request): both legs have to be placed before
+    kickoff, so each table shows when the game starts."""
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    assert '"Game Starts": format_event_start_local(r.get("event_start_time"))' in source
+    assert source.count('"Game Starts": format_event_start_local(r.get("event_start_time"))') == 2
+    assert "format_event_start_local" in source
+
+
 def test_arbitrage_and_middling_tables_show_freshness():
     """2026-09-09 (operator request): live opportunities must read as
     just as reconfirmed/live as EV Picks' own freshness indicator."""
