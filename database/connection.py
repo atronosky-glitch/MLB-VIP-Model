@@ -52,15 +52,37 @@ def _convert_sql(sql: str, dialect: str) -> str:
     )
 
     # ── Timestamp functions ───────────────────────────────────────
-    # datetime('now')  → NOW()::text  (all columns are TEXT, not timestamptz)
-    sql = re.sub(r"datetime\('now'\)", "NOW()::text", sql)
-    # datetime('now', '+N hours') → (NOW() + interval 'N hours')::text
+    # datetime('now') / datetime('now', '+-N unit') → TEXT formatted to
+    # match Python's datetime.now(timezone.utc).isoformat() EXACTLY
+    # (e.g. "2026-09-10T00:42:26.473449+00:00") -- every captured_at/
+    # last_seen_at/detected_at-style column is populated that way from
+    # application code, and every "recent window" query in this codebase
+    # compares against one of these SQL-literal cutoffs as a plain TEXT
+    # string (comment above: "all columns are TEXT, not timestamptz").
+    #
+    # Real, serious bug this replaces (found live 2026-09-10, investigating
+    # an operator report of a stale sportsbook still showing as an active
+    # arbitrage/middle opportunity): the OLD conversion used Postgres's own
+    # ::text cast, e.g. "2026-09-10 03:41:52.89163+00" -- SPACE-separated,
+    # not "T"-separated, and a bare "+00" offset instead of "+00:00". Since
+    # 'T' (0x54) sorts ABOVE ' ' (0x20) in a plain string comparison, EVERY
+    # row captured earlier the same UTC day (T-format) compared as ">="
+    # any same-day cutoff (space-format) REGARDLESS OF THE ACTUAL TIME --
+    # confirmed live: a book with no real data in ~4 hours was still being
+    # treated as "within the last hour". This silently broke every
+    # freshness-window query using this pattern (src/arb_middle_scan.py's
+    # arbitrage/middle detection window chief among them) for the entire
+    # time this conversion has existed, active only across UTC midnight
+    # when the date prefix itself happened to differ.
+    _TS_FORMAT = "to_char((%s) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US') || '+00:00'"
+    sql = re.sub(r"datetime\('now'\)", f"({_TS_FORMAT % 'NOW()'})", sql)
+
     def _replace_datetime_offset(m):
         inner = m.group(0)
         # Extract the offset part: datetime('now', '+3 hours') → '+3 hours'
         prefix = "datetime('now', "
         offset = inner[len(prefix):-1]  # strip prefix and trailing )
-        return f"(NOW() + interval {offset})::text"
+        return f"({_TS_FORMAT % f'NOW() + interval {offset}'})"
 
     sql = re.sub(
         r"datetime\('now',\s*'[+-]?\d+\s+(second|minute|hour|day|month|year)s?'\)",

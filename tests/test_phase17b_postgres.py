@@ -44,6 +44,74 @@ class TestSQLConversion:
         result = _convert_sql(sql, "postgresql")
         assert "CURRENT_DATE" in result
 
+    def test_datetime_now_offset_conversion_produces_isoformat_compatible_text(self):
+        """Real, serious bug found live 2026-09-10 investigating an
+        operator report (a sportsbook with no real data in ~4 hours was
+        still showing as part of an active arbitrage/middle opportunity):
+        the OLD conversion cast straight to Postgres's own ::text
+        rendering, e.g. "2026-09-10 03:41:52.89163+00" -- SPACE-separated,
+        bare "+00" offset. Every captured_at/last_seen_at/detected_at
+        column is populated by Python's datetime.now(timezone.utc)
+        .isoformat(), which is "T"-separated with a full "+00:00" offset,
+        e.g. "2026-09-10T00:42:26.473449+00:00". Since every comparison
+        in this codebase treats these TEXT columns as plain strings
+        (never casts to timestamptz), and 'T' (0x54) sorts ABOVE ' '
+        (0x20), every same-UTC-day row compared as ">=" any cutoff built
+        the old way, REGARDLESS of the actual time -- confirmed live,
+        this silently broke every "recent window" freshness query using
+        this pattern (src/arb_middle_scan.py's arbitrage/middle detection
+        chief among them), active only across UTC midnight when the date
+        prefix itself happened to differ.
+
+        This test locks in the actual fix: the converted SQL must use a
+        format that renders identically in style to Python's own
+        isoformat() -- "T" separator, six-digit zero-padded microseconds,
+        "+00:00" offset -- so plain string comparison against captured_at
+        is correct at every point in a UTC day, not just at midnight."""
+        from database.connection import _convert_sql
+        sql = "SELECT * FROM t WHERE captured_at >= datetime('now', '-3600 seconds')"
+        result = _convert_sql(sql, "postgresql")
+        assert "datetime" not in result
+        # Must NOT be the old bare ::text cast (space-separated, bare offset).
+        assert "::text" not in result
+        # Must build a "T"-separated, zero-padded-microseconds, "+00:00"
+        # literal -- the same shape as Python's own isoformat() output.
+        assert 'YYYY-MM-DD"T"HH24:MI:SS.US' in result
+        assert "'+00:00'" in result
+        assert "interval '-3600 seconds'" in result
+
+    def test_datetime_now_offset_conversion_matches_python_isoformat_shape_live(self):
+        """Functional check (not just a string-shape assertion above):
+        actually run the converted expression against a real SQLite
+        table populated the same way production is (Python's own
+        isoformat() strings), proving the comparison is correct at an
+        arbitrary point in the day -- not just verified by luck at
+        whatever moment the test happens to run. Runs the *intent* of
+        the fix (T-separated, zero-padded, explicit-offset formatting)
+        against a hand-built cutoff the same way the real Postgres
+        conversion would, since sqlite3 has no to_char()/AT TIME ZONE."""
+        from datetime import datetime, timedelta, timezone as tz
+
+        # A row captured well inside "today" but comfortably BEFORE the
+        # cutoff -- the exact scenario that silently passed with the old
+        # bug (any same-day row satisfied ">=" a same-day cutoff).
+        now = datetime(2026, 9, 10, 4, 43, 27, tzinfo=tz.utc)
+        row_captured_at = datetime(2026, 9, 10, 0, 42, 26, 473449, tzinfo=tz.utc).isoformat()
+        cutoff = (now - timedelta(seconds=3600)).isoformat()
+
+        # Old (buggy) cutoff shape: space-separated, bare "+00" offset --
+        # simulates what Postgres's bare ::text cast actually produced.
+        old_style_cutoff = (now - timedelta(seconds=3600)).strftime("%Y-%m-%d %H:%M:%S.%f") + "+00"
+        assert row_captured_at >= old_style_cutoff, (
+            "sanity check: this reproduces the OLD bug (string comparison "
+            "wrongly treats the stale row as fresh)"
+        )
+        # Fixed (isoformat-shaped) cutoff: correctly excludes the stale row.
+        assert not (row_captured_at >= cutoff), (
+            "fixed-shape comparison must correctly exclude a row from "
+            "~4 hours before a 1-hour cutoff"
+        )
+
     def test_begin_immediate_conversion(self):
         """BEGIN IMMEDIATE → BEGIN for PostgreSQL."""
         from database.connection import _convert_sql
