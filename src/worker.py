@@ -392,9 +392,15 @@ def _run_arb_middle_scan(conn: DB, config) -> dict:
 
     Also the delivery point for real-time Discord alerts (2026-09-10):
     whatever's newly active this pass — arbitrage, middles, and any EV
-    picks not yet alerted — gets pushed to config.discord_webhook_urls
-    right here, since this job already runs on a tight interval
-    (ARB_MIDDLE_SCAN_INTERVAL_MINUTES) across every league."""
+    picks not yet alerted — gets pushed to Discord right here, since
+    this job already runs on a tight interval
+    (ARB_MIDDLE_SCAN_INTERVAL_MINUTES) across every league. EV picks and
+    arbitrage/middles go to separate webhook channels (2026-09-10) —
+    config.discord_webhook_urls for EV picks,
+    config.discord_webhook_urls_arb_middle for arbitrage/middles — with
+    no fallback between them, so leaving one unconfigured just means
+    that category doesn't alert yet, not that it spills into the other
+    channel."""
     from src.arb_middle_scan import run_scan
 
     results: dict[str, dict] = {}
@@ -405,7 +411,10 @@ def _run_arb_middle_scan(conn: DB, config) -> dict:
             logger.exception("[%s] Arbitrage/middle scan failed", league)
             results[league] = {"error": True}
 
-    if config is not None and getattr(config, "discord_webhook_urls", ""):
+    if config is not None and (
+        getattr(config, "discord_webhook_urls", "")
+        or getattr(config, "discord_webhook_urls_arb_middle", "")
+    ):
         _deliver_new_opportunity_alerts(conn, config, results)
 
     return {"status": "success", "results": results}
@@ -419,33 +428,36 @@ def _deliver_new_opportunity_alerts(conn: DB, config, results: dict[str, dict]) 
     picks are dedup'd so they simply retry; arbitrage/middles are
     dedup'd by their own still-ACTIVE status, so a missed one is silent
     unless it re-expires before the retry)."""
-    urls = [u.strip() for u in config.discord_webhook_urls.split(",") if u.strip()]
-    if not urls:
-        return
+    ev_urls = [u.strip() for u in config.discord_webhook_urls.split(",") if u.strip()]
+    arb_mid_urls = [
+        u.strip() for u in getattr(config, "discord_webhook_urls_arb_middle", "").split(",") if u.strip()
+    ]
 
-    from src.discord_delivery import (
-        deliver_arbitrage_alerts, deliver_middle_alerts, deliver_new_recommendation_alerts,
-    )
+    if arb_mid_urls:
+        from src.discord_delivery import deliver_arbitrage_alerts, deliver_middle_alerts
 
-    for league, result in results.items():
+        for league, result in results.items():
+            try:
+                new_arbs = result.get("new_arbitrage") or []
+                if new_arbs:
+                    deliver_arbitrage_alerts(new_arbs, arb_mid_urls)
+                new_mids = result.get("new_middles") or []
+                if new_mids:
+                    deliver_middle_alerts(new_mids, arb_mid_urls)
+            except Exception:
+                logger.exception("[%s] Discord opportunity alert delivery failed", league)
+
+    if ev_urls:
+        from src.discord_delivery import deliver_new_recommendation_alerts
+
         try:
-            new_arbs = result.get("new_arbitrage") or []
-            if new_arbs:
-                deliver_arbitrage_alerts(new_arbs, urls)
-            new_mids = result.get("new_middles") or []
-            if new_mids:
-                deliver_middle_alerts(new_mids, urls)
+            deliver_new_recommendation_alerts(
+                config.database_path, ev_urls,
+                min_confidence=config.min_confidence_score,
+                min_ev_pct=config.min_ev_pct,
+            )
         except Exception:
-            logger.exception("[%s] Discord opportunity alert delivery failed", league)
-
-    try:
-        deliver_new_recommendation_alerts(
-            config.database_path, urls,
-            min_confidence=config.min_confidence_score,
-            min_ev_pct=config.min_ev_pct,
-        )
-    except Exception:
-        logger.exception("Discord new-EV-pick alert delivery failed")
+            logger.exception("Discord new-EV-pick alert delivery failed")
 
 
 def _run_grading(conn: DB, config) -> dict:
