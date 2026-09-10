@@ -1063,6 +1063,23 @@ def init_db(db_path: str | None = None) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_league ON middle_opportunities(league)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_detected ON middle_opportunities(detected_at)")
 
+    # Discord alert dedup (2026-09-10). historical_recommendations rows are
+    # frozen at creation (never re-evaluated), so "have I already alerted
+    # this one" needs an explicit record here. Arbitrage/middle
+    # opportunities deliberately do NOT use this table -- their own
+    # ACTIVE/EXPIRED status already answers "is this new" (see the
+    # new_ids return value of sync_arbitrage_opportunities/
+    # sync_middle_opportunities), which also correctly re-alerts an
+    # opportunity that expired and later reappeared.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS discord_alerts_sent (
+            alert_key  TEXT NOT NULL,
+            alert_type TEXT NOT NULL DEFAULT 'ev_pick',
+            sent_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (alert_type, alert_key)
+        )
+    """)
+
     # Multi-league support: league/sport tags on every remaining table that
     # carries per-event or per-recommendation data, so results, settlement,
     # closing-line, and lifecycle records can be filtered/reported per
@@ -2361,11 +2378,25 @@ def sync_arbitrage_opportunities(
     conn: DB, league: str, opportunities: list[dict], scan_run_id: str | None = None,
 ) -> dict:
     """Upsert this scan's detected arbitrage opportunities and expire any
-    previously-ACTIVE one for this league not found again this pass."""
+    previously-ACTIVE one for this league not found again this pass.
+
+    Returns "new_ids": opportunity_ids ACTIVE after this sync that were
+    NOT ACTIVE before it -- brand new, or one that had EXPIRED and just
+    reappeared. Also stamps opp["opportunity_id"] onto each passed-in
+    dict so a caller (src/arb_middle_scan.py) can filter its own opps
+    list down to just the new ones without re-deriving the ID format.
+    """
+    previously_active = {
+        r[0] for r in conn.execute(
+            "SELECT opportunity_id FROM arbitrage_opportunities WHERE league = ? AND status = 'ACTIVE'",
+            (league,),
+        ).fetchall()
+    }
     now = datetime.now(timezone.utc).isoformat()
     current_ids: list[str] = []
     for opp in opportunities:
         opp_id = opp["group_key"]
+        opp["opportunity_id"] = opp_id
         current_ids.append(opp_id)
         conn.execute("""
             INSERT INTO arbitrage_opportunities (
@@ -2408,13 +2439,21 @@ def sync_arbitrage_opportunities(
             (league,),
         )
     conn.commit()
-    return {"active": len(current_ids)}
+    new_ids = [i for i in current_ids if i not in previously_active]
+    return {"active": len(current_ids), "new_ids": new_ids}
 
 
 def sync_middle_opportunities(
     conn: DB, league: str, opportunities: list[dict], scan_run_id: str | None = None,
 ) -> dict:
-    """Same sync pattern as sync_arbitrage_opportunities, for middles."""
+    """Same sync pattern as sync_arbitrage_opportunities, for middles --
+    see its docstring for what "new_ids" means and why."""
+    previously_active = {
+        r[0] for r in conn.execute(
+            "SELECT opportunity_id FROM middle_opportunities WHERE league = ? AND status = 'ACTIVE'",
+            (league,),
+        ).fetchall()
+    }
     now = datetime.now(timezone.utc).isoformat()
     current_ids: list[str] = []
     for opp in opportunities:
@@ -2422,6 +2461,7 @@ def sync_middle_opportunities(
             opp.get("event_id"), opp.get("player_id"), opp.get("market_type"),
             opp["over_line"], opp["under_line"],
         ))
+        opp["opportunity_id"] = opp_id
         current_ids.append(opp_id)
         conn.execute("""
             INSERT INTO middle_opportunities (
@@ -2466,7 +2506,41 @@ def sync_middle_opportunities(
             (league,),
         )
     conn.commit()
-    return {"active": len(current_ids)}
+    new_ids = [i for i in current_ids if i not in previously_active]
+    return {"active": len(current_ids), "new_ids": new_ids}
+
+
+def get_unalerted_recommendation_ids(conn: DB, recommendation_ids: list[str]) -> list[str]:
+    """Which of these recommendation_ids have never been pushed to
+    Discord -- see discord_alerts_sent's docstring for why EV picks
+    need this explicit record while arbitrage/middle opportunities
+    don't. Order of the input is preserved in the result."""
+    if not recommendation_ids:
+        return []
+    placeholders = ",".join("?" * len(recommendation_ids))
+    rows = conn.execute(
+        f"""SELECT alert_key FROM discord_alerts_sent
+            WHERE alert_type = 'ev_pick' AND alert_key IN ({placeholders})""",
+        tuple(recommendation_ids),
+    ).fetchall()
+    already_alerted = {r[0] for r in rows}
+    return [rid for rid in recommendation_ids if rid not in already_alerted]
+
+
+def mark_recommendations_alerted(conn: DB, recommendation_ids: list[str]) -> None:
+    """Record that these recommendation_ids have been pushed to Discord,
+    so a later scan's deliver_new_recommendation_alerts call skips them."""
+    if not recommendation_ids:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    for rid in recommendation_ids:
+        conn.execute(
+            """INSERT INTO discord_alerts_sent (alert_key, alert_type, sent_at)
+               VALUES (?, 'ev_pick', ?)
+               ON CONFLICT (alert_type, alert_key) DO NOTHING""",
+            (rid, now),
+        )
+    conn.commit()
 
 
 def get_active_arbitrage_opportunities(conn: DB, league: str | None = None) -> list[dict]:

@@ -92,9 +92,20 @@ def run_scan(conn, league: str = "MLB", freshness_seconds: int = DEFAULT_FRESHNE
     arb_grade = grade_arbitrage_opportunities(conn)
     mid_grade = grade_middle_opportunities(conn)
 
+    # sync_*_opportunities stamps opportunity_id onto each opp dict and
+    # reports which ones are new this pass -- filter down to those so a
+    # caller (src/worker.py) can alert only what just appeared, not
+    # everything still active from a prior scan.
+    new_arb_ids = set(arb_sync.get("new_ids", []))
+    new_mid_ids = set(mid_sync.get("new_ids", []))
+    new_arbitrage = [o for o in arb_opps if o.get("opportunity_id") in new_arb_ids]
+    new_middles = [o for o in mid_opps if o.get("opportunity_id") in new_mid_ids]
+
     return {
         "league": league,
         "rows_examined": len(rows),
         "arbitrage": {"detected": len(arb_opps), **arb_sync, "grading": arb_grade},
         "middles": {"detected": len(mid_opps), **mid_sync, "grading": mid_grade},
+        "new_arbitrage": new_arbitrage,
+        "new_middles": new_middles,
     }

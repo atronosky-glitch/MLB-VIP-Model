@@ -80,6 +80,24 @@ class TestRunScan:
         assert result["rows_examined"] == 0
         assert result["arbitrage"]["detected"] == 0
 
+    def test_first_scan_reports_the_opportunity_as_new(self, db_conn):
+        _insert_odds_row(db_conn, sportsbook="BookA", side="OVER", price=110, decimal_odds=2.10, odd_id="o1")
+        _insert_odds_row(db_conn, sportsbook="BookB", side="UNDER", price=130, decimal_odds=2.30, odd_id="o2")
+
+        result = run_scan(db_conn, league="MLB", freshness_seconds=10_000_000)
+
+        assert len(result["new_arbitrage"]) == 1
+        assert result["new_arbitrage"][0]["player_name"] == "Test Pitcher"
+
+    def test_rescan_of_the_same_opportunity_is_not_new(self, db_conn):
+        _insert_odds_row(db_conn, sportsbook="BookA", side="OVER", price=110, decimal_odds=2.10, odd_id="o1")
+        _insert_odds_row(db_conn, sportsbook="BookB", side="UNDER", price=130, decimal_odds=2.30, odd_id="o2")
+
+        run_scan(db_conn, league="MLB", freshness_seconds=10_000_000)
+        result = run_scan(db_conn, league="MLB", freshness_seconds=10_000_000)
+
+        assert result["new_arbitrage"] == []
+
 
 class TestWorkerWiring:
     def test_arb_middle_scan_registered_in_dispatch(self):
@@ -104,3 +122,63 @@ class TestWorkerWiring:
         assert result["results"]["MLB"]["arbitrage"]["detected"] == 0
         assert result["results"]["NFL"] == {"error": True}
         assert result["results"]["WNBA"]["arbitrage"]["detected"] == 0
+
+    def test_no_discord_delivery_without_webhooks_configured(self, db_conn):
+        class FakeConfig:
+            discord_webhook_urls = ""
+
+        def fake_run_scan(conn, league="MLB", **kwargs):
+            return {"league": league, "rows_examined": 0,
+                    "arbitrage": {"detected": 0}, "middles": {"detected": 0},
+                    "new_arbitrage": [], "new_middles": []}
+
+        with patch("src.arb_middle_scan.run_scan", side_effect=fake_run_scan), \
+             patch("src.worker._deliver_new_opportunity_alerts") as mock_deliver:
+            worker._run_arb_middle_scan(db_conn, config=FakeConfig())
+
+        mock_deliver.assert_not_called()
+
+    def test_new_opportunities_are_delivered_to_discord_when_configured(self, db_conn):
+        class FakeConfig:
+            discord_webhook_urls = "https://discord.com/api/webhooks/test"
+            database_path = "unused"
+            min_confidence_score = 40.0
+            min_ev_pct = 2.0
+
+        new_arb = [{"player_name": "Test Pitcher"}]
+
+        def fake_run_scan(conn, league="MLB", **kwargs):
+            return {"league": league, "rows_examined": 0,
+                    "arbitrage": {"detected": 1}, "middles": {"detected": 0},
+                    "new_arbitrage": new_arb if league == "MLB" else [],
+                    "new_middles": []}
+
+        with patch("src.arb_middle_scan.run_scan", side_effect=fake_run_scan), \
+             patch("src.discord_delivery.deliver_arbitrage_alerts") as mock_arb, \
+             patch("src.discord_delivery.deliver_middle_alerts") as mock_mid, \
+             patch("src.discord_delivery.deliver_new_recommendation_alerts") as mock_ev:
+            worker._run_arb_middle_scan(db_conn, config=FakeConfig())
+
+        mock_arb.assert_called_once_with(new_arb, ["https://discord.com/api/webhooks/test"])
+        mock_mid.assert_not_called()
+        mock_ev.assert_called_once()
+
+    def test_discord_delivery_failure_does_not_fail_the_scan_job(self, db_conn):
+        class FakeConfig:
+            discord_webhook_urls = "https://discord.com/api/webhooks/test"
+            database_path = "unused"
+            min_confidence_score = 40.0
+            min_ev_pct = 2.0
+
+        def fake_run_scan(conn, league="MLB", **kwargs):
+            return {"league": league, "rows_examined": 0,
+                    "arbitrage": {"detected": 0}, "middles": {"detected": 0},
+                    "new_arbitrage": [{"player_name": "Boom"}] if league == "MLB" else [],
+                    "new_middles": []}
+
+        with patch("src.arb_middle_scan.run_scan", side_effect=fake_run_scan), \
+             patch("src.discord_delivery.deliver_arbitrage_alerts", side_effect=RuntimeError("boom")), \
+             patch("src.discord_delivery.deliver_new_recommendation_alerts"):
+            result = worker._run_arb_middle_scan(db_conn, config=FakeConfig())
+
+        assert result["status"] == "success"

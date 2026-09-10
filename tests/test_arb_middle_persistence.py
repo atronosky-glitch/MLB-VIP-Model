@@ -53,6 +53,26 @@ class TestSyncArbitrageOpportunities:
         assert len(active) == 1
         assert active[0]["guaranteed_roi_pct"] == 6.0
 
+    def test_first_sync_reports_it_as_new(self, db_conn):
+        result = sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp()])
+        assert result["new_ids"] == ["E1|P1|k|6.5"]
+
+    def test_resync_of_a_still_active_opportunity_is_not_new(self, db_conn):
+        sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp(roi=8.5)])
+        result = sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp(roi=6.0)])
+        assert result["new_ids"] == []
+
+    def test_stamps_opportunity_id_onto_the_passed_in_dict(self, db_conn):
+        opp = _arb_opp()
+        sync_arbitrage_opportunities(db_conn, "MLB", [opp])
+        assert opp["opportunity_id"] == "E1|P1|k|6.5"
+
+    def test_an_expired_opportunity_that_reappears_is_new_again(self, db_conn):
+        sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp()])
+        sync_arbitrage_opportunities(db_conn, "MLB", [])  # expires it
+        result = sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp()])  # reappears
+        assert result["new_ids"] == ["E1|P1|k|6.5"]
+
     def test_opportunity_missing_from_a_later_sync_is_expired(self, db_conn):
         sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp()])
         sync_arbitrage_opportunities(db_conn, "MLB", [])  # price moved, no longer arbitrage
@@ -83,6 +103,20 @@ class TestSyncMiddleOpportunities:
         sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
         sync_middle_opportunities(db_conn, "MLB", [])
         assert get_active_middle_opportunities(db_conn, "MLB") == []
+
+    def test_first_sync_reports_it_as_new(self, db_conn):
+        result = sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
+        assert result["new_ids"] == ["E1|P1|batting_totalBases_ou|1.5|2.5"]
+
+    def test_resync_of_a_still_active_opportunity_is_not_new(self, db_conn):
+        sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
+        result = sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
+        assert result["new_ids"] == []
+
+    def test_stamps_opportunity_id_onto_the_passed_in_dict(self, db_conn):
+        opp = _mid_opp()
+        sync_middle_opportunities(db_conn, "MLB", [opp])
+        assert opp["opportunity_id"] == "E1|P1|batting_totalBases_ou|1.5|2.5"
 
 
 class TestGradeArbitrageOpportunities:

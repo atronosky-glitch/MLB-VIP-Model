@@ -212,7 +212,70 @@ def format_for_slack(recs: list[dict[str, Any]], date_label: str = "") -> Format
     )
 
 
+def format_arbitrage_alert(opportunities: list[dict[str, Any]]) -> str:
+    """Format newly-detected arbitrage opportunities as a Discord alert."""
+    if not opportunities:
+        return ""
+    label = "Opportunity" if len(opportunities) == 1 else "Opportunities"
+    lines = [f"**\U0001F512 New Arbitrage {label} ({len(opportunities)})**", ""]
+    for o in opportunities:
+        lines.append(_arbitrage_line(o))
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def format_middle_alert(opportunities: list[dict[str, Any]]) -> str:
+    """Format newly-detected middle opportunities as a Discord alert."""
+    if not opportunities:
+        return ""
+    label = "Opportunity" if len(opportunities) == 1 else "Opportunities"
+    lines = [f"**\U0001F3AF New Middle {label} ({len(opportunities)})**", ""]
+    for o in opportunities:
+        lines.append(_middle_line(o))
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 # ── Helpers ────────────────────────────────────────────────────────
+
+def _american(price: Any) -> str:
+    """Format a price as an American-odds string, or '?' if missing."""
+    if price is None:
+        return "?"
+    return f"+{price}" if price > 0 else str(price)
+
+
+def _arbitrage_line(o: dict[str, Any]) -> str:
+    player = o.get("player_name") or "?"
+    market = (o.get("market_type") or "?").replace("_", " ").title()
+    matchup = o.get("matchup")
+    roi = o.get("guaranteed_roi_pct")
+    roi_str = f"{roi:+.2f}%" if roi is not None else "?"
+    header = f"**{player}** — {market}" + (f" ({matchup})" if matchup else "")
+    return (
+        f"{header}\n"
+        f"  {o.get('side_a', '?')} {_american(o.get('side_a_price'))} @ **{o.get('side_a_sportsbook', '?')}**"
+        f"  vs  {o.get('side_b', '?')} {_american(o.get('side_b_price'))} @ **{o.get('side_b_sportsbook', '?')}**\n"
+        f"  Guaranteed ROI: {roi_str}"
+    )
+
+
+def _middle_line(o: dict[str, Any]) -> str:
+    player = o.get("player_name") or "?"
+    market = (o.get("market_type") or "?").replace("_", " ").title()
+    matchup = o.get("matchup")
+    best = o.get("best_case_roi_pct")
+    worst = o.get("worst_case_roi_pct")
+    best_str = f"{best:+.2f}%" if best is not None else "?"
+    worst_str = f"{worst:+.2f}%" if worst is not None else "?"
+    header = f"**{player}** — {market}" + (f" ({matchup})" if matchup else "")
+    return (
+        f"{header}\n"
+        f"  Over {o.get('over_line', '?')} @ **{o.get('over_sportsbook', '?')}** ({_american(o.get('over_price'))})"
+        f"  /  Under {o.get('under_line', '?')} @ **{o.get('under_sportsbook', '?')}** ({_american(o.get('under_price'))})\n"
+        f"  Best case: {best_str} | Worst case: {worst_str}"
+    )
+
 
 def _compact_line(rec: dict[str, Any]) -> str:
     """One-line summary for a recommendation."""

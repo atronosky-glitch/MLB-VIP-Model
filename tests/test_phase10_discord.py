@@ -166,6 +166,127 @@ class TestDiscordDelivery:
             result = _send_webhook_raw("https://test", {"content": "hi"})
             assert result is True
 
+class TestArbitrageAndMiddleAlerts:
+    def _opp(self, **overrides):
+        opp = {
+            "player_name": "Test Pitcher", "market_type": "pitching_strikeouts_ou",
+            "matchup": "Away @ Home",
+            "side_a": "OVER", "side_a_price": 110, "side_a_sportsbook": "BookA",
+            "side_b": "UNDER", "side_b_price": 130, "side_b_sportsbook": "BookB",
+            "guaranteed_roi_pct": 8.5,
+        }
+        opp.update(overrides)
+        return opp
+
+    def test_arbitrage_alert_no_webhooks(self):
+        from src.discord_delivery import deliver_arbitrage_alerts
+        result = deliver_arbitrage_alerts([self._opp()], [])
+        assert result["sent"] == 0
+
+    def test_arbitrage_alert_no_opportunities(self):
+        from src.discord_delivery import deliver_arbitrage_alerts
+        result = deliver_arbitrage_alerts([], ["https://discord.com/api/webhooks/test"])
+        assert result["sent"] == 0
+
+    def test_arbitrage_alert_sends_and_includes_player(self):
+        from src.discord_delivery import deliver_arbitrage_alerts
+        with patch("src.discord_delivery._send_webhook_raw", return_value=True) as mock:
+            result = deliver_arbitrage_alerts(
+                [self._opp()], ["https://discord.com/api/webhooks/test"]
+            )
+            assert result["sent"] == 1
+            payload = mock.call_args[0][1]
+            assert "Test Pitcher" in payload["content"]
+
+    def test_middle_alert_sends(self):
+        from src.discord_delivery import deliver_middle_alerts
+        opp = {
+            "player_name": "Test Batter", "market_type": "batting_totalBases_ou",
+            "matchup": "Away @ Home",
+            "over_line": 1.5, "over_sportsbook": "BookA", "over_price": -110,
+            "under_line": 2.5, "under_sportsbook": "BookB", "under_price": -110,
+            "worst_case_roi_pct": -2.0, "best_case_roi_pct": 90.0,
+        }
+        with patch("src.discord_delivery._send_webhook_raw", return_value=True) as mock:
+            result = deliver_middle_alerts([opp], ["https://discord.com/api/webhooks/test"])
+            assert result["sent"] == 1
+            payload = mock.call_args[0][1]
+            assert "Test Batter" in payload["content"]
+
+    def test_middle_alert_no_webhooks(self):
+        from src.discord_delivery import deliver_middle_alerts
+        result = deliver_middle_alerts([{"player_name": "x"}], [])
+        assert result["sent"] == 0
+
+
+class TestNewRecommendationAlerts:
+    def _make_full_db(self, tmp_path: Path) -> Path:
+        from database.db_manager import init_db
+
+        db_path = tmp_path / "full.db"
+        init_db(str(db_path))
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            INSERT INTO historical_recommendations (
+                recommendation_id, fingerprint, event_id, player_id, player_name,
+                market_type, market_form, period, line, side, sportsbook,
+                offered_american_odds, offered_decimal_odds, offered_implied_prob,
+                ev_pct, rec_status, rec_eligible, scan_timestamp
+            ) VALUES (
+                'rec-1', 'fp-1', 'E1', 'P1', 'Judge',
+                'strikeouts', 'ou', 'full_game', 6.5, 'OVER', 'DK',
+                -110, 1.909, 0.524,
+                5.0, 'BET', 1, '2026-09-10T00:00:00+00:00'
+            )
+        """)
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_no_webhooks_configured(self, tmp_path):
+        from src.discord_delivery import deliver_new_recommendation_alerts
+        db_path = self._make_full_db(tmp_path)
+        result = deliver_new_recommendation_alerts(db_path, [])
+        assert result["sent"] == 0
+
+    def test_sends_a_new_pick(self, tmp_path):
+        from src.discord_delivery import deliver_new_recommendation_alerts
+        db_path = self._make_full_db(tmp_path)
+        with patch("src.discord_delivery._send_webhook_raw", return_value=True) as mock:
+            result = deliver_new_recommendation_alerts(
+                db_path, ["https://discord.com/api/webhooks/test"], min_confidence=0, min_ev_pct=0,
+            )
+            assert result["sent"] == 1
+            assert "Judge" in mock.call_args[0][1]["content"]
+
+    def test_does_not_resend_an_already_alerted_pick(self, tmp_path):
+        from src.discord_delivery import deliver_new_recommendation_alerts
+        db_path = self._make_full_db(tmp_path)
+        with patch("src.discord_delivery._send_webhook_raw", return_value=True):
+            deliver_new_recommendation_alerts(
+                db_path, ["https://discord.com/api/webhooks/test"], min_confidence=0, min_ev_pct=0,
+            )
+            second = deliver_new_recommendation_alerts(
+                db_path, ["https://discord.com/api/webhooks/test"], min_confidence=0, min_ev_pct=0,
+            )
+        assert second["sent"] == 0
+
+    def test_a_failed_send_is_not_marked_alerted_and_retries_next_time(self, tmp_path):
+        from src.discord_delivery import deliver_new_recommendation_alerts
+        db_path = self._make_full_db(tmp_path)
+        with patch("src.discord_delivery._send_webhook_raw", return_value=False):
+            first = deliver_new_recommendation_alerts(
+                db_path, ["https://discord.com/api/webhooks/test"], min_confidence=0, min_ev_pct=0,
+            )
+        assert first["errors"] >= 1
+        with patch("src.discord_delivery._send_webhook_raw", return_value=True):
+            second = deliver_new_recommendation_alerts(
+                db_path, ["https://discord.com/api/webhooks/test"], min_confidence=0, min_ev_pct=0,
+            )
+        assert second["sent"] == 1
+
+
+class TestDeliverNoRecsInDb:
     def test_deliver_no_recs_in_db(self, tmp_path):
         from src.discord_delivery import deliver_recommendations
         db_path = tmp_path / "empty.db"
