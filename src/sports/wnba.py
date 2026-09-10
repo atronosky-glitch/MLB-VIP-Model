@@ -219,7 +219,7 @@ def fetch_and_parse(
     returned (src/odds_api_credits.py) — optional so pure fetch+parse
     callers (e.g. tests) don't need a database at all.
     """
-    from src.odds_api_client import OddsAPIClient
+    from src.odds_api_client import OddsAPIClient, TRACKED_BOOKMAKERS
     from src.wnba_odds_parser import parse_wnba_game_odds
     from datetime import datetime, timedelta, timezone
 
@@ -233,7 +233,7 @@ def fetch_and_parse(
     # it's already been caught breaking something.
     now = datetime.now(timezone.utc)
     games, from_cache = client.get_odds(
-        sport_key=ODDS_API_SPORT_KEY, regions="us", markets="h2h,spreads,totals",
+        sport_key=ODDS_API_SPORT_KEY, bookmakers=TRACKED_BOOKMAKERS, markets="h2h,spreads,totals",
         commence_time_from=(now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         commence_time_to=(now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
@@ -287,10 +287,12 @@ def fetch_and_parse_props(
     identity-resolution caching and the props scheduler's own dedup
     check — unlike fetch_and_parse(), which is pure fetch+parse.
     """
+    from src.odds_api_client import TRACKED_BOOKMAKERS
     from src.odds_api_props_fetch import fetch_player_props
     from src.wnba_odds_parser import parse_wnba_player_props, PROP_MARKET_KEYS
 
     return fetch_player_props(
         conn, sport_key=ODDS_API_SPORT_KEY, prop_market_keys=PROP_MARKET_KEYS,
         parse_fn=parse_wnba_player_props, league="WNBA", event_id=event_id,
+        bookmakers=TRACKED_BOOKMAKERS,
     )

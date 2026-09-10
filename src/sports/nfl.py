@@ -247,7 +247,7 @@ def fetch_game_odds_via_odds_api(
     Same return shape as ``src.sports.mlb.fetch_game_odds_via_odds_api()``
     / ``src.sports.wnba.fetch_and_parse()``.
     """
-    from src.odds_api_client import OddsAPIClient
+    from src.odds_api_client import OddsAPIClient, TRACKED_BOOKMAKERS
     from src.nfl_odds_parser import parse_nfl_game_odds
     from src.odds_api_credits import credit_budget_check, GAME_ODDS_COST
     from datetime import datetime, timedelta, timezone
@@ -280,7 +280,7 @@ def fetch_game_odds_via_odds_api(
     # pick-generation run needs.
     now = datetime.now(timezone.utc)
     games, from_cache = client.get_odds(
-        sport_key=ODDS_API_SPORT_KEY, regions="us", markets="h2h,spreads,totals",
+        sport_key=ODDS_API_SPORT_KEY, bookmakers=TRACKED_BOOKMAKERS, markets="h2h,spreads,totals",
         commence_time_from=(now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         commence_time_to=(now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
@@ -325,10 +325,12 @@ def fetch_player_props_via_odds_api(
     (``fetch_props=True`` on ``run_scan()``/``PipelineConfig``), billed
     per event, gated by a real credit-budget check per event.
     """
+    from src.odds_api_client import TRACKED_BOOKMAKERS
     from src.odds_api_props_fetch import fetch_player_props
     from src.nfl_props_parser import parse_nfl_player_props, PROP_MARKET_KEYS
 
     return fetch_player_props(
         conn, sport_key=ODDS_API_SPORT_KEY, prop_market_keys=PROP_MARKET_KEYS,
         parse_fn=parse_nfl_player_props, league="NFL", event_id=event_id,
+        bookmakers=TRACKED_BOOKMAKERS,
     )

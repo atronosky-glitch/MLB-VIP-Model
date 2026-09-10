@@ -136,6 +136,107 @@ class TestFallbackCreditBudget:
         assert len(events) == 1
 
 
+class TestTrackedBookmakersRoster:
+    """2026-09-10 (operator request): replaced the old regions="us"
+    default -- which returned 5 offshore books (BetOnline, Bovada,
+    MyBookie, LowVig, BetUS) not legally available to most US customers
+    -- with an explicit bookmakers= roster naming exactly the books this
+    product wants, swapping in Hard Rock Bet and ESPN BET instead. Cost-
+    neutral: The Odds API prices bookmakers= in batches of up to 10 named
+    books per call, and TRACKED_BOOKMAKERS holds exactly 8."""
+
+    def test_tracked_bookmakers_excludes_offshore_books(self):
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+        books = TRACKED_BOOKMAKERS.split(",")
+        for offshore in ("bovada", "lowvig", "betus", "mybookieag", "betonlineag"):
+            assert offshore not in books
+
+    def test_tracked_bookmakers_includes_the_new_replacements(self):
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+        books = TRACKED_BOOKMAKERS.split(",")
+        assert "hardrockbet" in books
+        assert "espnbet" in books
+
+    def test_tracked_bookmakers_stays_within_the_free_batch_cap(self):
+        """Confirmed live 2026-09-10: up to 10 named books cost the same
+        as a single regions= unit; past 10 it doubles. Must never grow
+        past 10 without that being a deliberate, known cost decision."""
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+        assert len(TRACKED_BOOKMAKERS.split(",")) <= 10
+
+    def test_mlb_game_odds_fetch_uses_tracked_bookmakers_not_regions(self, db_conn):
+        from src.sports.mlb import fetch_game_odds_via_odds_api
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+        from src.odds_api_credits import record_credit_usage
+
+        record_credit_usage(db_conn, endpoint="odds", requests_used=100, requests_remaining=19900)
+        with mock.patch("src.odds_api_client.OddsAPIClient") as MockClient:
+            MockClient.return_value.get_odds.return_value = ([], False)
+            fetch_game_odds_via_odds_api(conn=db_conn)
+
+        _, kwargs = MockClient.return_value.get_odds.call_args
+        assert kwargs["bookmakers"] == TRACKED_BOOKMAKERS
+        assert "regions" not in kwargs
+
+    def test_nfl_game_odds_fetch_uses_tracked_bookmakers_not_regions(self, db_conn):
+        from src.sports.nfl import fetch_game_odds_via_odds_api
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+        from src.odds_api_credits import record_credit_usage
+
+        record_credit_usage(db_conn, endpoint="odds", requests_used=100, requests_remaining=19900)
+        with mock.patch("src.odds_api_client.OddsAPIClient") as MockClient:
+            MockClient.return_value.get_odds.return_value = ([], False)
+            fetch_game_odds_via_odds_api(conn=db_conn)
+
+        _, kwargs = MockClient.return_value.get_odds.call_args
+        assert kwargs["bookmakers"] == TRACKED_BOOKMAKERS
+        assert "regions" not in kwargs
+
+    def test_wnba_game_odds_fetch_uses_tracked_bookmakers_not_regions(self, db_conn):
+        from src.sports import wnba as wnba_mod
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+
+        with mock.patch("src.odds_api_client.OddsAPIClient") as MockClient:
+            MockClient.return_value.get_odds.return_value = ([], False)
+            wnba_mod.fetch_and_parse(conn=db_conn)
+
+        _, kwargs = MockClient.return_value.get_odds.call_args
+        assert kwargs["bookmakers"] == TRACKED_BOOKMAKERS
+        assert "regions" not in kwargs
+
+    def test_mlb_props_fetch_passes_tracked_bookmakers(self, tmp_path):
+        from database.db_manager import init_db, get_connection
+        from src.sports import mlb as mlb_mod
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+
+        db_path = tmp_path / "mlb_tracked_books.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+
+        with mock.patch("src.odds_api_props_fetch.fetch_player_props",
+                         return_value=([], [])) as mock_fetch:
+            mlb_mod.fetch_player_props_via_odds_api(conn)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["bookmakers"] == TRACKED_BOOKMAKERS
+
+    def test_wnba_props_fetch_passes_tracked_bookmakers(self, tmp_path):
+        from database.db_manager import init_db, get_connection
+        from src.sports import wnba as wnba_mod
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+
+        db_path = tmp_path / "wnba_tracked_books.db"
+        init_db(str(db_path))
+        conn = get_connection(str(db_path))
+
+        with mock.patch("src.odds_api_props_fetch.fetch_player_props",
+                         return_value=([], [])) as mock_fetch:
+            wnba_mod.fetch_and_parse_props(conn)
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["bookmakers"] == TRACKED_BOOKMAKERS
+
+
 class TestRunScanMLBFallback:
     """run_scan(league='MLB', ...) — only the SportsGameOdds call mocked
     to fail, the real scanner/analysis pipeline runs on top of it."""

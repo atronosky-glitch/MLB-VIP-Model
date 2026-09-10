@@ -43,6 +43,25 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.the-odds-api.com/v4"
 _ENV_VAR = "THE_ODDS_API_KEY"
 
+# Explicit book roster (operator request 2026-09-10): replaces the old
+# regions="us" default, which returned whatever The Odds API's "us"
+# region happened to include -- 5 offshore books (BetOnline, Bovada,
+# MyBookie, LowVig, BetUS) not legally available to most US customers,
+# alongside 6 regulated ones. Named explicitly instead so the roster is
+# a deliberate choice, not "whatever a region bucket contains": drops
+# the 5 offshore books, adds Hard Rock Bet and ESPN BET (both confirmed
+# live 2026-09-10 for baseball_mlb -- real, current odds).
+#
+# Cost-neutral by construction: The Odds API prices bookmakers= in
+# batches of up to 10 named books per call (confirmed live 2026-08-26
+# for a single book, reconfirmed 2026-09-10 for 13 -- 6 credits, i.e.
+# 2 batches, vs. 3 for <=10). This list holds 8, so it costs exactly the
+# same per call as the old regions="us" default did -- swapping within
+# the cap is free; only growing past 10 costs more.
+TRACKED_BOOKMAKERS = (
+    "williamhill_us,betrivers,betmgm,draftkings,fanduel,fanatics,hardrockbet,espnbet"
+)
+
 # Real bug, found 2026-08-22 while answering an operator question about
 # whether every run pulls fresh data: every call site that constructs
 # OddsAPIClient() with no max_cache_age gets one (None = the cache never

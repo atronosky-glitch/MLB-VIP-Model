@@ -226,6 +226,8 @@ class TestFetchPlayerPropsViaOddsAPIDelegation:
         assert kwargs["league"] == "MLB"
         assert kwargs["event_id"] == "evt-x"
         assert "batter_home_runs" in kwargs["prop_market_keys"]
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+        assert kwargs["bookmakers"] == TRACKED_BOOKMAKERS
 
     def test_nfl_delegates_with_correct_args(self, tmp_path):
         from database.db_manager import init_db, get_connection
@@ -244,6 +246,8 @@ class TestFetchPlayerPropsViaOddsAPIDelegation:
         assert kwargs["league"] == "NFL"
         assert kwargs["event_id"] is None
         assert "player_pass_yds" in kwargs["prop_market_keys"]
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+        assert kwargs["bookmakers"] == TRACKED_BOOKMAKERS
 
     def test_mlb_exchange_props_delegates_with_the_exchange_bookmaker_list(self, tmp_path):
         """2026-09-10: fetch_mlb_exchange_props() is a SEPARATE call from
