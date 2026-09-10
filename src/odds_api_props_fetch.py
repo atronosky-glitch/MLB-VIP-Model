@@ -12,15 +12,6 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
-# Exchange/prediction-market venues reachable through The Odds API's
-# bookmakers= param (confirmed live 2026-09-10 for baseball_mlb: kalshi,
-# novig, and polymarket return real h2h data; novig and prophetx also
-# carry player props; polymarket/kalshi did not for the specific event
-# sampled -- coverage may vary by event/day). ProphetX returned no data
-# for the specific slate sampled that day; kept in the list since a
-# quiet day isn't evidence the venue never covers MLB.
-EXCHANGE_BOOKMAKERS = ["kalshi", "novig", "polymarket", "prophetx"]
-
 
 def _parse_commence_time(raw: str | None) -> datetime | None:
     if not raw:
@@ -32,25 +23,16 @@ def _parse_commence_time(raw: str | None) -> datetime | None:
 
 
 def _recently_captured_prop_event_ids(
-    conn, event_ids: list[str], within_hours: float = 0.5,
-    sportsbooks: list[str] | None = None, exclude_sportsbooks: list[str] | None = None,
+    conn, event_ids: list[str], within_hours: float = 0.5, sportsbooks: list[str] | None = None,
 ) -> set[str]:
     """Event IDs that already have a player_prop_odds row captured within
     the last *within_hours* — used to avoid re-spending props credits on
     games a scheduler already covered this cycle.
 
     *sportsbooks*, when given, scopes this to only those books' own rows
-    — needed because a second fetch_player_props() call for a DIFFERENT
-    book set (e.g. exchange venues alongside the regular retail-book
-    fetch) must not be silently skipped just because the regular fetch
-    already wrote rows for that event under different books; each book
-    set needs its own independent "already captured" state.
-
-    *exclude_sportsbooks* is the mirror image, for the regular/default
-    fetch's own dedup: it must not treat a row written by the OTHER
-    (exchange-scoped) fetch as satisfying its own "already captured"
-    check either — real bug caught in testing 2026-09-10, symmetric to
-    the one *sportsbooks* fixes.
+    — needed so an event whose ONLY recent rows come from a different
+    provider (e.g. MLB/NFL's primary SportsGameOdds props) doesn't get
+    mistaken for "already covered" by this Odds-API-sourced fetch.
     """
     if not event_ids:
         return set()
@@ -63,17 +45,12 @@ def _recently_captured_prop_event_ids(
         book_placeholders = ",".join("?" * len(sportsbooks))
         sql += f" AND sportsbook IN ({book_placeholders})"
         params += list(sportsbooks)
-    elif exclude_sportsbooks:
-        book_placeholders = ",".join("?" * len(exclude_sportsbooks))
-        sql += f" AND sportsbook NOT IN ({book_placeholders})"
-        params += list(exclude_sportsbooks)
     rows = conn.execute(sql, tuple(params)).fetchall()
     return {r["event_id"] for r in rows}
 
 
 def _reload_recent_prop_odds_rows(
-    conn, event_ids: list[str], within_hours: float = 0.5,
-    sportsbooks: list[str] | None = None, exclude_sportsbooks: list[str] | None = None,
+    conn, event_ids: list[str], within_hours: float = 0.5, sportsbooks: list[str] | None = None,
 ) -> list[dict]:
     """Rebuild generic odds rows (the exact shape src.odds_api_props_parser
     produces) from already-captured player_prop_odds rows for *event_ids*.
@@ -95,10 +72,8 @@ def _reload_recent_prop_odds_rows(
     them — no new API call, no new credits spent, but the scan still
     sees them.
 
-    *sportsbooks*/*exclude_sportsbooks* mirror
-    _recently_captured_prop_event_ids's own params for the same reason:
-    a second, different-book-set fetch must not reload (or skip) based
-    on the OTHER fetch's rows, in either direction.
+    *sportsbooks* mirrors _recently_captured_prop_event_ids's own param,
+    for the same reason.
     """
     if not event_ids:
         return []
@@ -117,10 +92,6 @@ def _reload_recent_prop_odds_rows(
         book_placeholders = ",".join("?" * len(sportsbooks))
         sql += f" AND sportsbook IN ({book_placeholders})"
         params += list(sportsbooks)
-    elif exclude_sportsbooks:
-        book_placeholders = ",".join("?" * len(exclude_sportsbooks))
-        sql += f" AND sportsbook NOT IN ({book_placeholders})"
-        params += list(exclude_sportsbooks)
     rows = conn.execute(sql, tuple(params)).fetchall()
     reloaded = []
     for r in rows:
@@ -158,18 +129,14 @@ def fetch_player_props(
 
     *bookmakers*, when given, names an explicit comma-separated book list
     (passed straight through to ``get_event_odds``) instead of the
-    default ``regions="us"`` — added 2026-09-10 so a second call can
-    target a DIFFERENT book set (e.g. exchange venues: Kalshi, Novig,
-    Polymarket, ProphetX) than whatever the caller's regular fetch
-    already covers. The dedup/reload helpers are scoped to this same
-    book list (via their own *sportsbooks* param) so this call's "already
-    captured" state never collides with a differently-scoped call's.
-    *job_suffix* labels this call's credit-usage rows distinctly (e.g.
-    ``"_exchange"``) so spend is separately auditable in
-    ``odds_api_credits`` — confirmed live 2026-09-10: up to 10 named
-    books cost the same per-market rate as a single ``regions=`` unit,
-    so this is priced the same as PROPS_COST_PER_EVENT already assumes,
-    just as an ADDITIONAL call/spend on top of any existing fetch.
+    default ``regions="us"`` — every current caller (MLB/NFL/WNBA) passes
+    ``src.odds_api_client.TRACKED_BOOKMAKERS`` so the props fetch reaches
+    the exact same named book roster the game-odds fetch does. The
+    dedup/reload helpers are scoped to this same book list (via their own
+    *sportsbooks* param) so an event already covered by a different
+    provider's props isn't mistaken for "already captured" here.
+    *job_suffix* labels this call's credit-usage rows distinctly when a
+    caller wants separately-auditable spend.
     """
     from src.odds_api_client import OddsAPIClient, EVENTS_CACHE_TTL_SECONDS
     from src.player_identity import ESPNRosterClient
@@ -181,11 +148,6 @@ def fetch_player_props(
     # in src/odds_api_client.py).
     client = OddsAPIClient(max_cache_age=EVENTS_CACHE_TTL_SECONDS)
     book_list = [b.strip() for b in bookmakers.split(",")] if bookmakers else None
-    # The regular/default fetch (bookmakers=None) must not treat a row
-    # written by a DIFFERENT, exchange-scoped fetch as already covering
-    # this event -- see _recently_captured_prop_event_ids's
-    # exclude_sportsbooks docstring.
-    exclude_book_list = None if book_list else EXCHANGE_BOOKMAKERS
     events, events_from_cache = client.get_events(sport_key=sport_key)
     record_client_quota(conn, client, endpoint="events",
                          job_type=f"{league.lower()}_props_discovery{job_suffix}",
@@ -228,7 +190,7 @@ def fetch_player_props(
         # games every time it fires — an explicit event_id request (e.g.
         # a manual re-check) always bypasses this and fetches fresh.
         recent = _recently_captured_prop_event_ids(
-            conn, [e["id"] for e in events], sportsbooks=book_list, exclude_sportsbooks=exclude_book_list,
+            conn, [e["id"] for e in events], sportsbooks=book_list,
         )
         skipped = [e for e in events if e["id"] in recent]
         events = [e for e in events if e["id"] not in recent]
@@ -242,7 +204,7 @@ def fetch_player_props(
             # reload what's already in player_prop_odds for these events
             # so this scan still sees them.
             reloaded_rows = _reload_recent_prop_odds_rows(
-                conn, [e["id"] for e in skipped], sportsbooks=book_list, exclude_sportsbooks=exclude_book_list,
+                conn, [e["id"] for e in skipped], sportsbooks=book_list,
             )
             if reloaded_rows:
                 logger.info(

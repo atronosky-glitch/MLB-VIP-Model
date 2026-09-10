@@ -356,67 +356,8 @@ class TestMLBAndNFLProps:
         assert "no MLB games" in d.reason
 
 
-class TestMLBExchangeProps:
-    """2026-09-10 (operator-enabled): exchange-venue props
-    (Kalshi/Novig/Polymarket/ProphetX) get their own cadence, deliberately
-    throttled harder than the regular MLB props fetch (120min vs. 60min)
-    since this is additive spend on top of it, not a replacement, and
-    only feeds arbitrage/middle detection (not time-sensitive EV picks)."""
-
-    def test_throttle_is_120min_not_the_regular_props_60min(self):
-        from src.league_schedule import mlb_should_fetch_exchange_props
-        now = datetime(2026, 9, 10, 21, 0, tzinfo=UTC)
-        game = datetime(2026, 9, 10, 22, 0, tzinfo=UTC)
-        last = now - timedelta(minutes=90)
-        d = mlb_should_fetch_exchange_props(now, [game], last_fetch=last, credits_remaining=5000)
-        assert d.should_run is False
-        allows = mlb_should_fetch_exchange_props(
-            now, [game], last_fetch=now - timedelta(minutes=125), credits_remaining=5000,
-        )
-        assert allows.should_run is True
-
-    def test_window_is_3h(self):
-        from src.league_schedule import mlb_should_fetch_exchange_props
-        now = datetime(2026, 9, 10, 18, 0, tzinfo=UTC)
-        game = datetime(2026, 9, 10, 22, 0, tzinfo=UTC)  # 4h away
-        d = mlb_should_fetch_exchange_props(now, [game], last_fetch=None, credits_remaining=5000)
-        assert d.should_run is False
-        assert "too early" in d.reason
-
-    def test_no_games_today(self):
-        from src.league_schedule import mlb_should_fetch_exchange_props
-        now = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
-        d = mlb_should_fetch_exchange_props(now, [], last_fetch=None, credits_remaining=5000)
-        assert d.should_run is False
-
-    def test_respects_the_shared_credit_reserve(self):
-        from src.league_schedule import mlb_should_fetch_exchange_props
-        from src.odds_api_credits import DEFAULT_MONTHLY_BUDGET
-        expected_reserve = int(DEFAULT_MONTHLY_BUDGET * 0.10)
-        now = datetime(2026, 9, 10, 21, 0, tzinfo=UTC)
-        game = datetime(2026, 9, 10, 22, 0, tzinfo=UTC)
-        blocked = mlb_should_fetch_exchange_props(
-            now, [game], last_fetch=None, credits_remaining=expected_reserve,
-        )
-        assert blocked.should_run is False
-
-    def test_independent_of_the_regular_mlb_props_cadence(self):
-        """Real bug shape this guards against: if this accidentally
-        shared last-fetch state with mlb_should_fetch_props, enabling one
-        would silently throttle the other. A fetch 70 minutes ago is
-        allowed again under the regular 60min throttle but must still be
-        blocked under this function's own 120min one."""
-        from src.league_schedule import mlb_should_fetch_exchange_props
-        now = datetime(2026, 9, 10, 21, 0, tzinfo=UTC)
-        game = datetime(2026, 9, 10, 22, 0, tzinfo=UTC)
-        last = now - timedelta(minutes=70)
-        regular = mlb_should_fetch_props(now, [game], last_fetch=last, credits_remaining=5000)
-        exchange = mlb_should_fetch_exchange_props(now, [game], last_fetch=last, credits_remaining=5000)
-        assert regular.should_run is True
-        assert exchange.should_run is False
-
-    def test_nfl_no_games_today(self):
-        now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
-        d = nfl_should_fetch_props(now, [], last_fetch=None, credits_remaining=5000)
-        assert d.should_run is False
-        assert "no NFL games" in d.reason
+def test_nfl_no_games_today():
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    d = nfl_should_fetch_props(now, [], last_fetch=None, credits_remaining=5000)
+    assert d.should_run is False
+    assert "no NFL games" in d.reason

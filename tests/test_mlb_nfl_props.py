@@ -249,31 +249,6 @@ class TestFetchPlayerPropsViaOddsAPIDelegation:
         from src.odds_api_client import TRACKED_BOOKMAKERS
         assert kwargs["bookmakers"] == TRACKED_BOOKMAKERS
 
-    def test_mlb_exchange_props_delegates_with_the_exchange_bookmaker_list(self, tmp_path):
-        """2026-09-10: fetch_mlb_exchange_props() is a SEPARATE call from
-        the regular fetch_player_props_via_odds_api(), targeting Kalshi/
-        Novig/Polymarket/ProphetX explicitly via bookmakers=, with its
-        own job_suffix so its credit spend is separately auditable."""
-        from database.db_manager import init_db, get_connection
-        from src.sports import mlb as mlb_mod
-        from src.odds_api_props_fetch import EXCHANGE_BOOKMAKERS
-
-        db_path = tmp_path / "mlb_exchange_deleg.db"
-        init_db(str(db_path))
-        conn = get_connection(str(db_path))
-
-        with mock.patch("src.odds_api_props_fetch.fetch_player_props",
-                         return_value=([], [])) as mock_fetch:
-            mlb_mod.fetch_mlb_exchange_props(conn, event_id="evt-x")
-
-        _, kwargs = mock_fetch.call_args
-        assert kwargs["sport_key"] == "baseball_mlb"
-        assert kwargs["league"] == "MLB"
-        assert kwargs["event_id"] == "evt-x"
-        assert kwargs["bookmakers"] == ",".join(EXCHANGE_BOOKMAKERS)
-        assert kwargs["job_suffix"] == "_exchange"
-        assert "batter_home_runs" in kwargs["prop_market_keys"]
-
 
 class TestRunScanMergesSupplementalPropsForSGOLeagues:
     """MLB/NFL's primary provider IS SportsGameOdds, unlike WNBA — the
@@ -497,14 +472,13 @@ class TestFetchPlayerPropsReusesRecentlyCapturedRows:
 
 class TestFetchPlayerPropsBookmakerScopedDedup:
     """2026-09-10: fetch_player_props() gained an optional *bookmakers*
-    param so a second call can target a DIFFERENT book set (e.g. exchange
-    venues Kalshi/Novig/Polymarket/ProphetX) than a caller's regular
-    fetch. Without scoping the "already captured" dedup check to that
-    same book set, a regular-books fetch that already wrote rows for an
-    event would make the exchange fetch silently skip that event too
-    (and vice versa) -- exactly the kind of "skip means data loss, not
-    just skip the API call" bug already fixed once for the single-book-
-    set case (see TestFetchPlayerPropsReusesRecentlyCapturedRows)."""
+    param, and its "already captured" dedup check is scoped to that same
+    book list (via *sportsbooks*) -- a row from a book outside the
+    requested list (e.g. a different provider's own props for the same
+    event) must never count as "already covered" here, or a real fetch
+    gets silently skipped -- exactly the kind of "skip means data loss,
+    not just skip the API call" bug already fixed once before (see
+    TestFetchPlayerPropsReusesRecentlyCapturedRows)."""
 
     def _seed_captured_row(self, conn, event_id, captured_at, sportsbook, player_id="p1"):
         from database.db_manager import save_player_prop_batch
@@ -520,7 +494,7 @@ class TestFetchPlayerPropsBookmakerScopedDedup:
         save_player_prop_batch(conn, [row], [])
         return row
 
-    def test_regular_books_capture_does_not_skip_an_exchange_only_fetch(self, tmp_path):
+    def test_other_book_capture_does_not_skip_a_differently_scoped_fetch(self, tmp_path):
         from datetime import datetime, timedelta, timezone
         from database.db_manager import init_db, get_connection
         from src.odds_api_props_fetch import fetch_player_props
@@ -550,33 +524,6 @@ class TestFetchPlayerPropsBookmakerScopedDedup:
         # The exchange-scoped fetch must still hit the API for this event
         # -- the regular-books row must not count as "already captured"
         # for an entirely different book set.
-        fake_client.get_event_odds.assert_called_once()
-
-    def test_exchange_capture_does_not_skip_a_regular_books_fetch(self, tmp_path):
-        from datetime import datetime, timedelta, timezone
-        from database.db_manager import init_db, get_connection
-        from src.odds_api_props_fetch import fetch_player_props
-
-        db_path = tmp_path / "props_exchange_dedup2.db"
-        init_db(str(db_path))
-        conn = get_connection(str(db_path))
-
-        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-        self._seed_captured_row(conn, "evt-2", recent, sportsbook="kalshi")
-
-        now = datetime.now(timezone.utc)
-        event = {"id": "evt-2", "commence_time": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        fake_client = mock.MagicMock()
-        fake_client.get_events.return_value = ([event], False)
-        fake_client.get_event_odds.return_value = ({"id": "evt-2", "bookmakers": []}, False)
-        fake_client.last_quota = {}
-
-        with mock.patch("src.odds_api_client.OddsAPIClient", return_value=fake_client):
-            fetch_player_props(
-                conn, sport_key="baseball_mlb", prop_market_keys="batter_home_runs",
-                parse_fn=lambda *a, **k: mock.MagicMock(odds_rows=[], audit_rows=[]), league="MLB",
-            )
-
         fake_client.get_event_odds.assert_called_once()
 
     def test_same_book_set_capture_still_skips_and_reloads(self, tmp_path):

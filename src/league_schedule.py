@@ -262,32 +262,6 @@ def mlb_should_fetch_props(
     )
 
 
-# Exchange-venue props (Kalshi/Novig/Polymarket/ProphetX, 2026-09-10) are
-# genuinely ADDITIONAL spend on top of the regular MLB props fetch above
-# (see src.sports.mlb.fetch_mlb_exchange_props's docstring — a separate
-# API call, not a cheaper add-on), so this deliberately throttles harder
-# (120min vs. the regular fetch's 60min) rather than reusing the same
-# cadence — this is arb/middle-detection freshness, not EV-pick input,
-# so it doesn't need to be as fresh as the primary props source.
-MLB_EXCHANGE_PROPS_WINDOW_MINUTES = 180
-MLB_EXCHANGE_PROPS_THROTTLE_MINUTES = 120
-
-
-def mlb_should_fetch_exchange_props(
-    now: datetime, game_times: list[datetime], last_fetch: datetime | None,
-    credits_remaining: int | None, reserve: int | None = None,
-) -> ScheduleDecision:
-    """Same game-time source and credit-budget discipline as
-    mlb_should_fetch_props (shares the one Odds API budget), but its own
-    independent last-fetch cadence — see MLB_EXCHANGE_PROPS_THROTTLE_MINUTES."""
-    return _should_fetch_player_props(
-        now, game_times, last_fetch, credits_remaining,
-        window_minutes=MLB_EXCHANGE_PROPS_WINDOW_MINUTES,
-        throttle_minutes=MLB_EXCHANGE_PROPS_THROTTLE_MINUTES,
-        league_label="MLB exchange", reserve=reserve,
-    )
-
-
 def nfl_should_fetch_props(
     now: datetime, game_times: list[datetime], last_fetch: datetime | None,
     credits_remaining: int | None, reserve: int | None = None,

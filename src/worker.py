@@ -372,37 +372,6 @@ def _run_mlb_props_scan(config) -> dict:
     return {"status": "success" if exit_code in (0, 1) else "failed", "exit_code": exit_code}
 
 
-def _run_mlb_exchange_props_scan(conn: DB, config) -> dict:
-    """MLB exchange-venue props scan (Kalshi/Novig/Polymarket/ProphetX,
-    2026-09-10 — see src.sports.mlb.fetch_mlb_exchange_props). Deliberately
-    bypasses run_pipeline/PipelineConfig entirely, unlike
-    _run_mlb_props_scan above: exchange odds are for arbitrage/middle
-    detection only (src.arb_middle_scan reads player_prop_odds directly),
-    never for the EV-picks recommendation engine, which compares against
-    Pinnacle as its fair-value reference — a comparison that has never
-    been validated for exchange pricing. Routing this through the full
-    scan/qualification pipeline like the regular props source would risk
-    an exchange-sourced row silently becoming part of an Official pick
-    recommendation, which was never the intent. This only fetches and
-    persists the raw rows (save_player_prop_batch) so arb_middle_scan's
-    own next pass picks them up — nothing else reads or scores them.
-
-    A real, separate credit cost from the regular MLB props scan (see
-    fetch_mlb_exchange_props's docstring) — gated by the same real
-    credit_budget_check() every props fetch uses, and by its own
-    scheduling decision (src.league_schedule.mlb_should_fetch_exchange_props)
-    with a wider throttle than the regular props scan, since this is
-    additive spend on top of it, not a replacement.
-    """
-    from src.sports.mlb import fetch_mlb_exchange_props
-    from database.db_manager import save_player_prop_batch
-
-    odds_rows, audit_rows = fetch_mlb_exchange_props(conn)
-    if odds_rows:
-        save_player_prop_batch(conn, odds_rows, audit_rows)
-    return {"status": "success", "rows_captured": len(odds_rows)}
-
-
 def _run_nfl_props_scan(config) -> dict:
     """NFL supplemental Odds-API props scan — see _run_mlb_props_scan's
     docstring for the SportsGameOdds-cache interaction tradeoff, which
@@ -636,7 +605,6 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "wnba-odds-scan": lambda: _run_wnba_odds_scan(config),
         "wnba-props-scan": lambda: _run_wnba_props_scan(config),
         "mlb-props-scan": lambda: _run_mlb_props_scan(config),
-        "mlb-exchange-props-scan": lambda: _run_mlb_exchange_props_scan(conn, config),
         "nfl-props-scan": lambda: _run_nfl_props_scan(config),
         "arb-middle-scan": lambda: _run_arb_middle_scan(conn, config),
         "grading": lambda: _run_grading(conn, config),
@@ -946,35 +914,6 @@ def _check_and_schedule_mlb_props(conn: DB) -> None:
             logger.info("[MLB] Scheduled props scan: %s (%s)", job_id[:8], props_decision.reason)
 
 
-def _check_and_schedule_mlb_exchange_props(conn: DB) -> None:
-    """MLB: exchange-venue props (Kalshi/Novig/Polymarket/ProphetX,
-    2026-09-10, operator-enabled — see src.sports.mlb.fetch_mlb_exchange_props
-    and src.league_schedule.mlb_should_fetch_exchange_props). Own job type
-    and own last-fetch tracking, deliberately separate from
-    _check_and_schedule_mlb_props above so this cadence never collides
-    with or is masked by the regular props scan's own schedule."""
-    from src.league_schedule import mlb_should_fetch_exchange_props
-    from src.odds_api_credits import get_latest_credit_status
-
-    now = _now_local()
-    game_times = _mlb_game_times_from_db(conn)
-    if not game_times:
-        return
-
-    try:
-        status = get_latest_credit_status(conn)
-    except Exception:
-        status = None
-    credits_remaining = status.get("requests_remaining") if status else None
-
-    last_fetch = _get_last_completed_job_at(conn, "mlb-exchange-props-scan")
-    decision = mlb_should_fetch_exchange_props(now, game_times, last_fetch, credits_remaining)
-    if decision.should_run:
-        job_id = _create_job_if_not_queued(conn, "mlb-exchange-props-scan")
-        if job_id:
-            logger.info("[MLB] Scheduled exchange props scan: %s (%s)", job_id[:8], decision.reason)
-
-
 def _check_and_schedule_wnba(conn: DB) -> None:
     """WNBA: schedule discovery is free; game odds are a cheap flat rate;
     props are rationed hard against the monthly credit budget — see
@@ -1150,7 +1089,6 @@ def run_worker_persistent(config) -> None:
     last_nfl_check = 0
     last_wnba_check = 0
     last_mlb_props_check = 0
-    last_mlb_exchange_props_check = 0
     last_arb_middle_check = 0
     last_backup_minute = -1
     last_maintenance_day = ""
@@ -1223,16 +1161,6 @@ def run_worker_persistent(config) -> None:
                 except Exception:
                     logger.exception("[MLB] Props scheduling check failed")
                 last_mlb_props_check = now
-
-            # MLB: exchange-venue props (Kalshi/Novig/Polymarket/ProphetX,
-            # 2026-09-10, operator-enabled) — separate cadence/job type
-            # from the regular props scan above, isolated the same way.
-            if now - last_mlb_exchange_props_check >= MLB_PROPS_SCHEDULE_CHECK_INTERVAL_MINUTES * 60:
-                try:
-                    _check_and_schedule_mlb_exchange_props(conn)
-                except Exception:
-                    logger.exception("[MLB] Exchange props scheduling check failed")
-                last_mlb_exchange_props_check = now
 
             # Arbitrage/middle scan: reads whatever odds a normal scan
             # already ingested, zero extra API cost, so this only needs
@@ -1309,10 +1237,6 @@ def run_worker_once(config) -> None:
             _check_and_schedule_mlb_props(conn)
         except Exception:
             logger.exception("[MLB] Props scheduling check failed")
-        try:
-            _check_and_schedule_mlb_exchange_props(conn)
-        except Exception:
-            logger.exception("[MLB] Exchange props scheduling check failed")
         # Newly-queued NFL/WNBA/MLB-props jobs from the checks above are due
         # immediately — run them now rather than waiting for the next
         # one-shot invocation (which, on a cron schedule, could be hours

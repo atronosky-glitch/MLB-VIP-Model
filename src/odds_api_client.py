@@ -68,15 +68,32 @@ _ENV_VAR = "THE_ODDS_API_KEY"
 # +149/-181, fanduel +150/-178, betmgm +150/-185). Confirmed both also
 # already carry real MLB game odds (h2h/spreads/totals), not just props.
 #
-# Cost-neutral by construction: The Odds API prices bookmakers= in
-# batches of up to 10 named books per call (confirmed live 2026-08-26
-# for a single book, reconfirmed 2026-09-10 for 13 -- 6 credits, i.e.
-# 2 batches, vs. 3 for <=10). This list holds exactly 10, so it costs
-# the same per call as the old regions="us" default did -- this is the
-# maximum that stays free; one more book would double the cost.
+# 2026-09-10 (same day, follow-up operator request): Kalshi and
+# Polymarket added too, for full parity across all 4 exchange venues
+# (Kalshi/Novig/Polymarket/ProphetX) in EV picks, arbitrage, AND
+# middling -- not just arb/middle as before. Also live-verified first:
+# both price tightly in line with DraftKings/FanDuel/BetMGM pregame
+# (e.g. Rangers @ Mariners: kalshi -122/+117, polymarket -122/+117,
+# draftkings -131/+109, fanduel -130/+110, betmgm -130/+105). Prop
+# coverage from all 4 exchanges is real but spottier than game odds --
+# not every event has an exchange quote for every prop market, which is
+# a coverage gap, not a data-quality problem (the price-plausibility
+# filter in src/line_plausibility.py still guards whatever does show up).
+#
+# NOT cost-neutral this time: this list now holds 12 books, past the
+# 10-book free-batch cap (confirmed live 2026-08-26/2026-09-10 -- up to
+# 10 named books cost the same as one regions= unit; 11-20 cost double).
+# Every game-odds and props call now costs roughly 2x what it did before
+# this change. Retiring the old isolated exchange-only job
+# (EXCHANGE_BOOKMAKERS / fetch_mlb_exchange_props / mlb-exchange-props-
+# scan -- see git history) partially offsets this: those 4 books are no
+# longer fetched TWICE (once here, once there), but the net is still a
+# real cost increase, not a wash. Same real-time credit_budget_check()
+# every props fetch already uses is the actual backstop against
+# overspend, same as before.
 TRACKED_BOOKMAKERS = (
     "williamhill_us,betrivers,betmgm,draftkings,fanduel,fanatics,"
-    "hardrockbet,espnbet,novig,prophetx"
+    "hardrockbet,espnbet,novig,prophetx,kalshi,polymarket"
 )
 
 # Real bug, found 2026-08-22 while answering an operator question about

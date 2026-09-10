@@ -137,16 +137,15 @@ class TestFallbackCreditBudget:
 
 
 class TestTrackedBookmakersRoster:
-    """2026-09-10 (operator request): replaced the old regions="us"
-    default -- which returned 5 offshore books (BetOnline, Bovada,
-    MyBookie, LowVig, BetUS) not legally available to most US customers
-    -- with an explicit bookmakers= roster naming exactly the books this
-    product wants: Hard Rock Bet + ESPN BET, then (same day, after live
-    verification the pricing is sane pregame -- see the module-level
-    comment above TRACKED_BOOKMAKERS) Novig + ProphetX too. Cost-neutral:
-    The Odds API prices bookmakers= in batches of up to 10 named books
-    per call, and TRACKED_BOOKMAKERS holds exactly 10 -- the max that
-    stays free."""
+    """2026-09-10 (operator requests, same day): replaced the old
+    regions="us" default -- which returned 5 offshore books (BetOnline,
+    Bovada, MyBookie, LowVig, BetUS) not legally available to most US
+    customers -- with an explicit bookmakers= roster naming exactly the
+    books this product wants: Hard Rock Bet + ESPN BET first, then Novig
+    + ProphetX (both live-verified pregame-sane), then Kalshi + Polymarket
+    too (also live-verified) for full exchange parity across EV picks,
+    arbitrage, and middling -- see the module-level comment above
+    TRACKED_BOOKMAKERS for the live-verification details."""
 
     def test_tracked_bookmakers_excludes_offshore_books(self):
         from src.odds_api_client import TRACKED_BOOKMAKERS
@@ -154,11 +153,11 @@ class TestTrackedBookmakersRoster:
         for offshore in ("bovada", "lowvig", "betus", "mybookieag", "betonlineag"):
             assert offshore not in books
 
-    def test_tracked_bookmakers_includes_novig_and_prophetx(self):
+    def test_tracked_bookmakers_includes_all_four_exchange_venues(self):
         from src.odds_api_client import TRACKED_BOOKMAKERS
         books = TRACKED_BOOKMAKERS.split(",")
-        assert "novig" in books
-        assert "prophetx" in books
+        for exchange in ("kalshi", "novig", "polymarket", "prophetx"):
+            assert exchange in books
 
     def test_tracked_bookmakers_includes_the_new_replacements(self):
         from src.odds_api_client import TRACKED_BOOKMAKERS
@@ -166,12 +165,15 @@ class TestTrackedBookmakersRoster:
         assert "hardrockbet" in books
         assert "espnbet" in books
 
-    def test_tracked_bookmakers_stays_within_the_free_batch_cap(self):
-        """Confirmed live 2026-09-10: up to 10 named books cost the same
-        as a single regions= unit; past 10 it doubles. Must never grow
-        past 10 without that being a deliberate, known cost decision."""
+    def test_tracked_bookmakers_holds_exactly_12_past_the_free_batch_cap(self):
+        """Confirmed live 2026-08-26/2026-09-10: up to 10 named books cost
+        the same as a single regions= unit; 11-20 costs double. Adding
+        Kalshi + Polymarket (2026-09-10 follow-up request) deliberately
+        pushed this past that cap -- a real, known cost increase, not an
+        oversight. This test documents the actual count so a future
+        change to it is a conscious edit, not a silent drift."""
         from src.odds_api_client import TRACKED_BOOKMAKERS
-        assert len(TRACKED_BOOKMAKERS.split(",")) <= 10
+        assert len(TRACKED_BOOKMAKERS.split(",")) == 12
 
     def test_mlb_game_odds_fetch_uses_tracked_bookmakers_not_regions(self, db_conn):
         from src.sports.mlb import fetch_game_odds_via_odds_api
