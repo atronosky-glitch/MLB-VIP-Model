@@ -104,16 +104,55 @@ p,div,span,button { font-family:'Inter',sans-serif; }
 [data-testid="stBaseButton-secondary"]:hover {
   background-color:var(--panel) !important; border-color:var(--ink) !important; color:var(--ink) !important;
 }
+/* Same bug, one more spot: found live 2026-09-10 checking the "Filter by
+   sportsbook" popover after the button fix above -- the popover TRIGGER
+   is its own testid (stPopoverButton, not stBaseButton-secondary), and
+   the popover's floating BODY is an entirely separate DOM subtree that
+   still used the shared dark theme's background -- readable on its own,
+   but visually disconnected from this page's light theme, and the
+   stCaptionContainer rule below was leaking a medium-gray color into it
+   that read poorly against that dark background. Fixed both. */
+[data-testid="stPopoverButton"] {
+  background-color:#ffffff !important; border-color:var(--line) !important; color:var(--ink) !important;
+}
+[data-testid="stPopoverButton"]:hover {
+  background-color:var(--panel) !important; border-color:var(--ink) !important; color:var(--ink) !important;
+}
+[data-testid="stPopoverBody"] { background-color:#ffffff !important; border-color:var(--line) !important; }
+[data-testid="stPopoverBody"] [data-testid="stMarkdownContainer"] p { color:var(--ink) !important; }
+/* Same bug, the multiselect filters (Sport/Sportsbook/Market/Confidence
+   inside "Filter upcoming/settled picks"): found live 2026-09-10 --
+   control box was the shared dark theme's near-black, and selected tags
+   were the bright lime primaryColor, same as everything above. */
+[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+  background-color:#ffffff !important; border-color:var(--line) !important;
+}
+[data-testid="stMultiSelect"] [data-baseweb="tag"] { background-color:var(--accent) !important; }
+[data-testid="stMultiSelect"] input { color:var(--ink) !important; }
+[data-baseweb="popover"] [data-baseweb="menu"], [data-baseweb="popover"] [data-baseweb="menu"] * {
+  background-color:#ffffff !important; color:var(--ink) !important;
+}
 [data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color:var(--ink) !important; }
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * { color:var(--muted) !important; }
 [data-testid="stAlertContentInfo"], [data-testid="stAlertContentSuccess"],
 [data-testid="stAlertContentWarning"], [data-testid="stAlertContentError"] { color:var(--ink) !important; }
 [data-testid="stExpander"] summary { color:var(--ink) !important; }
 [data-testid="stSliderThumbValue"], [data-testid="stTickBarMin"], [data-testid="stTickBarMax"] { color:var(--muted) !important; }
-div[data-baseweb="slider"] div[role="slider"] { background-color:var(--accent) !important; }
-div[data-testid="stSlider"] div[data-testid="stTickBar"] + div > div { background:var(--accent) !important; }
-label[data-baseweb="radio"] [aria-checked="true"] > div:first-child { border-color:var(--accent) !important; }
-label[data-baseweb="radio"] [aria-checked="true"] > div:first-child > div { background-color:var(--accent) !important; }
+/* Real bug, found live 2026-09-10: same story as the radio fix above --
+   the guessed data-baseweb="slider"/role="slider" selectors never
+   matched this Streamlit version, so the Minimum EV% slider's thumb was
+   still bright lime. Verified live: the thumb is the only colored div
+   inside stSlider's [role="group"] wrapper, two levels down. */
+[data-testid="stSlider"] [role="group"] > div > div { background-color:var(--accent) !important; }
+/* Real bug, found live 2026-09-10: the guessed data-baseweb="radio"
+   selector below never matched this Streamlit version at all (it uses
+   stRadioOption/data-selected, not baseweb) -- the "Performance period"
+   radio's selected dot was still rendering in the shared theme's bright
+   lime, unfixed. Replaced with the verified real selector (checked live:
+   the filled dot is the 3rd nested div inside the selected option). */
+[data-testid="stRadioOption"][data-selected="true"] > div > div > div {
+  background-color:var(--accent) !important;
+}
 [data-testid="stSelectbox"] .react-aria-ComboBox > div[role="group"] {
     background-color: #ffffff !important; border: 1px solid var(--line) !important;
 }

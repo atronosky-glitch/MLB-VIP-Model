@@ -379,3 +379,43 @@ def test_secondary_buttons_have_a_light_theme_override():
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert '[data-testid="stBaseButton-secondary"]' in source
     assert "background-color:#ffffff !important" in source
+
+
+def test_sportsbook_popover_has_a_light_theme_override():
+    """Real bug, found live 2026-09-10 checking the "Filter by sportsbook"
+    popover after the button fix above: the popover TRIGGER (its own
+    testid, stPopoverButton -- not stBaseButton-secondary) and the
+    popover's floating BODY (a separate DOM subtree) both still used the
+    shared dark theme. Confirmed live after the fix: both render white
+    with dark, readable text."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert '[data-testid="stPopoverButton"]' in source
+    assert '[data-testid="stPopoverBody"] { background-color:#ffffff !important;' in source
+
+
+def test_multiselect_filters_have_a_light_theme_override():
+    """Real bug, found live 2026-09-10: the Sport/Sportsbook/Market/
+    Confidence multiselect filters (inside "Filter upcoming/settled
+    picks") had a dark control box and bright-lime selected tags, same
+    root cause as everywhere else on this page. Confirmed live after the
+    fix: white control, dark tags, readable dropdown list."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert '[data-testid="stMultiSelect"] [data-baseweb="select"] > div' in source
+    assert '[data-testid="stMultiSelect"] [data-baseweb="tag"]' in source
+
+
+def test_radio_and_slider_use_verified_not_guessed_selectors():
+    """Real bug, found live 2026-09-10: the ORIGINAL radio/slider CSS
+    (written without live verification) used data-baseweb="radio" and
+    role="slider" selectors that never matched this Streamlit version at
+    all -- the "Performance period" radio's selected dot and the "Minimum
+    EV%" slider's thumb were still bright lime, unfixed, despite the CSS
+    rules existing. Replaced with selectors confirmed live against the
+    actual DOM (stRadioOption/data-selected, and the slider's [role=
+    "group"] wrapper). This test guards against silently reintroducing
+    the old, non-matching selectors."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'label[data-baseweb="radio"]' not in source
+    assert 'div[data-baseweb="slider"] div[role="slider"]' not in source
+    assert '[data-testid="stRadioOption"][data-selected="true"]' in source
+    assert '[data-testid="stSlider"] [role="group"] > div > div' in source
