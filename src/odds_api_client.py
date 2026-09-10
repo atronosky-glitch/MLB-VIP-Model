@@ -50,16 +50,33 @@ _ENV_VAR = "THE_ODDS_API_KEY"
 # alongside 6 regulated ones. Named explicitly instead so the roster is
 # a deliberate choice, not "whatever a region bucket contains": drops
 # the 5 offshore books, adds Hard Rock Bet and ESPN BET (both confirmed
-# live 2026-09-10 for baseball_mlb -- real, current odds).
+# live 2026-09-10 for baseball_mlb -- real, current odds), then Novig
+# and ProphetX (also confirmed live the same day -- see below).
+#
+# Novig/ProphetX are exchanges, not traditional sportsbooks, and were
+# initially kept EXCHANGE_BOOKMAKERS-only (arb/middle detection, never
+# the EV-picks engine) over a real concern: an early live sample showed
+# Novig quoting a game at +99900/-100000, an apparently-nonsensical
+# price. Investigated further before merging them here: that game was
+# LIVE/in-progress (a near-decided blowout), not pregame, and REAL
+# sportsbooks show equally extreme numbers for the same situation
+# (FanDuel -50000, BetMGM -10000 on a comparable live blowout the same
+# minute) -- not a Novig-specific defect. For PREGAME markets, which is
+# all the EV-picks engine ever considers, Novig/ProphetX priced tightly
+# in line with DraftKings/FanDuel/BetMGM on every game sampled (e.g.
+# Astros @ Phillies: novig +160/-163, prophetx +158/-166, draftkings
+# +149/-181, fanduel +150/-178, betmgm +150/-185). Confirmed both also
+# already carry real MLB game odds (h2h/spreads/totals), not just props.
 #
 # Cost-neutral by construction: The Odds API prices bookmakers= in
 # batches of up to 10 named books per call (confirmed live 2026-08-26
 # for a single book, reconfirmed 2026-09-10 for 13 -- 6 credits, i.e.
-# 2 batches, vs. 3 for <=10). This list holds 8, so it costs exactly the
-# same per call as the old regions="us" default did -- swapping within
-# the cap is free; only growing past 10 costs more.
+# 2 batches, vs. 3 for <=10). This list holds exactly 10, so it costs
+# the same per call as the old regions="us" default did -- this is the
+# maximum that stays free; one more book would double the cost.
 TRACKED_BOOKMAKERS = (
-    "williamhill_us,betrivers,betmgm,draftkings,fanduel,fanatics,hardrockbet,espnbet"
+    "williamhill_us,betrivers,betmgm,draftkings,fanduel,fanatics,"
+    "hardrockbet,espnbet,novig,prophetx"
 )
 
 # Real bug, found 2026-08-22 while answering an operator question about

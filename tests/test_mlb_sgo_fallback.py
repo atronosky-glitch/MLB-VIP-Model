@@ -141,15 +141,24 @@ class TestTrackedBookmakersRoster:
     default -- which returned 5 offshore books (BetOnline, Bovada,
     MyBookie, LowVig, BetUS) not legally available to most US customers
     -- with an explicit bookmakers= roster naming exactly the books this
-    product wants, swapping in Hard Rock Bet and ESPN BET instead. Cost-
-    neutral: The Odds API prices bookmakers= in batches of up to 10 named
-    books per call, and TRACKED_BOOKMAKERS holds exactly 8."""
+    product wants: Hard Rock Bet + ESPN BET, then (same day, after live
+    verification the pricing is sane pregame -- see the module-level
+    comment above TRACKED_BOOKMAKERS) Novig + ProphetX too. Cost-neutral:
+    The Odds API prices bookmakers= in batches of up to 10 named books
+    per call, and TRACKED_BOOKMAKERS holds exactly 10 -- the max that
+    stays free."""
 
     def test_tracked_bookmakers_excludes_offshore_books(self):
         from src.odds_api_client import TRACKED_BOOKMAKERS
         books = TRACKED_BOOKMAKERS.split(",")
         for offshore in ("bovada", "lowvig", "betus", "mybookieag", "betonlineag"):
             assert offshore not in books
+
+    def test_tracked_bookmakers_includes_novig_and_prophetx(self):
+        from src.odds_api_client import TRACKED_BOOKMAKERS
+        books = TRACKED_BOOKMAKERS.split(",")
+        assert "novig" in books
+        assert "prophetx" in books
 
     def test_tracked_bookmakers_includes_the_new_replacements(self):
         from src.odds_api_client import TRACKED_BOOKMAKERS
