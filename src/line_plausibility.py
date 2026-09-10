@@ -58,3 +58,54 @@ def is_plausible_line(market_type: str, line: float, consensus: float) -> bool:
     number to trust its pricing."""
     max_dev = MAX_LINE_DEVIATION.get(market_type, DEFAULT_MAX_DEVIATION)
     return abs(line - consensus) <= max_dev
+
+
+# ---------------------------------------------------------------------
+# Price plausibility -- a second, independent dimension from line
+# plausibility above. A line can be completely normal (e.g. a player's
+# standard 0.5 home run line) while its PRICE is a thin-liquidity outlier
+# no other book is anywhere near. Found live 2026-09-10 evaluating
+# exchange venues (Kalshi/Novig/Polymarket/ProphetX) for inclusion: a
+# Novig "Under 0.5 home runs" quote at -9900 (99.0% implied probability)
+# sat on an otherwise completely ordinary line, right next to other
+# books' prices implying nowhere near that. is_plausible_line alone
+# cannot catch this -- the line itself was fine.
+# ---------------------------------------------------------------------
+
+MAX_PROBABILITY_DEVIATION = 0.25  # 25 percentage points of implied probability
+
+
+def implied_probability(american_odds: int) -> float:
+    """American odds -> implied probability (0-1), vig included (this is
+    intentionally the raw market-implied number, not a fair/no-vig
+    estimate -- consensus is computed from other book's raw quotes too,
+    so comparing like with like)."""
+    if american_odds > 0:
+        return 100.0 / (american_odds + 100.0)
+    return -american_odds / (-american_odds + 100.0)
+
+
+def consensus_prices(rows: list[dict]) -> dict[tuple, float]:
+    """Median implied probability per (event_id, player_id, market_type,
+    line, side) -- the market's own consensus of how likely this specific
+    side actually is, independent of any one book's quote. Side is part
+    of the key deliberately: Over and Under aren't directly comparable
+    (they're roughly complementary, not equal), so each is judged only
+    against other books quoting that same side."""
+    probs_by_key: dict[tuple, list[float]] = defaultdict(list)
+    for row in rows:
+        price = row.get("price")
+        if price is None:
+            continue
+        key = (
+            row.get("event_id"), row.get("player_id"), row.get("market_type"),
+            row.get("line"), row.get("side"),
+        )
+        probs_by_key[key].append(implied_probability(price))
+    return {key: median(values) for key, values in probs_by_key.items()}
+
+
+def is_plausible_price(price: int, consensus_probability: float) -> bool:
+    """Whether *price*'s implied probability is close enough to this
+    side's own consensus probability to trust its pricing."""
+    return abs(implied_probability(price) - consensus_probability) <= MAX_PROBABILITY_DEVIATION

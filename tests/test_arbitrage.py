@@ -134,3 +134,25 @@ def test_find_arbitrage_opportunities_keeps_a_plausible_nearby_line():
     ]
     results = find_arbitrage_opportunities(rows)
     assert any(r["line"] == 7.5 for r in results)
+
+
+def test_find_arbitrage_opportunities_rejects_a_thin_liquidity_outlier_price():
+    """Real case, found live 2026-09-10 evaluating exchange venues
+    (Kalshi/Novig/Polymarket/ProphetX) for inclusion: a Novig 'Under 0.5
+    home runs' quote at -9900 sat on an otherwise completely normal
+    line/consensus -- is_plausible_line alone can't catch this since the
+    LINE was fine, only the PRICE was an outlier. Several normal-priced
+    books establish the real consensus; one exchange row at an absurd
+    price must be dropped before it can even be considered, even though
+    it would otherwise pair into a huge "guaranteed profit" arbitrage."""
+    rows = [
+        # Normal consensus pricing for this side across several books.
+        _row("E1", "P1", "batting_homeRuns_ou", "g_0.5", "UNDER", "BookA", -150, 1.6667, line=0.5),
+        _row("E1", "P1", "batting_homeRuns_ou", "g_0.5", "UNDER", "BookB", -155, 1.6452, line=0.5),
+        _row("E1", "P1", "batting_homeRuns_ou", "g_0.5", "UNDER", "BookC", -145, 1.6897, line=0.5),
+        _row("E1", "P1", "batting_homeRuns_ou", "g_0.5", "OVER", "BookD", 130, 2.30, line=0.5),
+        # Thin-liquidity exchange outlier on the same, otherwise normal, line.
+        _row("E1", "P1", "batting_homeRuns_ou", "g_0.5", "UNDER", "novig", -9900, 1.0101, line=0.5),
+    ]
+    results = find_arbitrage_opportunities(rows)
+    assert all(r.get("side_b_book") != "novig" and r.get("side_a_book") != "novig" for r in results)

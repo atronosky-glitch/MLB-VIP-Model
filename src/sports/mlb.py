@@ -149,3 +149,52 @@ def fetch_player_props_via_odds_api(
         conn, sport_key=ODDS_API_SPORT_KEY, prop_market_keys=PROP_MARKET_KEYS,
         parse_fn=parse_mlb_player_props, league="MLB", event_id=event_id,
     )
+
+
+def fetch_mlb_exchange_props(
+    conn, event_id: str | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Fetch live MLB player props from exchange/prediction-market venues
+    (Kalshi, Novig, Polymarket, ProphetX) — a SEPARATE, ADDITIONAL call
+    from ``fetch_player_props_via_odds_api()`` above, not a replacement.
+
+    Added 2026-09-10 at the operator's request. Confirmed live the same
+    day: these venues return real MLB data (h2h game odds on all four;
+    Novig and ProphetX also carried player props on the specific event
+    sampled) in the SAME normalized American-odds format as regular
+    sportsbooks — no new parsing needed, ``parse_mlb_player_props``
+    handles it as just another ``sportsbook`` value.
+
+    Real, material cost: this is a genuinely SEPARATE per-event API call
+    (see ``fetch_player_props``'s *bookmakers* docstring) — confirmed
+    live it costs the same per-market rate as the existing regular-books
+    call, ON TOP of it, not instead of it. Every event fetched here
+    doubles that event's props credit spend for the day. Still gated by
+    the same real ``credit_budget_check()`` everything else in this
+    module uses, so it cannot silently exceed the shared monthly budget.
+
+    Also load-bearing: exchange venues showed materially less reliable
+    pricing than retail sportsbooks in live testing (one Novig quote at
+    -9900 on an otherwise ordinary line) — this is exactly why
+    src/line_plausibility.py's price-consensus check
+    (``consensus_prices``/``is_plausible_price``) exists, and why
+    src/arbitrage.py and src/middling.py both apply it to every row
+    before it can even be considered, not just exchange rows. Never
+    disable that filter to "get more opportunities" from this source.
+
+    NOT yet wired into the automatic worker schedule (src/worker.py) —
+    unlike fetch_player_props_via_odds_api, calling this does not happen
+    on its own; it must be invoked explicitly (or wired into the
+    scheduler deliberately later, mirroring
+    src.league_schedule.mlb_should_fetch_props's real credit/cadence
+    gating) so enabling it in production is a conscious choice, not a
+    side effect of this function existing.
+    """
+    from src.odds_api_props_fetch import fetch_player_props, EXCHANGE_BOOKMAKERS
+    from src.mlb_props_parser import parse_mlb_player_props, PROP_MARKET_KEYS
+
+    return fetch_player_props(
+        conn, sport_key=ODDS_API_SPORT_KEY, prop_market_keys=PROP_MARKET_KEYS,
+        parse_fn=parse_mlb_player_props, league="MLB", event_id=event_id,
+        bookmakers=",".join(EXCHANGE_BOOKMAKERS), job_suffix="_exchange",
+    )

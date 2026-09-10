@@ -21,6 +21,16 @@ class TestSportsbookDisplay:
         """The odds API reports Caesars under the legacy 'williamhill' key."""
         assert sportsbook_display("williamhill") == "Caesars"
 
+    def test_exchange_venues_have_curated_display_names(self):
+        """2026-09-10 (operator request): Kalshi/Novig/Polymarket/ProphetX
+        are structurally exchanges, not sportsbooks, but the picker
+        treats them identically once their odds are normalized -- they
+        still need real display names, not a raw-slug fallback."""
+        assert sportsbook_display("kalshi") == "Kalshi"
+        assert sportsbook_display("novig") == "Novig"
+        assert sportsbook_display("polymarket") == "Polymarket"
+        assert sportsbook_display("prophetx") == "ProphetX"
+
     def test_williamhill_us_slug_displays_as_caesars(self):
         """Regression (2026-09-09): production's actual sportsbook value is
         'williamhill_us', not 'williamhill' -- confirmed live against

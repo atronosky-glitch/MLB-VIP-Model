@@ -130,3 +130,22 @@ def test_find_middle_opportunities_keeps_a_plausible_nearby_pair():
     ]
     results = find_middle_opportunities(rows)
     assert any(r["over_line"] == 7.5 and r["under_line"] == 9.5 for r in results)
+
+
+def test_find_middle_opportunities_rejects_a_thin_liquidity_outlier_price():
+    """Real case, found live 2026-09-10 evaluating exchange venues
+    (Kalshi/Novig/Polymarket/ProphetX) for inclusion: a normal, plausible
+    line can still carry one thin-liquidity outlier PRICE (e.g. a Novig
+    quote at -9900) that is_plausible_line alone can't catch. That row
+    must never end up as a leg of a reported middle."""
+    rows = [
+        # Normal consensus pricing on both lines/sides.
+        _row("E1", "P1", "batting_totalBases_ou", "OVER", "BookA", -110, 1.909, 1.5),
+        _row("E1", "P1", "batting_totalBases_ou", "UNDER", "BookB", -110, 1.909, 2.5),
+        _row("E1", "P1", "batting_totalBases_ou", "OVER", "BookC", -105, 1.952, 2.5),
+        _row("E1", "P1", "batting_totalBases_ou", "UNDER", "BookD", -105, 1.952, 1.5),
+        # Thin-liquidity exchange outlier on the same, otherwise normal, line.
+        _row("E1", "P1", "batting_totalBases_ou", "UNDER", "novig", -9900, 1.0101, 2.5),
+    ]
+    results = find_middle_opportunities(rows)
+    assert all(r["over_sportsbook"] != "novig" and r["under_sportsbook"] != "novig" for r in results)

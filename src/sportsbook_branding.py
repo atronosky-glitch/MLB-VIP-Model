@@ -42,6 +42,14 @@ _BRAND_TABLE: dict[str, tuple[str, str, str]] = {
     "prizepicks":  ("PrizePicks",   "PP",  "#48d8ff"),
     "underdog":    ("Underdog",     "UD",  "#e8637a"),
     "betparx":     ("BetPARX",      "PX",  "#2dd4bf"),
+    # Exchange / prediction-market venues (added 2026-09-10, confirmed
+    # live via The Odds API for baseball_mlb) -- structurally different
+    # from a sportsbook (order-book/contract pricing, not a bookmaker
+    # setting its own line), but reported through the same
+    # bookmaker/sportsbook field once normalized into American odds.
+    "kalshi":      ("Kalshi",       "KA",  "#a995ff"),
+    "polymarket":  ("Polymarket",   "PM",  "#48d8ff"),
+    "prophetx":    ("ProphetX",     "PRX", "#ff9f43"),
 }
 
 # Fallback palette for any book not in the table above, so an unrecognized

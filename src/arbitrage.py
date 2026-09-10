@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from src.line_plausibility import consensus_lines, is_plausible_line
+from src.line_plausibility import consensus_lines, is_plausible_line, consensus_prices, is_plausible_price
 
 
 def _implied_prob(decimal_odds: float) -> float:
@@ -108,17 +108,32 @@ def find_arbitrage_opportunities(rows: list[dict]) -> list[dict]:
     near-even-money pricing instead of the extreme odds a line that far
     from the true number would actually have, which can otherwise look
     like a "guaranteed profit" arbitrage that isn't real.
+
+    A single row whose PRICE is implausibly far from its own side's
+    consensus implied probability is dropped before it can even be
+    considered (not just excluded from the final result) — found live
+    2026-09-10 evaluating exchange venues: a normal, plausible line can
+    still carry one thin-liquidity outlier price (e.g. -9900) that no
+    other book is near, which a line-only check can't catch.
     """
+    price_consensus = consensus_prices(rows)
+
     groups: dict[str, dict[str, dict[str, dict]]] = defaultdict(lambda: defaultdict(dict))
     meta: dict[str, dict] = {}
     for row in rows:
         key = row.get("market_group_key")
         side = row.get("side")
         book = row.get("sportsbook")
-        if not key or not side or not book:
+        price = row.get("price")
+        if not key or not side or not book or price is None:
+            continue
+        prob_key = (row.get("event_id"), row.get("player_id"), row.get("market_type"),
+                    row.get("line"), side)
+        side_consensus = price_consensus.get(prob_key)
+        if side_consensus is not None and not is_plausible_price(price, side_consensus):
             continue
         groups[key][side][book] = {
-            "price": row.get("price"),
+            "price": price,
             "decimal_odds": row.get("decimal_odds"),
         }
         meta.setdefault(key, {
