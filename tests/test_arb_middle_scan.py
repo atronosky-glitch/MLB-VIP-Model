@@ -196,6 +196,61 @@ class TestWorkerWiring:
         mock_mid.assert_not_called()
         mock_ev.assert_not_called()
 
+    def test_middle_channel_is_independent_of_the_arbitrage_channel(self, db_conn):
+        """A third channel just for middles (2026-09-11) -- configuring
+        discord_webhook_urls_middle sends middles there and nowhere
+        else, even when discord_webhook_urls_arb_middle is also set for
+        arbitrage."""
+        class FakeConfig:
+            discord_webhook_urls = ""
+            discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb-only"
+            discord_webhook_urls_middle = "https://discord.com/api/webhooks/middle-only"
+            database_path = "unused"
+            min_confidence_score = 40.0
+            min_ev_pct = 2.0
+
+        new_arb = [{"player_name": "Test Pitcher"}]
+        new_mid = [{"player_name": "Test Batter"}]
+
+        def fake_run_scan(conn, league="MLB", **kwargs):
+            return {"league": league, "rows_examined": 0,
+                    "arbitrage": {"detected": 1}, "middles": {"detected": 1},
+                    "new_arbitrage": new_arb if league == "MLB" else [],
+                    "new_middles": new_mid if league == "MLB" else []}
+
+        with patch("src.arb_middle_scan.run_scan", side_effect=fake_run_scan), \
+             patch("src.discord_delivery.deliver_arbitrage_alerts") as mock_arb, \
+             patch("src.discord_delivery.deliver_middle_alerts") as mock_mid, \
+             patch("src.discord_delivery.deliver_new_recommendation_alerts") as mock_ev:
+            worker._run_arb_middle_scan(db_conn, config=FakeConfig())
+
+        mock_arb.assert_called_once_with(new_arb, ["https://discord.com/api/webhooks/arb-only"])
+        mock_mid.assert_called_once_with(new_mid, ["https://discord.com/api/webhooks/middle-only"])
+        mock_ev.assert_not_called()
+
+    def test_middles_do_not_alert_when_only_the_arbitrage_channel_is_configured(self, db_conn):
+        class FakeConfig:
+            discord_webhook_urls = ""
+            discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb-only"
+            discord_webhook_urls_middle = ""
+            database_path = "unused"
+            min_confidence_score = 40.0
+            min_ev_pct = 2.0
+
+        def fake_run_scan(conn, league="MLB", **kwargs):
+            return {"league": league, "rows_examined": 0,
+                    "arbitrage": {"detected": 0}, "middles": {"detected": 1},
+                    "new_arbitrage": [],
+                    "new_middles": [{"player_name": "Test Batter"}] if league == "MLB" else []}
+
+        with patch("src.arb_middle_scan.run_scan", side_effect=fake_run_scan), \
+             patch("src.discord_delivery.deliver_arbitrage_alerts") as mock_arb, \
+             patch("src.discord_delivery.deliver_middle_alerts") as mock_mid:
+            worker._run_arb_middle_scan(db_conn, config=FakeConfig())
+
+        mock_arb.assert_not_called()
+        mock_mid.assert_not_called()
+
     def test_discord_delivery_failure_does_not_fail_the_scan_job(self, db_conn):
         class FakeConfig:
             discord_webhook_urls = "https://discord.com/api/webhooks/test"

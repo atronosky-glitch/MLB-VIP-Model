@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 SECRET_FIELDS = frozenset({
     "api_key", "google_credentials_path", "discord_webhook_urls",
-    "discord_webhook_urls_arb_middle",
+    "discord_webhook_urls_arb_middle", "discord_webhook_urls_middle",
 })
 
 # ── Defaults ───────────────────────────────────────────────────────
@@ -38,6 +38,7 @@ DEFAULTS = {
     "google_credentials_path": "",
     "discord_webhook_urls": "",
     "discord_webhook_urls_arb_middle": "",
+    "discord_webhook_urls_middle": "",
     "min_confidence_score": 40.0,
     "min_ev_pct": 2.0,
     "enabled_markets": "all",
@@ -65,6 +66,7 @@ ENV_MAP = {
     "MLB_GOOGLE_CREDENTIALS": "google_credentials_path",
     "MLB_DISCORD_WEBHOOKS": "discord_webhook_urls",
     "MLB_DISCORD_WEBHOOKS_ARB_MIDDLE": "discord_webhook_urls_arb_middle",
+    "MLB_DISCORD_WEBHOOKS_MIDDLE": "discord_webhook_urls_middle",
     "MLB_MIN_CONFIDENCE": "min_confidence_score",
     "MLB_MIN_EV": "min_ev_pct",
     "MLB_ENABLED_MARKETS": "enabled_markets",
@@ -95,6 +97,7 @@ class ProductionConfig:
     google_credentials_path: str = ""
     discord_webhook_urls: str = ""
     discord_webhook_urls_arb_middle: str = ""
+    discord_webhook_urls_middle: str = ""
     min_confidence_score: float = 40.0
     min_ev_pct: float = 2.0
     enabled_markets: str = "all"
@@ -218,7 +221,8 @@ def create_env_example() -> str:
         "",
         "# Optional — Discord",
         "# MLB_DISCORD_WEBHOOKS=https://discord.com/api/webhooks/...,https://...",
-        "# MLB_DISCORD_WEBHOOKS_ARB_MIDDLE=https://discord.com/api/webhooks/... (arbitrage/middle alerts; MLB_DISCORD_WEBHOOKS above is EV picks only)",
+        "# MLB_DISCORD_WEBHOOKS_ARB_MIDDLE=https://discord.com/api/webhooks/... (arbitrage alerts; MLB_DISCORD_WEBHOOKS above is EV picks only)",
+        "# MLB_DISCORD_WEBHOOKS_MIDDLE=https://discord.com/api/webhooks/... (middle alerts, its own channel)",
         "",
         "# Optional — filtering",
         "# MLB_MIN_CONFIDENCE=40.0",

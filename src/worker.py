@@ -394,12 +394,12 @@ def _run_arb_middle_scan(conn: DB, config) -> dict:
     whatever's newly active this pass — arbitrage, middles, and any EV
     picks not yet alerted — gets pushed to Discord right here, since
     this job already runs on a tight interval
-    (ARB_MIDDLE_SCAN_INTERVAL_MINUTES) across every league. EV picks and
-    arbitrage/middles go to separate webhook channels (2026-09-10) —
-    config.discord_webhook_urls for EV picks,
-    config.discord_webhook_urls_arb_middle for arbitrage/middles — with
-    no fallback between them, so leaving one unconfigured just means
-    that category doesn't alert yet, not that it spills into the other
+    (ARB_MIDDLE_SCAN_INTERVAL_MINUTES) across every league. EV picks,
+    arbitrage, and middles each go to their own webhook channel —
+    config.discord_webhook_urls (EV), discord_webhook_urls_arb_middle
+    (arbitrage), discord_webhook_urls_middle (middles) — with no
+    fallback between them, so leaving one unconfigured just means that
+    category doesn't alert yet, not that it spills into another
     channel."""
     from src.arb_middle_scan import run_scan
 
@@ -414,6 +414,7 @@ def _run_arb_middle_scan(conn: DB, config) -> dict:
     if config is not None and (
         getattr(config, "discord_webhook_urls", "")
         or getattr(config, "discord_webhook_urls_arb_middle", "")
+        or getattr(config, "discord_webhook_urls_middle", "")
     ):
         _deliver_new_opportunity_alerts(conn, config, results)
 
@@ -421,29 +422,33 @@ def _run_arb_middle_scan(conn: DB, config) -> dict:
 
 
 def _deliver_new_opportunity_alerts(conn: DB, config, results: dict[str, dict]) -> None:
-    """Push new arbitrage/middle opportunities and not-yet-alerted EV
-    picks to Discord. A delivery failure here never fails the scan job
-    — the opportunities are already synced to the DB either way, so a
-    missed alert just means the next 15-minute pass catches up (EV
-    picks are dedup'd so they simply retry; arbitrage/middles are
-    dedup'd by their own still-ACTIVE status, so a missed one is silent
-    unless it re-expires before the retry)."""
+    """Push new arbitrage opportunities, new middle opportunities, and
+    not-yet-alerted EV picks to Discord — each to its own channel. A
+    delivery failure here never fails the scan job — the opportunities
+    are already synced to the DB either way, so a missed alert just
+    means the next 15-minute pass catches up (EV picks are dedup'd so
+    they simply retry; arbitrage/middles are dedup'd by their own
+    still-ACTIVE status, so a missed one is silent unless it re-expires
+    before the retry)."""
     ev_urls = [u.strip() for u in config.discord_webhook_urls.split(",") if u.strip()]
-    arb_mid_urls = [
+    arb_urls = [
         u.strip() for u in getattr(config, "discord_webhook_urls_arb_middle", "").split(",") if u.strip()
     ]
+    middle_urls = [
+        u.strip() for u in getattr(config, "discord_webhook_urls_middle", "").split(",") if u.strip()
+    ]
 
-    if arb_mid_urls:
+    if arb_urls or middle_urls:
         from src.discord_delivery import deliver_arbitrage_alerts, deliver_middle_alerts
 
         for league, result in results.items():
             try:
                 new_arbs = result.get("new_arbitrage") or []
-                if new_arbs:
-                    deliver_arbitrage_alerts(new_arbs, arb_mid_urls)
+                if new_arbs and arb_urls:
+                    deliver_arbitrage_alerts(new_arbs, arb_urls)
                 new_mids = result.get("new_middles") or []
-                if new_mids:
-                    deliver_middle_alerts(new_mids, arb_mid_urls)
+                if new_mids and middle_urls:
+                    deliver_middle_alerts(new_mids, middle_urls)
             except Exception:
                 logger.exception("[%s] Discord opportunity alert delivery failed", league)
 
