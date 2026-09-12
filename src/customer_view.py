@@ -536,7 +536,7 @@ def _cumulative_chart(rows: list[dict], label: str) -> None:
         st.caption(f"No settled {label.lower()} yet.")
         return
     df = pd.DataFrame({
-        "Date": [r["graded_at"][:10] for r in rows],
+        "Date": [r["graded_at"] for r in rows],
         "Profit": [r["profit_units"] or 0 for r in rows],
     })
     df["Cumulative"] = df["Profit"].cumsum()
@@ -551,11 +551,11 @@ def _cumulative_chart(rows: list[dict], label: str) -> None:
     </div>
     """, unsafe_allow_html=True)
     chart = alt.Chart(df).mark_area(
-        line={"color": color, "strokeWidth": 2.5}, color=color, opacity=0.16, interpolate="monotone",
+        line={"color": color, "strokeWidth": 2.5}, color=color, opacity=0.16, interpolate="step-after",
     ).encode(
         x=alt.X("Date:T", title=None,
                 axis=alt.Axis(grid=False, labelColor="#6b7280", tickColor="#e5e7eb", domainColor="#e5e7eb")),
-        y=alt.Y("Cumulative:Q", title="Cumulative units",
+        y=alt.Y("Cumulative:Q", title="Cumulative units", stack=None,
                 axis=alt.Axis(grid=True, gridColor="#f0f1f3", labelColor="#6b7280", titleColor="#6b7280")),
     ).configure_view(strokeWidth=0).configure(background="transparent")
     st.altair_chart(chart, use_container_width=True)
@@ -745,7 +745,7 @@ elif st.session_state.view_mode == "ev":
             ).encode(
                 x=alt.X("Date:T", title=None,
                         axis=alt.Axis(grid=False, labelColor="#6b7280", tickColor="#e5e7eb", domainColor="#e5e7eb")),
-                y=alt.Y("Actual Units:Q", title="Cumulative units",
+                y=alt.Y("Actual Units:Q", title="Cumulative units", stack=None,
                         axis=alt.Axis(grid=True, gridColor="#f0f1f3", labelColor="#6b7280", titleColor="#6b7280")),
                 tooltip=[alt.Tooltip("Date:T", title="Date"), alt.Tooltip("Actual Units:Q", format="+.2f")],
             )

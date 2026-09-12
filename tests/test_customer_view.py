@@ -136,6 +136,28 @@ def test_landing_page_is_three_independent_mode_boxes():
     assert '_cumulative_chart(data["graded_middles"], "Middling")' in source
 
 
+def test_cumulative_charts_disable_vega_default_stacking():
+    """Regression test for a real production bug (2026-09-12): Vega-Lite
+    silently applies default stacking to mark_area's quantitative Y
+    channel whenever multiple rows share an x position -- which happens
+    constantly here, since many opportunities settle within the same
+    day (or, for EV picks, the same scan_timestamp). That summed EVERY
+    Cumulative value sharing an x bucket instead of drawing a single
+    running total, inflating the Arbitrage Track Record chart's axis
+    into the tens/hundreds while the correctly-computed headline number
+    stayed accurate -- confirmed live: real cumulative topped out at
+    3.27u, but the chart rendered a plateau near 80-90 until stack=None
+    was added. Both cumulative charts must opt out of stacking."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert source.count('stack=None') >= 2
+    assert 'alt.Y("Cumulative:Q", title="Cumulative units", stack=None,' in source
+    assert 'alt.Y("Actual Units:Q", title="Cumulative units", stack=None,' in source
+    # The date-truncation that collapsed dozens of distinct settlements
+    # onto just 1-2 x positions per day (and made the stacking bug much
+    # worse) must not come back either.
+    assert 'r["graded_at"][:10]' not in source
+
+
 def test_research_picks_use_configured_timezone_not_utc_day():
     """Regression test (2026-09-06 fix): the customer-facing "Today's
     Research" list must use the Eastern (or whatever MLB_TIMEZONE says)
