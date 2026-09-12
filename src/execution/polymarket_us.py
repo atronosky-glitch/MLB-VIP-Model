@@ -25,13 +25,15 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from src.execution.base import (
-    BestBidAsk, Balance, HealthCheckResult, Market, Orderbook,
+    BestBidAsk, Balance, FeeEstimate, HealthCheckResult, Market,
+    NormalizedOrderBook, Orderbook, OrderLevel,
     PredictionMarketProvider, RawGameEvent, mask_secret,
 )
 from src.execution.credentials import load_ed25519_private_key
@@ -42,6 +44,22 @@ logger = logging.getLogger(__name__)
 _PUBLIC_BASE_URL = "https://gateway.polymarket.us"
 _AUTH_BASE_URL = "https://api.polymarket.us"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+# Confirmed directly from the primary source, docs.polymarket.us/fees
+# (2026-09-12): taker fee = round_half_even_to_cent(0.06*C*P*(1-P)).
+# Worked examples from that page: at P=$0.50, C=1000, taker fee = $15.00;
+# banker's rounding examples $0.025->$0.02 (down to even), $0.035->$0.04
+# (up to even) -- explicitly NOT the same rounding rule as Kalshi's
+# round-up. Maker rebate (0.0125*C*P*(1-P), paid TO the maker) is
+# documented but not implemented -- this stage only analyzes taker
+# (immediate/marketable) fills.
+_TAKER_FEE_COEFFICIENT = Decimal("0.06")
+
+
+def _polymarket_taker_fee(contracts: Decimal, price: Decimal) -> Decimal:
+    raw_fee = _TAKER_FEE_COEFFICIENT * contracts * price * (Decimal("1") - price)
+    cents = (raw_fee * 100).to_integral_value(rounding=ROUND_HALF_EVEN)
+    return cents / 100
 
 
 class PolymarketUSProvider(PredictionMarketProvider):
@@ -187,7 +205,56 @@ class PolymarketUSProvider(PredictionMarketProvider):
                 checked_at=datetime.now(timezone.utc),
             )
 
-    # -- Stage 2: game-level market matching ---------------------------
+    # -- Stage 2B: executable pricing -----------------------------------
+
+    def estimate_fees(self, side: str, price: Decimal, quantity: Decimal) -> FeeEstimate:
+        fee = _polymarket_taker_fee(quantity, price)
+        return FeeEstimate(
+            fee=fee, fee_estimate=False,
+            detail="Polymarket US taker fee: round_half_even_to_cent(0.06*C*P*(1-P)); "
+                   "confirmed directly against docs.polymarket.us/fees's own worked examples",
+        )
+
+    def normalize_orderbook(self, raw: Orderbook) -> NormalizedOrderBook:
+        """UNCONFIRMED whether Polymarket US models NO as genuinely
+        separate, independently-tradeable liquidity (as the
+        international Polymarket CLOB does with separate outcome
+        tokens) or as a single binary book where NO = 1-YES (as
+        Kalshi's docs explicitly confirm for Kalshi specifically).
+        docs.polymarket.us describes one instrument per game outcome
+        (matching a live /v1/markets fetch that showed one row per
+        game, not one per team) which is consistent with -- but does
+        not prove -- the single-book structure. raw.bids/raw.asks are
+        treated as the YES side directly (Polymarket's book is already
+        a normal bidirectional book, unlike Kalshi's bids-only-per-side
+        quirk), and NO is synthesized via 1-P as the documented,
+        conservative default. Verify via `inspect-markets --raw`
+        against real data -- flagged the same way Stage 2A flagged
+        Kalshi's title-parsing as unconfirmed."""
+        yes_bids = sorted(
+            (OrderLevel(Decimal(str(p)), Decimal(str(q))) for p, q in raw.bids),
+            key=lambda lvl: lvl.price, reverse=True,
+        )
+        yes_asks = sorted(
+            (OrderLevel(Decimal(str(p)), Decimal(str(q))) for p, q in raw.asks),
+            key=lambda lvl: lvl.price,
+        )
+        no_bids = sorted(
+            (OrderLevel(Decimal("1") - lvl.price, lvl.quantity) for lvl in yes_asks),
+            key=lambda lvl: lvl.price, reverse=True,
+        )
+        no_asks = sorted(
+            (OrderLevel(Decimal("1") - lvl.price, lvl.quantity) for lvl in yes_bids),
+            key=lambda lvl: lvl.price,
+        )
+        return NormalizedOrderBook(
+            market_id=raw.market_id,
+            yes_bids=list(yes_bids), yes_asks=list(yes_asks),
+            no_bids=list(no_bids), no_asks=list(no_asks),
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    # -- Stage 2A: game-level market matching ---------------------------
 
     def parse_game_event(self, market: Market) -> RawGameEvent | None:
         """Polymarket US's slug grammar, confirmed live 2026-09-12:

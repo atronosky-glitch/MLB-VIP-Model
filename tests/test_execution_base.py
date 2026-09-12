@@ -1,11 +1,13 @@
 """Tests for src/execution/base.py's provider interface and normalized types."""
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 
 from src.execution.base import (
-    BestBidAsk, Balance, HealthCheckResult, Market, Orderbook,
+    BestBidAsk, Balance, FeeEstimate, HealthCheckResult, Market,
+    NormalizedOrderBook, Orderbook, OrderLevel,
     PredictionMarketProvider, mask_secret,
 )
 
@@ -33,6 +35,15 @@ class _DummyProvider(PredictionMarketProvider):
     def health_check(self):
         return HealthCheckResult(provider=self.name, ok=True, detail="", checked_at=datetime.now(timezone.utc))
 
+    def normalize_orderbook(self, raw):
+        return NormalizedOrderBook(
+            market_id=raw.market_id, yes_bids=[], yes_asks=[], no_bids=[], no_asks=[],
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    def estimate_fees(self, side, price, quantity):
+        return FeeEstimate(fee=Decimal("0"), fee_estimate=True, detail="dummy")
+
 
 class TestPredictionMarketProviderABC:
     def test_cannot_instantiate_the_bare_abc(self):
@@ -57,6 +68,10 @@ class TestPredictionMarketProviderABC:
         with pytest.raises(NotImplementedError):
             provider.cancel_order()
 
+    def test_supports_live_execution_defaults_to_false(self):
+        provider = _DummyProvider()
+        assert provider.supports_live_execution is False
+
 
 class TestNormalizedDataclasses:
     def test_market_round_trips_raw_payload(self):
@@ -73,6 +88,31 @@ class TestNormalizedDataclasses:
         now = datetime.now(timezone.utc)
         result = HealthCheckResult(provider="kalshi", ok=True, detail="ok", checked_at=now)
         assert result.checked_at == now
+
+    def test_order_level_unpacks_like_a_tuple_but_has_named_fields(self):
+        level = OrderLevel(price=Decimal("0.55"), quantity=Decimal("100"))
+        price, quantity = level
+        assert price == Decimal("0.55")
+        assert level.price == Decimal("0.55")
+        assert level.quantity == Decimal("100")
+
+    def test_normalized_order_book_round_trips_all_four_sides(self):
+        now = datetime.now(timezone.utc)
+        book = NormalizedOrderBook(
+            market_id="M1",
+            yes_bids=[OrderLevel(Decimal("0.54"), Decimal("10"))],
+            yes_asks=[OrderLevel(Decimal("0.56"), Decimal("20"))],
+            no_bids=[OrderLevel(Decimal("0.44"), Decimal("30"))],
+            no_asks=[OrderLevel(Decimal("0.46"), Decimal("40"))],
+            timestamp=now,
+        )
+        assert book.yes_bids[0].price == Decimal("0.54")
+        assert book.no_asks[0].quantity == Decimal("40")
+
+    def test_fee_estimate_flags_when_the_fee_is_approximate(self):
+        fee = FeeEstimate(fee=Decimal("0.14"), fee_estimate=True, detail="taker fee, conservative")
+        assert fee.fee_estimate is True
+        assert fee.fee == Decimal("0.14")
 
 
 class TestMaskSecret:

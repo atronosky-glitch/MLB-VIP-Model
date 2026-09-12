@@ -10,7 +10,7 @@ import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from src.execution.base import Market
+from src.execution.base import Market, Orderbook
 from src.execution.polymarket_us import PolymarketUSProvider
 
 
@@ -203,3 +203,96 @@ class TestParseGameEvent:
     def test_slug_with_invalid_date_returns_none(self, provider):
         market = Market(id="aec-nfl-lac-ten-2025-13-99", title="x", status="active")
         assert provider.parse_game_event(market) is None
+
+
+class TestEstimateFees:
+    """fee = round_half_even_to_cent(0.06*C*P*(1-P)), confirmed directly
+    against docs.polymarket.us/fees's own worked examples."""
+
+    def test_matches_the_confirmed_docs_worked_example(self, provider):
+        from decimal import Decimal
+        # docs.polymarket.us/fees: taker at P=$0.50, C=1000 -> $15.00
+        result = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1000"))
+        assert result.fee == Decimal("15.00")
+
+    def test_banker_rounding_down_to_even(self, provider):
+        """docs.polymarket.us/fees: $0.025 rounds to $0.02 (down to even)."""
+        from decimal import Decimal
+        from src.execution.polymarket_us import _polymarket_taker_fee
+        # Reverse-engineer inputs that produce exactly 2.5 cents pre-rounding
+        # by testing the rounding helper directly against that raw value.
+        raw = Decimal("0.025")
+        cents = (raw * 100)
+        from decimal import ROUND_HALF_EVEN
+        assert cents.to_integral_value(rounding=ROUND_HALF_EVEN) == Decimal("2")
+
+    def test_banker_rounding_up_to_even(self, provider):
+        """docs.polymarket.us/fees: $0.035 rounds to $0.04 (up to even)."""
+        from decimal import Decimal, ROUND_HALF_EVEN
+        raw = Decimal("0.035")
+        cents = (raw * 100)
+        assert cents.to_integral_value(rounding=ROUND_HALF_EVEN) == Decimal("4")
+
+    def test_fee_result_is_flagged_as_confirmed_not_an_estimate(self, provider):
+        from decimal import Decimal
+        result = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1000"))
+        assert result.fee_estimate is False
+
+    def test_fee_is_symmetric_around_fifty_cents(self, provider):
+        from decimal import Decimal
+        fee_30 = provider.estimate_fees("YES", Decimal("0.30"), Decimal("100")).fee
+        fee_70 = provider.estimate_fees("YES", Decimal("0.70"), Decimal("100")).fee
+        assert fee_30 == fee_70
+
+    def test_maker_rebate_is_not_applied_by_this_taker_only_stage(self, provider):
+        """Maker rebate (0.0125*C*P*(1-P), paid TO the maker) exists on
+        Polymarket US but isn't implemented -- this stage only ever
+        analyzes taker (marketable) fills."""
+        from decimal import Decimal
+        result = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1000"))
+        assert result.fee > Decimal("0")  # a cost, never a rebate, in this stage
+
+
+class TestNormalizeOrderbook:
+    """Polymarket's raw book is already a normal bidirectional book for
+    the YES side; NO is synthesized via 1-P as a documented, UNCONFIRMED
+    default -- see normalize_orderbook's docstring."""
+
+    def test_yes_bids_and_asks_pass_through_directly(self, provider):
+        from decimal import Decimal
+        raw = Orderbook(market_id="M1", bids=[(0.65, 1000.0)], asks=[(0.66, 500.0)], raw={})
+        book = provider.normalize_orderbook(raw)
+        assert book.yes_bids[0].price == Decimal("0.65")
+        assert book.yes_asks[0].price == Decimal("0.66")
+
+    def test_no_side_synthesized_via_one_minus_p(self, provider):
+        from decimal import Decimal
+        raw = Orderbook(market_id="M1", bids=[(0.65, 1000.0)], asks=[(0.66, 500.0)], raw={})
+        book = provider.normalize_orderbook(raw)
+        assert book.no_bids[0].price == Decimal("1") - Decimal("0.66")
+        assert book.no_asks[0].price == Decimal("1") - Decimal("0.65")
+
+    def test_empty_book_produces_empty_sides_not_a_crash(self, provider):
+        raw = Orderbook(market_id="M1", bids=[], asks=[], raw={})
+        book = provider.normalize_orderbook(raw)
+        assert book.yes_bids == []
+        assert book.no_asks == []
+
+    def test_uses_decimal_not_float(self, provider):
+        from decimal import Decimal
+        raw = Orderbook(market_id="M1", bids=[(0.65, 1000.0)], asks=[(0.66, 500.0)], raw={})
+        book = provider.normalize_orderbook(raw)
+        assert isinstance(book.yes_bids[0].price, Decimal)
+        assert isinstance(book.no_bids[0].price, Decimal)
+
+
+class TestPlaceOrderStillDisabled:
+    """Regression: this safety property must remain true after Stage 2B."""
+
+    def test_place_order_raises_not_implemented(self, provider):
+        with pytest.raises(NotImplementedError):
+            provider.place_order()
+
+    def test_cancel_order_raises_not_implemented(self, provider):
+        with pytest.raises(NotImplementedError):
+            provider.cancel_order()

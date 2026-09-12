@@ -480,6 +480,31 @@ def db_conn():
         CREATE INDEX IF NOT EXISTS idx_market_matches_rec ON market_matches(recommendation_id);
         CREATE INDEX IF NOT EXISTS idx_market_matches_provider_market
             ON market_matches(provider, provider_market_id);
+        CREATE TABLE IF NOT EXISTS execution_opportunities (
+            opportunity_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id    TEXT NOT NULL,
+            provider             TEXT NOT NULL,
+            provider_market_id   TEXT,
+            match_id             INTEGER,
+            model_probability    REAL,
+            best_bid             REAL,
+            best_ask             REAL,
+            expected_fill_price  REAL,
+            quantity_analyzed    REAL,
+            analysis_stake       REAL,
+            estimated_fees       REAL,
+            slippage             REAL,
+            raw_ev_pct           REAL,
+            net_ev_pct           REAL,
+            max_acceptable_price REAL,
+            liquidity            REAL,
+            status               TEXT NOT NULL,
+            rejection_reason     TEXT,
+            market_data_timestamp TEXT,
+            created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_opportunities_rec ON execution_opportunities(recommendation_id);
+        CREATE INDEX IF NOT EXISTS idx_execution_opportunities_status ON execution_opportunities(status);
         CREATE TABLE IF NOT EXISTS scheduled_jobs (
             job_id TEXT PRIMARY KEY,
             job_type TEXT NOT NULL,

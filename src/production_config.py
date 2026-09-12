@@ -61,6 +61,14 @@ DEFAULTS = {
     "polymarket_us_api_key_id": "",
     "polymarket_us_private_key_path": "",
     "min_market_match_confidence": 0.98,
+    "execution_analysis_stake_usd": 10.0,
+    "min_raw_ev_pct": 2.0,
+    "min_net_ev_pct": 1.0,
+    "max_spread_pct": 0.10,
+    "max_slippage_pct": 0.05,
+    "min_available_liquidity_usd": 50.0,
+    "max_market_data_age_seconds": 30,
+    "execution_allowed_rec_statuses": "STRONG_EDGE,POSITIVE_EDGE,STRONG_PRICE_OUTLIER,PRICE_OUTLIER",
 }
 
 # ── Environment variable mapping ───────────────────────────────────
@@ -97,6 +105,14 @@ ENV_MAP = {
     "POLYMARKET_US_API_KEY_ID": "polymarket_us_api_key_id",
     "POLYMARKET_US_PRIVATE_KEY_PATH": "polymarket_us_private_key_path",
     "MLB_MIN_MARKET_MATCH_CONFIDENCE": "min_market_match_confidence",
+    "MLB_EXECUTION_ANALYSIS_STAKE_USD": "execution_analysis_stake_usd",
+    "MLB_MIN_RAW_EV_PCT": "min_raw_ev_pct",
+    "MLB_MIN_NET_EV_PCT": "min_net_ev_pct",
+    "MLB_MAX_SPREAD_PCT": "max_spread_pct",
+    "MLB_MAX_SLIPPAGE_PCT": "max_slippage_pct",
+    "MLB_MIN_AVAILABLE_LIQUIDITY_USD": "min_available_liquidity_usd",
+    "MLB_MAX_MARKET_DATA_AGE_SECONDS": "max_market_data_age_seconds",
+    "MLB_EXECUTION_ALLOWED_REC_STATUSES": "execution_allowed_rec_statuses",
 }
 
 
@@ -136,6 +152,26 @@ class ProductionConfig:
     polymarket_us_api_key_id: str = ""
     polymarket_us_private_key_path: str = ""
     min_market_match_confidence: float = 0.98
+    execution_analysis_stake_usd: float = 10.0
+    min_raw_ev_pct: float = 2.0
+    min_net_ev_pct: float = 1.0
+    max_spread_pct: float = 0.10
+    max_slippage_pct: float = 0.05
+    min_available_liquidity_usd: float = 50.0
+    max_market_data_age_seconds: int = 30
+    # Which historical_recommendations.rec_status values the execution
+    # layer will evaluate. A single canonical source (this field), not
+    # hardcoded separately in cli.py/evaluator.py -- deliberately
+    # repeating src/discord_delivery.py's fix rather than its original
+    # bug: 'BET'/'LEAN' never existed in this schema; the real values
+    # src/prop_config.py's classification writes are STRONG_EDGE/
+    # POSITIVE_EDGE/MARGINAL_EDGE (O/U) and STRONG_PRICE_OUTLIER/
+    # PRICE_OUTLIER/MARGINAL_PRICE_OUTLIER (YN). Only the four
+    # "actionable" tiers are included by default -- MARGINAL_*/NO_EDGE
+    # are excluded because they represent a weaker edge the model
+    # itself doesn't currently classify as worth acting on (see
+    # src/discord_delivery.py's identical default for the same reason).
+    execution_allowed_rec_statuses: str = "STRONG_EDGE,POSITIVE_EDGE,STRONG_PRICE_OUTLIER,PRICE_OUTLIER"
 
     def redacted(self) -> dict[str, Any]:
         """Return config as dict with secret fields redacted."""
@@ -193,7 +229,38 @@ class ProductionConfig:
         if not 0.0 <= self.min_market_match_confidence <= 1.0:
             errors.append("min_market_match_confidence must be between 0 and 1")
 
+        if self.execution_analysis_stake_usd <= 0:
+            errors.append("execution_analysis_stake_usd must be > 0")
+
+        if self.min_raw_ev_pct < 0:
+            errors.append("min_raw_ev_pct must be >= 0")
+
+        if self.min_net_ev_pct < 0:
+            errors.append("min_net_ev_pct must be >= 0")
+
+        if not 0.0 <= self.max_spread_pct <= 1.0:
+            errors.append("max_spread_pct must be between 0 and 1")
+
+        if not 0.0 <= self.max_slippage_pct <= 1.0:
+            errors.append("max_slippage_pct must be between 0 and 1")
+
+        if self.min_available_liquidity_usd < 0:
+            errors.append("min_available_liquidity_usd must be >= 0")
+
+        if self.max_market_data_age_seconds <= 0:
+            errors.append("max_market_data_age_seconds must be > 0")
+
+        allowed_statuses = [s.strip() for s in self.execution_allowed_rec_statuses.split(",") if s.strip()]
+        if not allowed_statuses:
+            errors.append("execution_allowed_rec_statuses must list at least one status")
+
         return errors
+
+    def execution_allowed_rec_statuses_list(self) -> tuple[str, ...]:
+        """execution_allowed_rec_statuses, parsed -- the single
+        canonical way any execution-layer code should get this list
+        (never re-split the raw string in more than one place)."""
+        return tuple(s.strip() for s in self.execution_allowed_rec_statuses.split(",") if s.strip())
 
 
 def load_config(config_path: str | Path | None = None) -> ProductionConfig:
@@ -293,5 +360,16 @@ def create_env_example() -> str:
         "# POLYMARKET_US_API_KEY_ID=your_polymarket_us_key_id",
         "# POLYMARKET_US_PRIVATE_KEY_PATH=/path/to/polymarket_us_secret_key.txt",
         "# MLB_MIN_MARKET_MATCH_CONFIDENCE=0.98",
+        "",
+        "# Optional — execution-layer analysis (Stage 2B: pricing/EV analysis",
+        "# only, no order placement exists yet)",
+        "# MLB_EXECUTION_ANALYSIS_STAKE_USD=10.00",
+        "# MLB_MIN_RAW_EV_PCT=2.0",
+        "# MLB_MIN_NET_EV_PCT=1.0",
+        "# MLB_MAX_SPREAD_PCT=0.10",
+        "# MLB_MAX_SLIPPAGE_PCT=0.05",
+        "# MLB_MIN_AVAILABLE_LIQUIDITY_USD=50.00",
+        "# MLB_MAX_MARKET_DATA_AGE_SECONDS=30",
+        "# MLB_EXECUTION_ALLOWED_REC_STATUSES=STRONG_EDGE,POSITIVE_EDGE,STRONG_PRICE_OUTLIER,PRICE_OUTLIER",
     ]
     return "\n".join(lines)

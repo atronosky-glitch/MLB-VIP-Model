@@ -21,13 +21,15 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from src.execution.base import (
-    BestBidAsk, Balance, HealthCheckResult, Market, Orderbook,
+    BestBidAsk, Balance, FeeEstimate, HealthCheckResult, Market,
+    NormalizedOrderBook, Orderbook, OrderLevel,
     PredictionMarketProvider, RawGameEvent, mask_secret,
 )
 from src.execution.credentials import load_rsa_private_key
@@ -41,6 +43,24 @@ _BASE_URLS = {
     "production": "https://external-api.kalshi.com",
 }
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+# Kalshi's standard (non-margin) taker fee, confirmed against multiple
+# 2026 sources describing Kalshi's public maker/taker framework:
+# fee = ceil_to_cent(0.07 * C * P * (1-P)). Peaks at 1.75c/contract at
+# P=$0.50. Maker fee (25% of taker, on markets that have one) is
+# documented but not implemented here -- this stage only analyzes
+# taker (immediate/marketable) fills. No per-order dollar cap could be
+# confirmed from a primary source -- not invented. Marked as an
+# estimate (not confirmed against a primary-source page for this exact
+# simple formula, only multiple consistent secondary sources) rather
+# than an exact guarantee.
+_TAKER_FEE_COEFFICIENT = Decimal("0.07")
+
+
+def _kalshi_taker_fee(contracts: Decimal, price: Decimal) -> Decimal:
+    raw_fee = _TAKER_FEE_COEFFICIENT * contracts * price * (Decimal("1") - price)
+    cents = (raw_fee * 100).to_integral_value(rounding=ROUND_CEILING)
+    return cents / 100
 
 
 class KalshiProvider(PredictionMarketProvider):
@@ -175,7 +195,51 @@ class KalshiProvider(PredictionMarketProvider):
                 checked_at=datetime.now(timezone.utc),
             )
 
-    # -- Stage 2: game-level market matching ---------------------------
+    # -- Stage 2B: executable pricing -----------------------------------
+
+    def estimate_fees(self, side: str, price: Decimal, quantity: Decimal) -> FeeEstimate:
+        fee = _kalshi_taker_fee(quantity, price)
+        return FeeEstimate(
+            fee=fee, fee_estimate=True,
+            detail="Kalshi taker fee: ceil_to_cent(0.07*C*P*(1-P)); confirmed via multiple "
+                   "consistent 2026 sources, not a single unambiguous primary-source page "
+                   "for this exact (non-margin) formula, hence marked as an estimate",
+        )
+
+    def normalize_orderbook(self, raw: Orderbook) -> NormalizedOrderBook:
+        """Kalshi's orderbook only ever returns BIDS for each side --
+        raw.bids is yes_dollars (yes-side bids), raw.asks is Stage 1's
+        name for no_dollars (no-side bids, despite the "asks" name it
+        was given there). yes_asks/no_asks are synthesized via 1-P:
+        this is not a hand-wavy no-arbitrage assumption but a mechanism
+        fact -- a resting order to buy NO at price P *is* a resting
+        order to sell YES at (1-P), since Kalshi's yes_dollars/
+        no_dollars are two views into one shared book, not two
+        independently-liquid books."""
+        yes_bids = sorted(
+            (OrderLevel(Decimal(str(p)), Decimal(str(q))) for p, q in raw.bids),
+            key=lambda lvl: lvl.price, reverse=True,
+        )
+        no_bids = sorted(
+            (OrderLevel(Decimal(str(p)), Decimal(str(q))) for p, q in raw.asks),
+            key=lambda lvl: lvl.price, reverse=True,
+        )
+        yes_asks = sorted(
+            (OrderLevel(Decimal("1") - lvl.price, lvl.quantity) for lvl in no_bids),
+            key=lambda lvl: lvl.price,
+        )
+        no_asks = sorted(
+            (OrderLevel(Decimal("1") - lvl.price, lvl.quantity) for lvl in yes_bids),
+            key=lambda lvl: lvl.price,
+        )
+        return NormalizedOrderBook(
+            market_id=raw.market_id,
+            yes_bids=list(yes_bids), yes_asks=list(yes_asks),
+            no_bids=list(no_bids), no_asks=list(no_asks),
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    # -- Stage 2A: game-level market matching ---------------------------
 
     _TITLE_SEPARATORS = (" vs. ", " vs ", " @ ")
 

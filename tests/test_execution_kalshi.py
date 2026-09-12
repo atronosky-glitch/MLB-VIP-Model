@@ -9,7 +9,7 @@ import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from src.execution.base import Market
+from src.execution.base import Market, Orderbook
 from src.execution.kalshi import KalshiProvider
 
 
@@ -220,3 +220,104 @@ class TestParseGameEvent:
         market = Market(id="T1", title="Athletics @ Toronto Blue Jays", status="open")
         event = provider.parse_game_event(market)
         assert event.event_start_time is None
+
+
+class TestEstimateFees:
+    """fee = ceil_to_cent(0.07*C*P*(1-P)), confirmed against multiple
+    2026 sources describing Kalshi's public taker-fee framework."""
+
+    def test_fee_peaks_at_fifty_cents(self, provider):
+        from decimal import Decimal
+        fee_50 = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1")).fee
+        fee_10 = provider.estimate_fees("YES", Decimal("0.10"), Decimal("1")).fee
+        fee_90 = provider.estimate_fees("YES", Decimal("0.90"), Decimal("1")).fee
+        assert fee_50 > fee_10
+        assert fee_50 > fee_90
+
+    def test_fee_is_symmetric_around_fifty_cents(self, provider):
+        from decimal import Decimal
+        fee_30 = provider.estimate_fees("YES", Decimal("0.30"), Decimal("1")).fee
+        fee_70 = provider.estimate_fees("YES", Decimal("0.70"), Decimal("1")).fee
+        assert fee_30 == fee_70
+
+    def test_rounds_up_to_the_next_cent(self, provider):
+        from decimal import Decimal
+        # 0.07 * 1 * 0.50 * 0.50 = 0.0175 -> ceil to 2 cents, not 1
+        fee = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1")).fee
+        assert fee == Decimal("0.02")
+
+    def test_scales_with_contract_count(self, provider):
+        from decimal import Decimal
+        fee_1 = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1")).fee
+        fee_100 = provider.estimate_fees("YES", Decimal("0.50"), Decimal("100")).fee
+        assert fee_100 > fee_1 * 50  # scales roughly linearly with C
+
+    def test_near_zero_and_near_one_prices_have_low_fees(self, provider):
+        from decimal import Decimal
+        fee_low = provider.estimate_fees("YES", Decimal("0.01"), Decimal("1")).fee
+        fee_mid = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1")).fee
+        assert fee_low < fee_mid
+
+    def test_maker_fee_is_not_applied_by_this_taker_only_stage(self, provider):
+        """25% maker discount exists on Kalshi but isn't implemented --
+        this stage only ever analyzes taker (marketable) fills."""
+        from decimal import Decimal
+        result = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1"))
+        assert result.fee == Decimal("0.02")  # the full taker fee, not 25% of it
+
+    def test_fee_result_is_flagged_as_an_estimate(self, provider):
+        from decimal import Decimal
+        result = provider.estimate_fees("YES", Decimal("0.50"), Decimal("1"))
+        assert result.fee_estimate is True
+
+
+class TestNormalizeOrderbook:
+    """Kalshi's raw book only ever returns bids for each side; asks are
+    synthesized via the 1-P transform, which is a mechanism fact (see
+    normalize_orderbook's docstring), not an assumption."""
+
+    def test_yes_ask_and_no_bid_sum_to_exactly_one_dollar(self, provider):
+        from decimal import Decimal
+        raw = Orderbook(
+            market_id="T1",
+            bids=[(0.55, 100.0)],   # yes_dollars
+            asks=[(0.44, 50.0)],    # Stage 1's name for no_dollars
+            raw={},
+        )
+        book = provider.normalize_orderbook(raw)
+        assert book.yes_asks[0].price + book.no_bids[0].price == Decimal("1")
+        assert book.no_asks[0].price + book.yes_bids[0].price == Decimal("1")
+
+    def test_yes_bids_and_no_bids_come_from_the_correct_raw_side(self, provider):
+        from decimal import Decimal
+        raw = Orderbook(market_id="T1", bids=[(0.55, 100.0)], asks=[(0.44, 50.0)], raw={})
+        book = provider.normalize_orderbook(raw)
+        assert book.yes_bids[0].price == Decimal("0.55")
+        assert book.no_bids[0].price == Decimal("0.44")
+
+    def test_empty_book_produces_empty_sides_not_a_crash(self, provider):
+        raw = Orderbook(market_id="T1", bids=[], asks=[], raw={})
+        book = provider.normalize_orderbook(raw)
+        assert book.yes_bids == []
+        assert book.yes_asks == []
+        assert book.no_bids == []
+        assert book.no_asks == []
+
+    def test_uses_decimal_not_float(self, provider):
+        from decimal import Decimal
+        raw = Orderbook(market_id="T1", bids=[(0.55, 100.0)], asks=[(0.44, 50.0)], raw={})
+        book = provider.normalize_orderbook(raw)
+        assert isinstance(book.yes_bids[0].price, Decimal)
+        assert isinstance(book.yes_asks[0].price, Decimal)
+
+
+class TestPlaceOrderStillDisabled:
+    """Regression: this safety property must remain true after Stage 2B."""
+
+    def test_place_order_raises_not_implemented(self, provider):
+        with pytest.raises(NotImplementedError):
+            provider.place_order()
+
+    def test_cancel_order_raises_not_implemented(self, provider):
+        with pytest.raises(NotImplementedError):
+            provider.cancel_order()

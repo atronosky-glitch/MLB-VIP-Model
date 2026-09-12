@@ -1120,6 +1120,44 @@ def init_db(db_path: str | None = None) -> None:
             ON market_matches(provider, provider_market_id)
     """)
 
+    # Prediction-market execution layer, Stage 2B (2026-09-12): the
+    # result of running OpportunityEvaluator on a matched recommendation
+    # -- either a qualified opportunity or an explicit rejection, never
+    # silently dropped. See src/execution/evaluator.py. No order/fill
+    # tables yet -- this stage stops at "would this be worth executing,"
+    # never places anything.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS execution_opportunities (
+            opportunity_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id    TEXT NOT NULL,
+            provider             TEXT NOT NULL,
+            provider_market_id   TEXT,
+            match_id             INTEGER,
+            model_probability    REAL,
+            best_bid             REAL,
+            best_ask             REAL,
+            expected_fill_price  REAL,
+            quantity_analyzed    REAL,
+            analysis_stake       REAL,
+            estimated_fees       REAL,
+            slippage             REAL,
+            raw_ev_pct           REAL,
+            net_ev_pct           REAL,
+            max_acceptable_price REAL,
+            liquidity            REAL,
+            status               TEXT NOT NULL,
+            rejection_reason     TEXT,
+            market_data_timestamp TEXT,
+            created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_execution_opportunities_rec ON execution_opportunities(recommendation_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_execution_opportunities_status ON execution_opportunities(status)"
+    )
+
     # Multi-league support: league/sport tags on every remaining table that
     # carries per-event or per-recommendation data, so results, settlement,
     # closing-line, and lifecycle records can be filtered/reported per

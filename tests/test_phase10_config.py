@@ -265,3 +265,96 @@ class TestMarketMatchingConfig:
     def test_env_example_mentions_it(self):
         content = create_env_example()
         assert "MLB_MIN_MARKET_MATCH_CONFIDENCE" in content
+
+
+class TestExecutionAnalysisConfig:
+    """Stage 2B (2026-09-12): pricing/EV analysis config -- no order
+    placement exists yet."""
+
+    def test_defaults(self):
+        cfg = ProductionConfig()
+        assert cfg.execution_analysis_stake_usd == 10.0
+        assert cfg.min_raw_ev_pct == 2.0
+        assert cfg.min_net_ev_pct == 1.0
+        assert cfg.max_spread_pct == 0.10
+        assert cfg.max_slippage_pct == 0.05
+        assert cfg.min_available_liquidity_usd == 50.0
+        assert cfg.max_market_data_age_seconds == 30
+
+    def test_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("MLB_EXECUTION_ANALYSIS_STAKE_USD", "25.0")
+        monkeypatch.setenv("MLB_MIN_NET_EV_PCT", "3.5")
+        monkeypatch.setenv("MLB_MAX_MARKET_DATA_AGE_SECONDS", "60")
+        cfg = load_config()
+        assert cfg.execution_analysis_stake_usd == 25.0
+        assert cfg.min_net_ev_pct == 3.5
+        assert cfg.max_market_data_age_seconds == 60
+
+    def test_validate_rejects_non_positive_stake(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", execution_analysis_stake_usd=0)
+        errors = cfg.validate()
+        assert any("execution_analysis_stake_usd" in e for e in errors)
+
+    def test_validate_rejects_negative_min_ev(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", min_raw_ev_pct=-1.0)
+        errors = cfg.validate()
+        assert any("min_raw_ev_pct" in e for e in errors)
+
+    def test_validate_rejects_out_of_range_spread_pct(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", max_spread_pct=1.5)
+        errors = cfg.validate()
+        assert any("max_spread_pct" in e for e in errors)
+
+    def test_validate_rejects_non_positive_max_age(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", max_market_data_age_seconds=0)
+        errors = cfg.validate()
+        assert any("max_market_data_age_seconds" in e for e in errors)
+
+    def test_env_example_mentions_all_seven_fields(self):
+        content = create_env_example()
+        for var in (
+            "MLB_EXECUTION_ANALYSIS_STAKE_USD", "MLB_MIN_RAW_EV_PCT", "MLB_MIN_NET_EV_PCT",
+            "MLB_MAX_SPREAD_PCT", "MLB_MAX_SLIPPAGE_PCT", "MLB_MIN_AVAILABLE_LIQUIDITY_USD",
+            "MLB_MAX_MARKET_DATA_AGE_SECONDS",
+        ):
+            assert var in content
+
+
+class TestExecutionAllowedRecStatuses:
+    """The single canonical source for which rec_status values the
+    execution layer evaluates -- deliberately repeating
+    src/discord_delivery.py's fix (STRONG_EDGE/POSITIVE_EDGE/
+    STRONG_PRICE_OUTLIER/PRICE_OUTLIER) rather than its original bug
+    ('BET'/'LEAN', which never existed in this schema)."""
+
+    def test_default_matches_the_real_production_style_values(self):
+        cfg = ProductionConfig()
+        statuses = cfg.execution_allowed_rec_statuses_list()
+        assert statuses == ("STRONG_EDGE", "POSITIVE_EDGE", "STRONG_PRICE_OUTLIER", "PRICE_OUTLIER")
+
+    def test_does_not_include_bet_or_lean(self):
+        cfg = ProductionConfig()
+        statuses = cfg.execution_allowed_rec_statuses_list()
+        assert "BET" not in statuses
+        assert "LEAN" not in statuses
+
+    def test_does_not_include_marginal_or_no_edge_tiers_by_default(self):
+        cfg = ProductionConfig()
+        statuses = cfg.execution_allowed_rec_statuses_list()
+        assert "MARGINAL_EDGE" not in statuses
+        assert "NO_EDGE" not in statuses
+        assert "MARGINAL_PRICE_OUTLIER" not in statuses
+
+    def test_env_override_can_expand_the_set(self, monkeypatch):
+        monkeypatch.setenv("MLB_EXECUTION_ALLOWED_REC_STATUSES", "STRONG_EDGE,MARGINAL_EDGE")
+        cfg = load_config()
+        assert cfg.execution_allowed_rec_statuses_list() == ("STRONG_EDGE", "MARGINAL_EDGE")
+
+    def test_validate_rejects_an_empty_list(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", execution_allowed_rec_statuses="")
+        errors = cfg.validate()
+        assert any("execution_allowed_rec_statuses" in e for e in errors)
+
+    def test_env_example_mentions_it(self):
+        content = create_env_example()
+        assert "MLB_EXECUTION_ALLOWED_REC_STATUSES" in content

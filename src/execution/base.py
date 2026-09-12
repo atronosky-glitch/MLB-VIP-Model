@@ -17,7 +17,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from decimal import Decimal
+from typing import Any, NamedTuple
 
 
 def mask_secret(value: str) -> str:
@@ -93,6 +94,48 @@ class RawGameEvent:
     event_start_time: datetime | None
 
 
+class OrderLevel(NamedTuple):
+    """One price level in a NormalizedOrderBook. A NamedTuple (not a
+    plain tuple) specifically so real money math can never mix up which
+    slot is price vs. quantity -- Stage 1's Orderbook.bids/.asks (plain
+    float tuples) are untouched; this is Stage 2B's Decimal-based type."""
+    price: Decimal
+    quantity: Decimal
+
+
+@dataclass(frozen=True)
+class NormalizedOrderBook:
+    """Fully-normalized, Decimal, four-sided book for a binary
+    (YES/NO) contract -- built by each provider's normalize_orderbook()
+    from its own Stage 1 Orderbook. Named NormalizedOrderBook rather
+    than the more obvious "OrderBook" specifically to avoid a one-letter
+    capitalization collision with Stage 1's existing Orderbook class,
+    since both are legitimately imported side by side in evaluator.py.
+
+    yes_asks/no_asks may be synthesized via the 1-P transform rather
+    than directly observed -- see each provider's normalize_orderbook
+    docstring for whether that's confirmed-valid (Kalshi) or a
+    documented-but-unconfirmed default (Polymarket US) for that venue.
+    """
+    market_id: str
+    yes_bids: list[OrderLevel]
+    yes_asks: list[OrderLevel]
+    no_bids: list[OrderLevel]
+    no_asks: list[OrderLevel]
+    timestamp: datetime
+
+
+@dataclass(frozen=True)
+class FeeEstimate:
+    """A provider's estimate_fees() result. fee_estimate=True flags
+    that the exact fee cannot be known before execution (e.g. a maker
+    fill's exact resting-time-dependent rate) and this is the most
+    conservative reasonable estimate, not a guarantee."""
+    fee: Decimal
+    fee_estimate: bool
+    detail: str
+
+
 class PredictionMarketProvider(ABC):
     """Read-only interface every prediction-market provider implements.
 
@@ -101,6 +144,14 @@ class PredictionMarketProvider(ABC):
     """
 
     name: str
+
+    # Explicit, always-False-in-this-stage marker (item 17): no
+    # provider supports live execution yet -- place_order/cancel_order
+    # below always raise NotImplementedError regardless of this flag,
+    # but the flag itself gives calling code (dashboards, future
+    # approval UI) an explicit thing to check/display rather than
+    # inferring "no execution" from an absence of behavior.
+    supports_live_execution: bool = False
 
     @abstractmethod
     def get_balance(self) -> Balance:
@@ -124,6 +175,24 @@ class PredictionMarketProvider(ABC):
 
     @abstractmethod
     def health_check(self) -> HealthCheckResult:
+        ...
+
+    @abstractmethod
+    def normalize_orderbook(self, raw: Orderbook) -> NormalizedOrderBook:
+        """Convert this provider's Stage 1 Orderbook into a fully
+        normalized, Decimal, four-sided (yes_bids/yes_asks/no_bids/
+        no_asks) book. Stage 2B (src/execution/orderbook_math.py etc.)
+        operates only on this normalized shape -- never on Stage 1's
+        raw Orderbook directly."""
+        ...
+
+    @abstractmethod
+    def estimate_fees(self, side: str, price: Decimal, quantity: Decimal) -> FeeEstimate:
+        """Estimate the taker fee for buying *quantity* contracts of
+        *side* ("YES"/"NO") at *price*, using this provider's current,
+        documented fee formula. TAKER fills only -- this stage's whole
+        premise is "can I execute right now," so maker/resting-order
+        fees are out of scope."""
         ...
 
     def parse_game_event(self, market: Market) -> RawGameEvent | None:
