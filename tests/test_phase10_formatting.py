@@ -172,24 +172,40 @@ class TestMessageFormatting:
         assert "5" in msg
 
     def test_format_daily_summary_groups_by_status(self):
+        """rec_status values here are the real ones src/prop_config.py's
+        classification actually writes (STRONG_EDGE/POSITIVE_EDGE/
+        MARGINAL_EDGE) -- 'BET'/'LEAN'/'MONITOR' never existed in this
+        schema and previously matched nothing (2026-09-12 fix)."""
         from src.message_formatter import format_daily_summary
         recs = [
-            {"player_name": "P1", "rec_status": "BET", "market_type": "strikeouts",
+            {"player_name": "P1", "rec_status": "STRONG_EDGE", "market_type": "strikeouts",
              "sportsbook": "DK", "offered_american_odds": -110},
-            {"player_name": "P2", "rec_status": "LEAN", "market_type": "hits",
+            {"player_name": "P2", "rec_status": "POSITIVE_EDGE", "market_type": "hits",
              "sportsbook": "FD", "offered_american_odds": 150},
-            {"player_name": "P3", "rec_status": "MONITOR", "market_type": "rbi",
+            {"player_name": "P3", "rec_status": "MARGINAL_EDGE", "market_type": "rbi",
              "sportsbook": "B365", "offered_american_odds": -105},
         ]
         msg = format_daily_summary(recs)
-        assert "BET (1)" in msg
-        assert "LEAN (1)" in msg
+        assert "Strong Edge (1)" in msg
+        assert "Positive Edge (1)" in msg
         assert "MONITOR (1)" in msg
+
+    def test_format_daily_summary_groups_yn_outlier_statuses_too(self):
+        from src.message_formatter import format_daily_summary
+        recs = [
+            {"player_name": "P1", "rec_status": "STRONG_PRICE_OUTLIER", "market_type": "hits_yn",
+             "sportsbook": "DK", "offered_american_odds": -110},
+            {"player_name": "P2", "rec_status": "PRICE_OUTLIER", "market_type": "hits_yn",
+             "sportsbook": "FD", "offered_american_odds": 150},
+        ]
+        msg = format_daily_summary(recs)
+        assert "Strong Edge (1)" in msg
+        assert "Positive Edge (1)" in msg
 
     def test_format_daily_summary_truncates_monitor(self):
         from src.message_formatter import format_daily_summary
         recs = [
-            {"player_name": f"P{i}", "rec_status": "MONITOR", "market_type": "hits",
+            {"player_name": f"P{i}", "rec_status": "MARGINAL_EDGE", "market_type": "hits",
              "sportsbook": "DK", "offered_american_odds": -110}
             for i in range(10)
         ]

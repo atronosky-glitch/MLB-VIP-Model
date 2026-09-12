@@ -59,7 +59,7 @@ class TestExportSheets:
         conn.execute(
             "INSERT INTO historical_recommendations VALUES ('2025-07-23', 'Judge', 'NYY-BOS', "
             "'strikeouts', 'game', '0.5', 'Over', 'DK', -110, 2.1, 0.05, NULL, "
-            "75, 'BET', 'fp_abc', NULL, NULL, NULL)"
+            "75, 'STRONG_EDGE', 'fp_abc', NULL, NULL, NULL)"
         )
         conn.commit()
         conn.close()
@@ -163,7 +163,7 @@ class TestExportSheets:
         """)
         conn.execute(
             "INSERT INTO historical_recommendations VALUES ('t', 'P1', 'E1', 'm', 'g', "
-            "'0.5', 'O', 'DK', -110, 2.1, 0.05, NULL, 75, 'BET', 'fp1', NULL, NULL, NULL)"
+            "'0.5', 'O', 'DK', -110, 2.1, 0.05, NULL, 75, 'STRONG_EDGE', 'fp1', NULL, NULL, NULL)"
         )
         conn.commit()
         conn.close()

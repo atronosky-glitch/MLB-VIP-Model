@@ -32,11 +32,11 @@ class TestDiscordDelivery:
         """)
         conn.execute(
             "INSERT INTO historical_recommendations VALUES (1, 'Judge', 'NYY-BOS', 'strikeouts', "
-            "'DK', -110, 0.05, NULL, 'BET', 'fp_abc123')"
+            "'DK', -110, 0.05, NULL, 'STRONG_EDGE', 'fp_abc123')"
         )
         conn.execute(
             "INSERT INTO historical_recommendations VALUES (2, 'Ohtani', 'LAD-SF', 'home_runs', "
-            "'FD', 350, NULL, 0.06, 'LEAN', 'fp_def456')"
+            "'FD', 350, NULL, 0.06, 'POSITIVE_EDGE', 'fp_def456')"
         )
         conn.commit()
         conn.close()
@@ -99,7 +99,7 @@ class TestDiscordDelivery:
         """)
         conn.execute(
             "INSERT INTO historical_recommendations VALUES (1, 'Judge', 'E1', 'strikeouts', "
-            "'DK', -110, 0.01, 0.01, 'BET', 'fp_abc')"
+            "'DK', -110, 0.01, 0.01, 'STRONG_EDGE', 'fp_abc')"
         )
         conn.commit()
         conn.close()
@@ -236,7 +236,7 @@ class TestNewRecommendationAlerts:
                 'rec-1', 'fp-1', 'E1', 'P1', 'Judge',
                 'strikeouts', 'ou', 'full_game', 6.5, 'OVER', 'DK',
                 -110, 1.909, 0.524,
-                5.0, 'BET', 1, '2026-09-10T00:00:00+00:00'
+                5.0, 'STRONG_EDGE', 1, '2026-09-10T00:00:00+00:00'
             )
         """)
         conn.commit()

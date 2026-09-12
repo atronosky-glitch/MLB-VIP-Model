@@ -334,19 +334,26 @@ def _load_actionable_recommendations(
 
     conn = get_connection(str(db_path))
     try:
-        # Check table exists
+        # Check table exists. r["name"], not r[0] -- production Postgres
+        # uses RealDictCursor, whose rows have no positional access (see
+        # database/db_manager.py's sync_arbitrage_opportunities history
+        # for the same bug class breaking a different feature silently).
         tables = {
-            r[0] for r in conn.execute(
+            r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
         if "historical_recommendations" not in tables:
             return []
 
+        # rec_status values actually written by src/prop_config.py's
+        # classification (see BET_STATUS_*/YN_STATUS_* there) -- 'BET'/
+        # 'LEAN' never existed in this schema, so this query previously
+        # matched zero rows in production, silently.
         cursor = conn.execute("""
             SELECT *
             FROM historical_recommendations
-            WHERE rec_status IN ('BET', 'LEAN')
+            WHERE rec_status IN ('STRONG_EDGE', 'POSITIVE_EDGE', 'STRONG_PRICE_OUTLIER', 'PRICE_OUTLIER')
               AND (ev_pct >= ? OR yn_implied_prob_adv >= ? OR ev_pct IS NULL)
             ORDER BY ev_pct DESC
             LIMIT 50

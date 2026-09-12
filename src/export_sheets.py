@@ -144,9 +144,13 @@ def _load_recommendations(db_path: str | Path) -> list[list[Any]]:
 
     conn = get_connection(str(db_path))
     try:
-        # Check if table exists
+        # Check if table exists. r["name"], not r[0] -- production
+        # Postgres uses RealDictCursor, whose rows have no positional
+        # access (same bug class found and fixed elsewhere this session:
+        # database/db_manager.py's sync_arbitrage_opportunities,
+        # src/discord_delivery.py's _load_actionable_recommendations).
         tables = {
-            r[0] for r in conn.execute(
+            r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
@@ -171,7 +175,10 @@ def _load_recommendations(db_path: str | Path) -> list[list[Any]]:
                 r.rec_status,
                 r.fingerprint
             FROM historical_recommendations r
-            WHERE r.rec_status IN ('BET', 'LEAN', 'MONITOR')
+            WHERE r.rec_status IN (
+                'STRONG_EDGE', 'POSITIVE_EDGE', 'MARGINAL_EDGE',
+                'STRONG_PRICE_OUTLIER', 'PRICE_OUTLIER', 'MARGINAL_PRICE_OUTLIER'
+            )
             ORDER BY r.ev_pct DESC
         """)
         rows = []

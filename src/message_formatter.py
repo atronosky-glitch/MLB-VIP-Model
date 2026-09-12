@@ -125,19 +125,22 @@ def format_daily_summary(
         lines.append("No actionable recommendations today.")
         return "\n".join(lines)
 
-    # Group by status
-    strong = [r for r in recs if r.get("rec_status") == "BET"]
-    positive = [r for r in recs if r.get("rec_status") == "LEAN"]
-    monitor = [r for r in recs if r.get("rec_status") == "MONITOR"]
+    # Group by status. Real values written by src/prop_config.py's
+    # classification (BET_STATUS_*/YN_STATUS_*) -- 'BET'/'LEAN'/'MONITOR'
+    # never existed in this schema, so these groupings previously matched
+    # nothing.
+    strong = [r for r in recs if r.get("rec_status") in ("STRONG_EDGE", "STRONG_PRICE_OUTLIER")]
+    positive = [r for r in recs if r.get("rec_status") in ("POSITIVE_EDGE", "PRICE_OUTLIER")]
+    monitor = [r for r in recs if r.get("rec_status") in ("MARGINAL_EDGE", "MARGINAL_PRICE_OUTLIER")]
 
     if strong:
-        lines.append(f"**BET ({len(strong)})**")
+        lines.append(f"**Strong Edge ({len(strong)})**")
         for r in strong:
             lines.append(_compact_line(r))
         lines.append("")
 
     if positive:
-        lines.append(f"**LEAN ({len(positive)})**")
+        lines.append(f"**Positive Edge ({len(positive)})**")
         for r in positive:
             lines.append(_compact_line(r))
         lines.append("")
