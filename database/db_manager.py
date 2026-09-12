@@ -1080,6 +1080,46 @@ def init_db(db_path: str | None = None) -> None:
         )
     """)
 
+    # Prediction-market execution layer, Stage 2 (2026-09-12): mapping a
+    # game-level recommendation to a Kalshi/Polymarket US contract, with
+    # a confidence score -- see src/execution/matching.py. Rejections
+    # (no_candidates / rejected_low_confidence) are stored too, not just
+    # successes, so a later scan doesn't repeat the (fetch + score) work
+    # for a recommendation that will never match, and so there's an
+    # audit trail distinguishing "looked and found nothing" from "hasn't
+    # been checked yet". matcher_version is part of the uniqueness key
+    # so a future scoring-weight change produces new rows rather than
+    # requiring the old ones to be deleted.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_matches (
+            match_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id   TEXT NOT NULL,
+            provider            TEXT NOT NULL,
+            provider_market_id  TEXT NOT NULL,
+            league              TEXT NOT NULL,
+            market_type         TEXT NOT NULL,
+            confidence          REAL NOT NULL,
+            match_status        TEXT NOT NULL,
+            team_score          REAL,
+            market_type_score   REAL,
+            line_score          REAL,
+            date_score          REAL,
+            matcher_version     TEXT NOT NULL,
+            provider_title      TEXT,
+            matched_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_market_matches_rec_provider
+            ON market_matches(recommendation_id, provider, matcher_version)
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_market_matches_rec ON market_matches(recommendation_id)")
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_market_matches_provider_market
+            ON market_matches(provider, provider_market_id)
+    """)
+
     # Multi-league support: league/sport tags on every remaining table that
     # carries per-event or per-recommendation data, so results, settlement,
     # closing-line, and lifecycle records can be filtered/reported per

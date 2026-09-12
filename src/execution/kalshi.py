@@ -28,7 +28,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from src.execution.base import (
     BestBidAsk, Balance, HealthCheckResult, Market, Orderbook,
-    PredictionMarketProvider, mask_secret,
+    PredictionMarketProvider, RawGameEvent, mask_secret,
 )
 from src.execution.credentials import load_rsa_private_key
 from src.execution.signing import build_signed_message, sign_rsa_pss
@@ -174,3 +174,59 @@ class KalshiProvider(PredictionMarketProvider):
                 provider=self.name, ok=False, detail=f"{type(exc).__name__}: {exc}",
                 checked_at=datetime.now(timezone.utc),
             )
+
+    # -- Stage 2: game-level market matching ---------------------------
+
+    _TITLE_SEPARATORS = (" vs. ", " vs ", " @ ")
+
+    def parse_game_event(self, market: Market) -> RawGameEvent | None:
+        """UNCONFIRMED against real Kalshi data (their /markets endpoint
+        needs signed auth not available in a research context) -- this
+        is a narrow first pass over likely title separators, returning
+        None for anything that doesn't match rather than guessing
+        further. Verify against a real demo-account market before
+        trusting this provider's matching (see the Stage 2 plan)."""
+        title = market.title or ""
+        away = home = None
+        for sep in self._TITLE_SEPARATORS:
+            if sep in title:
+                away, _, home = title.partition(sep)
+                break
+        if away is None or home is None:
+            return None
+        away, home = away.strip(), home.strip()
+        if not away or not home:
+            return None
+
+        event_start_time = None
+        raw = market.raw or {}
+        for key in ("close_time", "expiration_time", "expected_expiration_time"):
+            value = raw.get(key)
+            if value:
+                event_start_time = _parse_kalshi_timestamp(value)
+                if event_start_time:
+                    break
+
+        return RawGameEvent(
+            home_team=home,
+            away_team=away,
+            market_type="moneyline",
+            side=None,
+            line=None,
+            event_start_time=event_start_time,
+        )
+
+
+def _parse_kalshi_timestamp(value: Any) -> datetime | None:
+    """Best-effort parse of a Kalshi timestamp field -- format
+    unconfirmed (could be ISO8601 or Unix seconds); tries both."""
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None

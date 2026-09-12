@@ -32,7 +32,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from src.execution.base import (
     BestBidAsk, Balance, HealthCheckResult, Market, Orderbook,
-    PredictionMarketProvider, mask_secret,
+    PredictionMarketProvider, RawGameEvent, mask_secret,
 )
 from src.execution.credentials import load_ed25519_private_key
 from src.execution.signing import build_signed_message, sign_ed25519
@@ -186,3 +186,33 @@ class PolymarketUSProvider(PredictionMarketProvider):
                 provider=self.name, ok=False, detail=f"{type(exc).__name__}: {exc}",
                 checked_at=datetime.now(timezone.utc),
             )
+
+    # -- Stage 2: game-level market matching ---------------------------
+
+    def parse_game_event(self, market: Market) -> RawGameEvent | None:
+        """Polymarket US's slug grammar, confirmed live 2026-09-12:
+        "{prefix}-{league}-{away_abbr}-{home_abbr}-{YYYY}-{MM}-{DD}"
+        (e.g. "aec-nfl-lac-ten-2025-11-02" for "Los Angeles vs. Tennessee",
+        away-then-home matching this repo's own matchup convention).
+
+        market_type/side are NOT confirmed against real non-moneyline
+        data yet -- this always reports "moneyline", matching Stage 2's
+        deliberately narrow scope (see src/execution/matching.py's module
+        docstring). Revisit once spread/total markets are verified live.
+        """
+        parts = (market.id or "").split("-")
+        if len(parts) < 7:
+            return None
+        _prefix, _league_token, away_abbr, home_abbr, year, month, day = parts[:7]
+        try:
+            event_date = datetime(int(year), int(month), int(day), tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        return RawGameEvent(
+            home_team=home_abbr,
+            away_team=away_abbr,
+            market_type="moneyline",
+            side=None,
+            line=None,
+            event_start_time=event_date,
+        )

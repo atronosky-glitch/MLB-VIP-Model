@@ -73,6 +73,26 @@ class HealthCheckResult:
     checked_at: datetime
 
 
+@dataclass(frozen=True)
+class RawGameEvent:
+    """Best-effort extraction of a game-level market's identity from a
+    provider's title/slug/raw payload -- see parse_game_event below.
+
+    Deliberately does NOT carry provider/market_id/raw_market -- those
+    are already on the Market that was parsed, so a caller combining
+    this with its Market has everything without duplication. Kept in
+    base.py (not src/execution/matching.py) specifically so this
+    interface has no dependency on the matching module -- matching.py
+    depends on base.py, not the other way around.
+    """
+    home_team: str | None
+    away_team: str | None
+    market_type: str | None  # normalized to "moneyline" / "spread" / "total"
+    side: str | None
+    line: float | None
+    event_start_time: datetime | None
+
+
 class PredictionMarketProvider(ABC):
     """Read-only interface every prediction-market provider implements.
 
@@ -105,6 +125,16 @@ class PredictionMarketProvider(ABC):
     @abstractmethod
     def health_check(self) -> HealthCheckResult:
         ...
+
+    def parse_game_event(self, market: Market) -> RawGameEvent | None:
+        """Best-effort extraction of (teams, market_type, side, line,
+        date) from this provider's title/slug/raw payload for a
+        game-level market (Stage 2 -- see src/execution/matching.py).
+        Concrete default returns None (not abstract); a provider that
+        hasn't implemented this yet simply contributes no candidates
+        rather than every subclass needing a stub. Must never raise --
+        anything unparseable is None, not a match candidate."""
+        return None
 
     def place_order(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(

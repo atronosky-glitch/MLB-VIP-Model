@@ -10,6 +10,7 @@ import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
+from src.execution.base import Market
 from src.execution.polymarket_us import PolymarketUSProvider
 
 
@@ -179,3 +180,26 @@ class TestNeverIssuesWriteRequests:
         mp.assert_not_called()
         mpu.assert_not_called()
         md.assert_not_called()
+
+
+class TestParseGameEvent:
+    """Slug grammar confirmed live 2026-09-12 (see polymarket_us.py's
+    parse_game_event docstring): "{prefix}-{league}-{away}-{home}-{date}"."""
+
+    def test_parses_the_real_confirmed_slug_shape(self, provider):
+        market = Market(id="aec-nfl-lac-ten-2025-11-02", title="Los Angeles vs. Tennessee", status="active")
+        event = provider.parse_game_event(market)
+        assert event.away_team == "lac"
+        assert event.home_team == "ten"
+        assert event.market_type == "moneyline"
+        assert event.event_start_time.year == 2025
+        assert event.event_start_time.month == 11
+        assert event.event_start_time.day == 2
+
+    def test_malformed_slug_returns_none(self, provider):
+        market = Market(id="not-enough-parts", title="x", status="active")
+        assert provider.parse_game_event(market) is None
+
+    def test_slug_with_invalid_date_returns_none(self, provider):
+        market = Market(id="aec-nfl-lac-ten-2025-13-99", title="x", status="active")
+        assert provider.parse_game_event(market) is None

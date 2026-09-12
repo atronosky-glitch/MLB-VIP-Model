@@ -9,6 +9,7 @@ import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from src.execution.base import Market
 from src.execution.kalshi import KalshiProvider
 
 
@@ -183,3 +184,39 @@ class TestNeverIssuesWriteRequests:
         mp.assert_not_called()
         mpu.assert_not_called()
         md.assert_not_called()
+
+
+class TestParseGameEvent:
+    """UNCONFIRMED against real Kalshi data -- see kalshi.py's
+    parse_game_event docstring. These tests only prove the guessed
+    separator patterns behave as intended, not that they match reality."""
+
+    def test_parses_a_vs_separated_title(self, provider):
+        market = Market(id="T1", title="Toronto Blue Jays vs Athletics", status="open")
+        event = provider.parse_game_event(market)
+        assert event.away_team == "Toronto Blue Jays"
+        assert event.home_team == "Athletics"
+        assert event.market_type == "moneyline"
+
+    def test_parses_an_at_separated_title(self, provider):
+        market = Market(id="T1", title="Athletics @ Toronto Blue Jays", status="open")
+        event = provider.parse_game_event(market)
+        assert event.away_team == "Athletics"
+        assert event.home_team == "Toronto Blue Jays"
+
+    def test_unrecognized_title_returns_none(self, provider):
+        market = Market(id="T1", title="Will inflation exceed 5%?", status="open")
+        assert provider.parse_game_event(market) is None
+
+    def test_extracts_event_start_time_from_raw_close_time(self, provider):
+        market = Market(
+            id="T1", title="Athletics @ Toronto Blue Jays", status="open",
+            raw={"close_time": "2026-09-12T23:00:00Z"},
+        )
+        event = provider.parse_game_event(market)
+        assert event.event_start_time is not None
+
+    def test_missing_date_field_is_none_not_a_crash(self, provider):
+        market = Market(id="T1", title="Athletics @ Toronto Blue Jays", status="open")
+        event = provider.parse_game_event(market)
+        assert event.event_start_time is None

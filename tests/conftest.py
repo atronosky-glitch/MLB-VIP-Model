@@ -457,6 +457,29 @@ def db_conn():
             sent_at    TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (alert_type, alert_key)
         );
+        CREATE TABLE IF NOT EXISTS market_matches (
+            match_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id   TEXT NOT NULL,
+            provider            TEXT NOT NULL,
+            provider_market_id  TEXT NOT NULL,
+            league              TEXT NOT NULL,
+            market_type         TEXT NOT NULL,
+            confidence          REAL NOT NULL,
+            match_status        TEXT NOT NULL,
+            team_score          REAL,
+            market_type_score   REAL,
+            line_score          REAL,
+            date_score          REAL,
+            matcher_version     TEXT NOT NULL,
+            provider_title      TEXT,
+            matched_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_market_matches_rec_provider
+            ON market_matches(recommendation_id, provider, matcher_version);
+        CREATE INDEX IF NOT EXISTS idx_market_matches_rec ON market_matches(recommendation_id);
+        CREATE INDEX IF NOT EXISTS idx_market_matches_provider_market
+            ON market_matches(provider, provider_market_id);
         CREATE TABLE IF NOT EXISTS scheduled_jobs (
             job_id TEXT PRIMARY KEY,
             job_type TEXT NOT NULL,

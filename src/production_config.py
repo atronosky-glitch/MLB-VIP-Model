@@ -60,6 +60,7 @@ DEFAULTS = {
     "polymarket_us_enabled": False,
     "polymarket_us_api_key_id": "",
     "polymarket_us_private_key_path": "",
+    "min_market_match_confidence": 0.98,
 }
 
 # ── Environment variable mapping ───────────────────────────────────
@@ -95,6 +96,7 @@ ENV_MAP = {
     "POLYMARKET_US_ENABLED": "polymarket_us_enabled",
     "POLYMARKET_US_API_KEY_ID": "polymarket_us_api_key_id",
     "POLYMARKET_US_PRIVATE_KEY_PATH": "polymarket_us_private_key_path",
+    "MLB_MIN_MARKET_MATCH_CONFIDENCE": "min_market_match_confidence",
 }
 
 
@@ -133,6 +135,7 @@ class ProductionConfig:
     polymarket_us_enabled: bool = False
     polymarket_us_api_key_id: str = ""
     polymarket_us_private_key_path: str = ""
+    min_market_match_confidence: float = 0.98
 
     def redacted(self) -> dict[str, Any]:
         """Return config as dict with secret fields redacted."""
@@ -186,6 +189,9 @@ class ProductionConfig:
                 "polymarket_us_enabled requires both polymarket_us_api_key_id "
                 "and polymarket_us_private_key_path"
             )
+
+        if not 0.0 <= self.min_market_match_confidence <= 1.0:
+            errors.append("min_market_match_confidence must be between 0 and 1")
 
         return errors
 
@@ -276,8 +282,9 @@ def create_env_example() -> str:
         "# MLB_BACKUP_COMPRESSION=false",
         "",
         "# Optional — Kalshi / Polymarket US execution layer (Stage 1: read-only",
-        "# connectivity only -- no order placement exists yet). PAPER_TRADING/",
-        "# AUTO_TRADING_ENABLED-style flags are introduced in a later stage.",
+        "# connectivity; Stage 2: game-level market matching only). No order",
+        "# placement exists yet. PAPER_TRADING/AUTO_TRADING_ENABLED-style flags",
+        "# are introduced in a later stage.",
         "# KALSHI_ENABLED=false",
         "# KALSHI_ENV=demo",
         "# KALSHI_API_KEY_ID=your_kalshi_key_id",
@@ -285,5 +292,6 @@ def create_env_example() -> str:
         "# POLYMARKET_US_ENABLED=false",
         "# POLYMARKET_US_API_KEY_ID=your_polymarket_us_key_id",
         "# POLYMARKET_US_PRIVATE_KEY_PATH=/path/to/polymarket_us_secret_key.txt",
+        "# MLB_MIN_MARKET_MATCH_CONFIDENCE=0.98",
     ]
     return "\n".join(lines)

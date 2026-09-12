@@ -231,3 +231,37 @@ class TestExecutionLayerConfig:
         assert "KALSHI_PRIVATE_KEY_PATH" in content
         assert "POLYMARKET_US_ENABLED" in content
         assert "POLYMARKET_US_PRIVATE_KEY_PATH" in content
+
+
+class TestMarketMatchingConfig:
+    """Stage 2 (2026-09-12): min_market_match_confidence gates
+    src/execution/matching.py's find_best_match()."""
+
+    def test_default(self):
+        cfg = ProductionConfig()
+        assert cfg.min_market_match_confidence == 0.98
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("MLB_MIN_MARKET_MATCH_CONFIDENCE", "0.9")
+        cfg = load_config()
+        assert cfg.min_market_match_confidence == 0.9
+
+    def test_validate_rejects_out_of_range_high(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", min_market_match_confidence=1.5)
+        errors = cfg.validate()
+        assert any("min_market_match_confidence" in e for e in errors)
+
+    def test_validate_rejects_out_of_range_low(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", min_market_match_confidence=-0.1)
+        errors = cfg.validate()
+        assert any("min_market_match_confidence" in e for e in errors)
+
+    def test_validate_accepts_boundary_values(self):
+        for value in (0.0, 1.0, 0.98):
+            cfg = ProductionConfig(api_key="sk_test_12345678", min_market_match_confidence=value)
+            errors = cfg.validate()
+            assert not any("min_market_match_confidence" in e for e in errors)
+
+    def test_env_example_mentions_it(self):
+        content = create_env_example()
+        assert "MLB_MIN_MARKET_MATCH_CONFIDENCE" in content
