@@ -73,6 +73,17 @@ class TestSyncArbitrageOpportunities:
         result = sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp()])  # reappears
         assert result["new_ids"] == ["E1|P1|k|6.5"]
 
+    def test_works_against_postgres_shaped_dict_only_rows(self, db_conn_dict_rows):
+        """Regression test for a real production bug: the previously_active
+        lookup used r[0] (positional), which works against sqlite3.Row in
+        every other test here but raises against production's actual
+        RealDictCursor rows -- silently breaking this function in prod for
+        two days. See tests/conftest.py's db_conn_dict_rows docstring."""
+        sync_arbitrage_opportunities(db_conn_dict_rows, "MLB", [_arb_opp(roi=8.5)])
+        result = sync_arbitrage_opportunities(db_conn_dict_rows, "MLB", [_arb_opp(roi=6.0)])
+        assert result["new_ids"] == []
+        assert result["active"] == 1
+
     def test_opportunity_missing_from_a_later_sync_is_expired(self, db_conn):
         sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp()])
         sync_arbitrage_opportunities(db_conn, "MLB", [])  # price moved, no longer arbitrage
@@ -117,6 +128,14 @@ class TestSyncMiddleOpportunities:
         opp = _mid_opp()
         sync_middle_opportunities(db_conn, "MLB", [opp])
         assert opp["opportunity_id"] == "E1|P1|batting_totalBases_ou|1.5|2.5"
+
+    def test_works_against_postgres_shaped_dict_only_rows(self, db_conn_dict_rows):
+        """See TestSyncArbitrageOpportunities's version of this test --
+        same bug, same fix, for middles."""
+        sync_middle_opportunities(db_conn_dict_rows, "MLB", [_mid_opp()])
+        result = sync_middle_opportunities(db_conn_dict_rows, "MLB", [_mid_opp()])
+        assert result["new_ids"] == []
+        assert result["active"] == 1
 
 
 class TestGradeArbitrageOpportunities:

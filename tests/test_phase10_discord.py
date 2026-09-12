@@ -286,6 +286,31 @@ class TestNewRecommendationAlerts:
         assert second["sent"] == 1
 
 
+class TestUnalertedRecommendationIdsDedup:
+    """database.db_manager's discord alert dedup helpers, used by
+    deliver_new_recommendation_alerts above."""
+
+    def test_first_time_ids_are_all_unalerted(self, db_conn):
+        from database.db_manager import get_unalerted_recommendation_ids
+        result = get_unalerted_recommendation_ids(db_conn, ["rec-1", "rec-2"])
+        assert result == ["rec-1", "rec-2"]
+
+    def test_marked_ids_are_excluded_next_time(self, db_conn):
+        from database.db_manager import get_unalerted_recommendation_ids, mark_recommendations_alerted
+        mark_recommendations_alerted(db_conn, ["rec-1"])
+        result = get_unalerted_recommendation_ids(db_conn, ["rec-1", "rec-2"])
+        assert result == ["rec-2"]
+
+    def test_works_against_postgres_shaped_dict_only_rows(self, db_conn_dict_rows):
+        """Same r[0]-vs-r['col'] bug class as sync_arbitrage_opportunities
+        (see tests/conftest.py's db_conn_dict_rows docstring) -- this
+        function has its own SELECT that needs the same fix."""
+        from database.db_manager import get_unalerted_recommendation_ids, mark_recommendations_alerted
+        mark_recommendations_alerted(db_conn_dict_rows, ["rec-1"])
+        result = get_unalerted_recommendation_ids(db_conn_dict_rows, ["rec-1", "rec-2"])
+        assert result == ["rec-2"]
+
+
 class TestDeliverNoRecsInDb:
     def test_deliver_no_recs_in_db(self, tmp_path):
         from src.discord_delivery import deliver_recommendations

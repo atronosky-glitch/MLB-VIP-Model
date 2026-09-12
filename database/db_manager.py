@@ -2387,7 +2387,7 @@ def sync_arbitrage_opportunities(
     list down to just the new ones without re-deriving the ID format.
     """
     previously_active = {
-        r[0] for r in conn.execute(
+        r["opportunity_id"] for r in conn.execute(
             "SELECT opportunity_id FROM arbitrage_opportunities WHERE league = ? AND status = 'ACTIVE'",
             (league,),
         ).fetchall()
@@ -2449,7 +2449,7 @@ def sync_middle_opportunities(
     """Same sync pattern as sync_arbitrage_opportunities, for middles --
     see its docstring for what "new_ids" means and why."""
     previously_active = {
-        r[0] for r in conn.execute(
+        r["opportunity_id"] for r in conn.execute(
             "SELECT opportunity_id FROM middle_opportunities WHERE league = ? AND status = 'ACTIVE'",
             (league,),
         ).fetchall()
@@ -2523,7 +2523,7 @@ def get_unalerted_recommendation_ids(conn: DB, recommendation_ids: list[str]) ->
             WHERE alert_type = 'ev_pick' AND alert_key IN ({placeholders})""",
         tuple(recommendation_ids),
     ).fetchall()
-    already_alerted = {r[0] for r in rows}
+    already_alerted = {r["alert_key"] for r in rows}
     return [rid for rid in recommendation_ids if rid not in already_alerted]
 
 

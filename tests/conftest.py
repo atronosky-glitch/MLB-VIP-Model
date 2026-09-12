@@ -451,6 +451,12 @@ def db_conn():
             profit_units REAL,
             graded_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS discord_alerts_sent (
+            alert_key  TEXT NOT NULL,
+            alert_type TEXT NOT NULL DEFAULT 'ev_pick',
+            sent_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (alert_type, alert_key)
+        );
         CREATE TABLE IF NOT EXISTS scheduled_jobs (
             job_id TEXT PRIMARY KEY,
             job_type TEXT NOT NULL,
@@ -525,3 +531,63 @@ def db_conn():
 
     yield conn
     conn.close()
+
+
+# ── Postgres-shaped rows (catches the r[0] bug class) ──────────────
+#
+# Production uses psycopg2.extras.RealDictCursor (see
+# database/connection.py), whose rows are RealDictRow -- a dict
+# subclass with NO positional int access. sqlite3.Row (what db_conn
+# above uses) supports both r["col"] and r[0], so code that
+# accidentally does r[0] instead of r["col"] passes every test here
+# but throws KeyError/TypeError against real production Postgres.
+# This silently broke sync_arbitrage_opportunities/
+# sync_middle_opportunities in production for two days (2026-09-10 to
+# 2026-09-12) before being caught -- see database/db_manager.py's
+# history. Use db_conn_dict_rows instead of db_conn for any new
+# function whose SQL results get indexed, to catch this bug class
+# before it ships.
+
+
+class _NoPositionalRow(dict):
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            raise TypeError(
+                "tuple indices must be strings, not int -- RealDictRow "
+                "(production's actual row type) has no positional access"
+            )
+        return super().__getitem__(key)
+
+
+class _DictRowCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    def fetchall(self):
+        return [_NoPositionalRow(dict(r)) for r in self._cursor.fetchall()]
+
+    def fetchone(self):
+        r = self._cursor.fetchone()
+        return _NoPositionalRow(dict(r)) if r is not None else None
+
+
+class _DictRowConn:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def execute(self, *args, **kwargs):
+        return _DictRowCursor(self._conn.execute(*args, **kwargs))
+
+
+@pytest.fixture
+def db_conn_dict_rows(db_conn):
+    """Same schema as db_conn, but every query result behaves like
+    production's RealDictCursor rows -- dict-only, no r[0]. See the
+    module comment above for why this fixture exists."""
+    return _DictRowConn(db_conn)
