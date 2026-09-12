@@ -149,3 +149,85 @@ class TestProductionConfig:
     def test_secret_fields_is_frozen(self):
         assert isinstance(SECRET_FIELDS, frozenset)
         assert "api_key" in SECRET_FIELDS
+
+
+class TestExecutionLayerConfig:
+    """Stage 1 (2026-09-12): Kalshi/Polymarket US read-only provider
+    config -- no order placement exists yet, both default disabled."""
+
+    def test_defaults(self):
+        cfg = ProductionConfig()
+        assert cfg.kalshi_enabled is False
+        assert cfg.kalshi_env == "demo"
+        assert cfg.kalshi_api_key_id == ""
+        assert cfg.kalshi_private_key_path == ""
+        assert cfg.polymarket_us_enabled is False
+        assert cfg.polymarket_us_api_key_id == ""
+        assert cfg.polymarket_us_private_key_path == ""
+
+    def test_secret_fields_include_credentials(self):
+        for field_name in (
+            "kalshi_api_key_id", "kalshi_private_key_path",
+            "polymarket_us_api_key_id", "polymarket_us_private_key_path",
+        ):
+            assert field_name in SECRET_FIELDS
+
+    def test_redacted_masks_credential_fields(self):
+        cfg = ProductionConfig(
+            kalshi_api_key_id="real-key-id", kalshi_private_key_path="/home/me/kalshi.pem",
+            polymarket_us_api_key_id="real-pm-id", polymarket_us_private_key_path="/home/me/pm.txt",
+        )
+        redacted = cfg.redacted()
+        assert redacted["kalshi_api_key_id"] == "***REDACTED***"
+        assert redacted["kalshi_private_key_path"] == "***REDACTED***"
+        assert redacted["polymarket_us_api_key_id"] == "***REDACTED***"
+        assert redacted["polymarket_us_private_key_path"] == "***REDACTED***"
+
+    def test_env_override_and_bool_coercion(self, monkeypatch):
+        monkeypatch.setenv("KALSHI_ENABLED", "true")
+        monkeypatch.setenv("KALSHI_ENV", "production")
+        monkeypatch.setenv("KALSHI_API_KEY_ID", "abc123")
+        monkeypatch.setenv("POLYMARKET_US_ENABLED", "true")
+        cfg = load_config()
+        assert cfg.kalshi_enabled is True
+        assert cfg.kalshi_env == "production"
+        assert cfg.kalshi_api_key_id == "abc123"
+        assert cfg.polymarket_us_enabled is True
+
+    def test_validate_rejects_bad_kalshi_env(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", kalshi_env="staging")
+        errors = cfg.validate()
+        assert any("kalshi_env" in e for e in errors)
+
+    def test_validate_rejects_kalshi_enabled_without_credentials(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", kalshi_enabled=True)
+        errors = cfg.validate()
+        assert any("kalshi_enabled" in e for e in errors)
+
+    def test_validate_passes_kalshi_enabled_with_credentials(self):
+        cfg = ProductionConfig(
+            api_key="sk_test_12345678", kalshi_enabled=True,
+            kalshi_api_key_id="id", kalshi_private_key_path="/path/key.pem",
+        )
+        errors = cfg.validate()
+        assert not any("kalshi" in e for e in errors)
+
+    def test_validate_rejects_polymarket_us_enabled_without_credentials(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", polymarket_us_enabled=True)
+        errors = cfg.validate()
+        assert any("polymarket_us_enabled" in e for e in errors)
+
+    def test_validate_passes_polymarket_us_enabled_with_credentials(self):
+        cfg = ProductionConfig(
+            api_key="sk_test_12345678", polymarket_us_enabled=True,
+            polymarket_us_api_key_id="id", polymarket_us_private_key_path="/path/key.txt",
+        )
+        errors = cfg.validate()
+        assert not any("polymarket_us" in e for e in errors)
+
+    def test_env_example_mentions_both_providers(self):
+        content = create_env_example()
+        assert "KALSHI_ENABLED" in content
+        assert "KALSHI_PRIVATE_KEY_PATH" in content
+        assert "POLYMARKET_US_ENABLED" in content
+        assert "POLYMARKET_US_PRIVATE_KEY_PATH" in content

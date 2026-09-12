@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 SECRET_FIELDS = frozenset({
     "api_key", "google_credentials_path", "discord_webhook_urls",
     "discord_webhook_urls_arb_middle", "discord_webhook_urls_middle",
+    "kalshi_api_key_id", "kalshi_private_key_path",
+    "polymarket_us_api_key_id", "polymarket_us_private_key_path",
 })
 
 # ── Defaults ───────────────────────────────────────────────────────
@@ -51,6 +53,13 @@ DEFAULTS = {
     "environment": "local",
     "scheduler_enabled": True,
     "shadow_mode": True,
+    "kalshi_enabled": False,
+    "kalshi_env": "demo",
+    "kalshi_api_key_id": "",
+    "kalshi_private_key_path": "",
+    "polymarket_us_enabled": False,
+    "polymarket_us_api_key_id": "",
+    "polymarket_us_private_key_path": "",
 }
 
 # ── Environment variable mapping ───────────────────────────────────
@@ -79,6 +88,13 @@ ENV_MAP = {
     "MLB_ENVIRONMENT": "environment",
     "MLB_SCHEDULER_ENABLED": "scheduler_enabled",
     "MLB_SHADOW_MODE": "shadow_mode",
+    "KALSHI_ENABLED": "kalshi_enabled",
+    "KALSHI_ENV": "kalshi_env",
+    "KALSHI_API_KEY_ID": "kalshi_api_key_id",
+    "KALSHI_PRIVATE_KEY_PATH": "kalshi_private_key_path",
+    "POLYMARKET_US_ENABLED": "polymarket_us_enabled",
+    "POLYMARKET_US_API_KEY_ID": "polymarket_us_api_key_id",
+    "POLYMARKET_US_PRIVATE_KEY_PATH": "polymarket_us_private_key_path",
 }
 
 
@@ -110,6 +126,13 @@ class ProductionConfig:
     environment: str = "local"
     scheduler_enabled: bool = True
     shadow_mode: bool = True
+    kalshi_enabled: bool = False
+    kalshi_env: str = "demo"
+    kalshi_api_key_id: str = ""
+    kalshi_private_key_path: str = ""
+    polymarket_us_enabled: bool = False
+    polymarket_us_api_key_id: str = ""
+    polymarket_us_private_key_path: str = ""
 
     def redacted(self) -> dict[str, Any]:
         """Return config as dict with secret fields redacted."""
@@ -149,6 +172,20 @@ class ProductionConfig:
             zoneinfo.ZoneInfo(self.timezone)
         except (ValueError, zoneinfo.ZoneInfoNotFoundError):
             errors.append(f"invalid timezone: {self.timezone}")
+
+        if self.kalshi_env not in ("demo", "production"):
+            errors.append(f"invalid kalshi_env: {self.kalshi_env} (must be 'demo' or 'production')")
+
+        if self.kalshi_enabled and not (self.kalshi_api_key_id and self.kalshi_private_key_path):
+            errors.append("kalshi_enabled requires both kalshi_api_key_id and kalshi_private_key_path")
+
+        if self.polymarket_us_enabled and not (
+            self.polymarket_us_api_key_id and self.polymarket_us_private_key_path
+        ):
+            errors.append(
+                "polymarket_us_enabled requires both polymarket_us_api_key_id "
+                "and polymarket_us_private_key_path"
+            )
 
         return errors
 
@@ -237,5 +274,16 @@ def create_env_example() -> str:
         "# Optional — backup",
         "# MLB_BACKUP_RETENTION=7",
         "# MLB_BACKUP_COMPRESSION=false",
+        "",
+        "# Optional — Kalshi / Polymarket US execution layer (Stage 1: read-only",
+        "# connectivity only -- no order placement exists yet). PAPER_TRADING/",
+        "# AUTO_TRADING_ENABLED-style flags are introduced in a later stage.",
+        "# KALSHI_ENABLED=false",
+        "# KALSHI_ENV=demo",
+        "# KALSHI_API_KEY_ID=your_kalshi_key_id",
+        "# KALSHI_PRIVATE_KEY_PATH=/path/to/kalshi_private_key.pem",
+        "# POLYMARKET_US_ENABLED=false",
+        "# POLYMARKET_US_API_KEY_ID=your_polymarket_us_key_id",
+        "# POLYMARKET_US_PRIVATE_KEY_PATH=/path/to/polymarket_us_secret_key.txt",
     ]
     return "\n".join(lines)

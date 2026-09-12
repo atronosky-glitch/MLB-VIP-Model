@@ -1,6 +1,12 @@
 # Environment
 .env
 
+# Credentials (execution-layer private keys, downloaded credential files)
+*.pem
+*.key
+credentials.json
+secrets/
+
 # Python
 __pycache__/
 *.py[cod]
