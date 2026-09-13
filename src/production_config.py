@@ -69,6 +69,39 @@ DEFAULTS = {
     "min_available_liquidity_usd": 50.0,
     "max_market_data_age_seconds": 30,
     "execution_allowed_rec_statuses": "STRONG_EDGE,POSITIVE_EDGE,STRONG_PRICE_OUTLIER,PRICE_OUTLIER",
+    # Stage 3: paper trading. Everything below is simulated -- no real
+    # money ever moves, and no config value here can enable order
+    # placement (that path is hard-blocked in the provider classes
+    # themselves, not gated by config).
+    "paper_trading_enabled": True,
+    "paper_starting_bankroll_usd": 1000.0,
+    "unit_size_usd": 10.0,
+    "bet_sizing_mode": "FLAT",
+    "default_units": 1.0,
+    "max_units_per_bet": 2.0,
+    "kelly_multiplier": 0.25,
+    "ev_tiered_sizing_table_json": (
+        '[{"min_net_ev_pct": 3, "units": 0.5}, {"min_net_ev_pct": 5, "units": 1.0}, '
+        '{"min_net_ev_pct": 8, "units": 1.5}, {"min_net_ev_pct": 12, "units": 2.0}]'
+    ),
+    "max_bet_usd": 25.0,
+    "max_bet_pct_bankroll": 0.025,
+    "max_event_exposure_usd": 50.0,
+    "max_provider_exposure_usd": 250.0,
+    "max_sport_exposure_usd": 300.0,
+    "max_open_exposure_usd": 500.0,
+    "max_daily_wagered_usd": 250.0,
+    "max_daily_loss_usd": 100.0,
+    "max_open_positions": 20,
+    "max_trades_per_hour": 20,
+    "min_paper_trade_usd": 1.0,
+    "allow_risk_size_reduction": True,
+    "allow_partial_paper_fills": False,
+    "allow_position_addons": False,
+    "allow_retrade_settled_recommendation": False,
+    "max_opportunity_age_seconds": 30,
+    "stop_after_daily_profit_target": False,
+    "daily_profit_target_usd": 0.0,
 }
 
 # ── Environment variable mapping ───────────────────────────────────
@@ -113,6 +146,32 @@ ENV_MAP = {
     "MLB_MIN_AVAILABLE_LIQUIDITY_USD": "min_available_liquidity_usd",
     "MLB_MAX_MARKET_DATA_AGE_SECONDS": "max_market_data_age_seconds",
     "MLB_EXECUTION_ALLOWED_REC_STATUSES": "execution_allowed_rec_statuses",
+    "PAPER_TRADING_ENABLED": "paper_trading_enabled",
+    "PAPER_STARTING_BANKROLL_USD": "paper_starting_bankroll_usd",
+    "UNIT_SIZE_USD": "unit_size_usd",
+    "BET_SIZING_MODE": "bet_sizing_mode",
+    "DEFAULT_UNITS": "default_units",
+    "MAX_UNITS_PER_BET": "max_units_per_bet",
+    "KELLY_MULTIPLIER": "kelly_multiplier",
+    "EV_TIERED_SIZING_TABLE_JSON": "ev_tiered_sizing_table_json",
+    "MAX_BET_USD": "max_bet_usd",
+    "MAX_BET_PCT_BANKROLL": "max_bet_pct_bankroll",
+    "MAX_EVENT_EXPOSURE_USD": "max_event_exposure_usd",
+    "MAX_PROVIDER_EXPOSURE_USD": "max_provider_exposure_usd",
+    "MAX_SPORT_EXPOSURE_USD": "max_sport_exposure_usd",
+    "MAX_OPEN_EXPOSURE_USD": "max_open_exposure_usd",
+    "MAX_DAILY_WAGERED_USD": "max_daily_wagered_usd",
+    "MAX_DAILY_LOSS_USD": "max_daily_loss_usd",
+    "MAX_OPEN_POSITIONS": "max_open_positions",
+    "MAX_TRADES_PER_HOUR": "max_trades_per_hour",
+    "MIN_PAPER_TRADE_USD": "min_paper_trade_usd",
+    "ALLOW_RISK_SIZE_REDUCTION": "allow_risk_size_reduction",
+    "ALLOW_PARTIAL_PAPER_FILLS": "allow_partial_paper_fills",
+    "ALLOW_POSITION_ADDONS": "allow_position_addons",
+    "ALLOW_RETRADE_SETTLED_RECOMMENDATION": "allow_retrade_settled_recommendation",
+    "MAX_OPPORTUNITY_AGE_SECONDS": "max_opportunity_age_seconds",
+    "STOP_AFTER_DAILY_PROFIT_TARGET": "stop_after_daily_profit_target",
+    "DAILY_PROFIT_TARGET_USD": "daily_profit_target_usd",
 }
 
 
@@ -172,6 +231,46 @@ class ProductionConfig:
     # itself doesn't currently classify as worth acting on (see
     # src/discord_delivery.py's identical default for the same reason).
     execution_allowed_rec_statuses: str = "STRONG_EDGE,POSITIVE_EDGE,STRONG_PRICE_OUTLIER,PRICE_OUTLIER"
+
+    # Stage 3: paper trading (simulated orders/fills/positions/P&L only --
+    # no config value here can enable real order placement; that path is
+    # hard-blocked in KalshiProvider/PolymarketUSProvider themselves).
+    paper_trading_enabled: bool = True
+    paper_starting_bankroll_usd: float = 1000.0
+    unit_size_usd: float = 10.0
+    bet_sizing_mode: str = "FLAT"
+    default_units: float = 1.0
+    max_units_per_bet: float = 2.0
+    kelly_multiplier: float = 0.25
+    # JSON list of {"min_net_ev_pct": <float>, "units": <float>} tiers for
+    # BET_SIZING_MODE=EV_TIERED -- an example table, not a fixed rule; see
+    # ev_tiered_sizing_tiers() for the one place this is parsed.
+    ev_tiered_sizing_table_json: str = (
+        '[{"min_net_ev_pct": 3, "units": 0.5}, {"min_net_ev_pct": 5, "units": 1.0}, '
+        '{"min_net_ev_pct": 8, "units": 1.5}, {"min_net_ev_pct": 12, "units": 2.0}]'
+    )
+    max_bet_usd: float = 25.0
+    max_bet_pct_bankroll: float = 0.025
+    max_event_exposure_usd: float = 50.0
+    max_provider_exposure_usd: float = 250.0
+    max_sport_exposure_usd: float = 300.0
+    max_open_exposure_usd: float = 500.0
+    max_daily_wagered_usd: float = 250.0
+    max_daily_loss_usd: float = 100.0
+    max_open_positions: int = 20
+    max_trades_per_hour: int = 20
+    min_paper_trade_usd: float = 1.0
+    allow_risk_size_reduction: bool = True
+    allow_partial_paper_fills: bool = False
+    allow_position_addons: bool = False
+    # Implements section 12's "...unless explicitly configured otherwise"
+    # clause for ALREADY_TRADED_RECOMMENDATION -- there is no other knob
+    # for this, so it gets its own flag rather than silently always
+    # blocking re-trades of a settled recommendation forever.
+    allow_retrade_settled_recommendation: bool = False
+    max_opportunity_age_seconds: int = 30
+    stop_after_daily_profit_target: bool = False
+    daily_profit_target_usd: float = 0.0
 
     def redacted(self) -> dict[str, Any]:
         """Return config as dict with secret fields redacted."""
@@ -254,6 +353,51 @@ class ProductionConfig:
         if not allowed_statuses:
             errors.append("execution_allowed_rec_statuses must list at least one status")
 
+        if self.paper_starting_bankroll_usd <= 0:
+            errors.append("paper_starting_bankroll_usd must be > 0")
+
+        if self.unit_size_usd <= 0:
+            errors.append("unit_size_usd must be > 0")
+
+        if self.bet_sizing_mode not in ("FLAT", "EV_TIERED", "FRACTIONAL_KELLY"):
+            errors.append(f"invalid bet_sizing_mode: {self.bet_sizing_mode}")
+
+        if self.default_units <= 0:
+            errors.append("default_units must be > 0")
+
+        if self.max_units_per_bet <= 0:
+            errors.append("max_units_per_bet must be > 0")
+
+        if not 0.0 < self.kelly_multiplier <= 1.0:
+            errors.append("kelly_multiplier must be between 0 (exclusive) and 1")
+
+        try:
+            tiers = self.ev_tiered_sizing_tiers()
+            if not tiers:
+                errors.append("ev_tiered_sizing_table_json must list at least one tier")
+        except (ValueError, KeyError, TypeError) as exc:
+            errors.append(f"invalid ev_tiered_sizing_table_json: {exc}")
+
+        for field_name in (
+            "max_bet_usd", "max_event_exposure_usd", "max_provider_exposure_usd",
+            "max_sport_exposure_usd", "max_open_exposure_usd", "max_daily_wagered_usd",
+            "max_daily_loss_usd", "min_paper_trade_usd", "daily_profit_target_usd",
+        ):
+            if getattr(self, field_name) < 0:
+                errors.append(f"{field_name} must be >= 0")
+
+        if not 0.0 <= self.max_bet_pct_bankroll <= 1.0:
+            errors.append("max_bet_pct_bankroll must be between 0 and 1")
+
+        if self.max_open_positions <= 0:
+            errors.append("max_open_positions must be > 0")
+
+        if self.max_trades_per_hour <= 0:
+            errors.append("max_trades_per_hour must be > 0")
+
+        if self.max_opportunity_age_seconds <= 0:
+            errors.append("max_opportunity_age_seconds must be > 0")
+
         return errors
 
     def execution_allowed_rec_statuses_list(self) -> tuple[str, ...]:
@@ -261,6 +405,17 @@ class ProductionConfig:
         canonical way any execution-layer code should get this list
         (never re-split the raw string in more than one place)."""
         return tuple(s.strip() for s in self.execution_allowed_rec_statuses.split(",") if s.strip())
+
+    def ev_tiered_sizing_tiers(self) -> tuple[tuple[float, float], ...]:
+        """ev_tiered_sizing_table_json, parsed once into (min_net_ev_pct,
+        units) pairs sorted ascending by threshold -- the single
+        canonical way sizing.py reads this table."""
+        raw = json.loads(self.ev_tiered_sizing_table_json)
+        tiers = tuple(
+            (float(entry["min_net_ev_pct"]), float(entry["units"]))
+            for entry in raw
+        )
+        return tuple(sorted(tiers, key=lambda t: t[0]))
 
 
 def load_config(config_path: str | Path | None = None) -> ProductionConfig:
@@ -371,5 +526,35 @@ def create_env_example() -> str:
         "# MLB_MIN_AVAILABLE_LIQUIDITY_USD=50.00",
         "# MLB_MAX_MARKET_DATA_AGE_SECONDS=30",
         "# MLB_EXECUTION_ALLOWED_REC_STATUSES=STRONG_EDGE,POSITIVE_EDGE,STRONG_PRICE_OUTLIER,PRICE_OUTLIER",
+        "",
+        "# Optional — Stage 3 paper trading (simulated only -- no real money,",
+        "# no real order ever placed; place_order/cancel_order remain",
+        "# NotImplemented on every provider regardless of these values)",
+        "# PAPER_TRADING_ENABLED=true",
+        "# PAPER_STARTING_BANKROLL_USD=1000.00",
+        "# UNIT_SIZE_USD=10.00",
+        "# BET_SIZING_MODE=FLAT",
+        "# DEFAULT_UNITS=1",
+        "# MAX_UNITS_PER_BET=2",
+        "# KELLY_MULTIPLIER=0.25",
+        '# EV_TIERED_SIZING_TABLE_JSON=[{"min_net_ev_pct": 3, "units": 0.5}, {"min_net_ev_pct": 5, "units": 1.0}]',
+        "# MAX_BET_USD=25.00",
+        "# MAX_BET_PCT_BANKROLL=0.025",
+        "# MAX_EVENT_EXPOSURE_USD=50.00",
+        "# MAX_PROVIDER_EXPOSURE_USD=250.00",
+        "# MAX_SPORT_EXPOSURE_USD=300.00",
+        "# MAX_OPEN_EXPOSURE_USD=500.00",
+        "# MAX_DAILY_WAGERED_USD=250.00",
+        "# MAX_DAILY_LOSS_USD=100.00",
+        "# MAX_OPEN_POSITIONS=20",
+        "# MAX_TRADES_PER_HOUR=20",
+        "# MIN_PAPER_TRADE_USD=1.00",
+        "# ALLOW_RISK_SIZE_REDUCTION=true",
+        "# ALLOW_PARTIAL_PAPER_FILLS=false",
+        "# ALLOW_POSITION_ADDONS=false",
+        "# ALLOW_RETRADE_SETTLED_RECOMMENDATION=false",
+        "# MAX_OPPORTUNITY_AGE_SECONDS=30",
+        "# STOP_AFTER_DAILY_PROFIT_TARGET=false",
+        "# DAILY_PROFIT_TARGET_USD=0.00",
     ]
     return "\n".join(lines)

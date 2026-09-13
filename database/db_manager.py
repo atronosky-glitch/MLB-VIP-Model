@@ -1158,6 +1158,127 @@ def init_db(db_path: str | None = None) -> None:
         "CREATE INDEX IF NOT EXISTS idx_execution_opportunities_status ON execution_opportunities(status)"
     )
 
+    # Prediction-market execution layer, Stage 3 (paper trading): every
+    # table below is simulated money only -- no real order is ever
+    # placed, and nothing here is read by any order-placement code path
+    # (there isn't one). See src/execution/paper/.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_accounts (
+            account_id            TEXT PRIMARY KEY,
+            starting_bankroll_usd REAL NOT NULL,
+            cash_usd              REAL NOT NULL,
+            realized_pnl_usd      REAL NOT NULL DEFAULT 0,
+            created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_orders (
+            paper_order_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id          TEXT NOT NULL DEFAULT 'default',
+            opportunity_id      INTEGER,
+            recommendation_id   TEXT NOT NULL,
+            provider            TEXT NOT NULL,
+            provider_market_id  TEXT NOT NULL,
+            league              TEXT,
+            event               TEXT,
+            side                TEXT NOT NULL,
+            sizing_mode         TEXT NOT NULL,
+            model_probability   REAL,
+            net_ev_pct          REAL,
+            requested_units     REAL,
+            requested_stake     REAL,
+            approved_units      REAL,
+            approved_stake      REAL,
+            requested_quantity  REAL,
+            limit_price         REAL,
+            fingerprint         TEXT NOT NULL,
+            status              TEXT NOT NULL,
+            rejection_reason    TEXT,
+            limiting_constraint TEXT,
+            submitted_at        TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_orders_fingerprint ON paper_orders(fingerprint)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_orders_status ON paper_orders(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_orders_rec ON paper_orders(recommendation_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_orders_created ON paper_orders(created_at)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_fills (
+            paper_fill_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_order_id        INTEGER NOT NULL,
+            quantity_requested    REAL,
+            quantity_filled       REAL,
+            average_fill_price    REAL,
+            gross_cost            REAL,
+            fees                  REAL,
+            total_cost            REAL,
+            slippage              REAL,
+            filled_at             TEXT,
+            created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_fills_order ON paper_fills(paper_order_id)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_positions (
+            position_id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id                  TEXT NOT NULL DEFAULT 'default',
+            paper_order_id              INTEGER NOT NULL,
+            recommendation_id           TEXT NOT NULL,
+            provider                    TEXT NOT NULL,
+            provider_market_id          TEXT NOT NULL,
+            event_id                    TEXT NOT NULL,
+            league                      TEXT,
+            side                        TEXT NOT NULL,
+            quantity                    REAL NOT NULL,
+            average_entry_price         REAL,
+            entry_cost                  REAL NOT NULL,
+            fees_paid                   REAL NOT NULL DEFAULT 0,
+            model_probability_at_entry  REAL,
+            net_ev_at_entry             REAL,
+            fingerprint                 TEXT NOT NULL,
+            opened_at                   TEXT NOT NULL,
+            status                      TEXT NOT NULL DEFAULT 'OPEN',
+            settled_at                  TEXT,
+            settlement_value            REAL,
+            realized_pnl                REAL,
+            created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_positions_fingerprint ON paper_positions(fingerprint)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_positions_status ON paper_positions(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_positions_rec ON paper_positions(recommendation_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_positions_event ON paper_positions(event_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_positions_provider ON paper_positions(provider)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS risk_decisions (
+            risk_decision_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id      TEXT NOT NULL,
+            provider                TEXT NOT NULL,
+            opportunity_id          INTEGER,
+            paper_order_id          INTEGER,
+            recommended_stake_usd   REAL,
+            approved_stake_usd      REAL,
+            approved                INTEGER NOT NULL,
+            rejection_reason        TEXT,
+            limiting_constraint     TEXT,
+            bankroll_before         REAL,
+            event_exposure_before   REAL,
+            provider_exposure_before REAL,
+            sport_exposure_before   REAL,
+            daily_exposure_before   REAL,
+            daily_pnl_before        REAL,
+            open_positions_before   INTEGER,
+            created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_decisions_rec ON risk_decisions(recommendation_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_decisions_created ON risk_decisions(created_at)")
+
     # Multi-league support: league/sport tags on every remaining table that
     # carries per-event or per-recommendation data, so results, settlement,
     # closing-line, and lifecycle records can be filtered/reported per

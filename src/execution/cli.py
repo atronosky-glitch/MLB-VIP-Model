@@ -434,6 +434,27 @@ def main(argv: list[str] | None = None) -> int:
         help="Restrict to this provider (repeatable); default is all providers",
     )
 
+    # Stage 3: paper trading (simulated only -- see src/execution/paper_cli.py).
+    paper_scan_parser = subparsers.add_parser(
+        "paper-scan", help="Size, risk-check, and simulate fills for qualified opportunities (paper only)"
+    )
+    paper_scan_parser.add_argument("--verbose", action="store_true")
+    paper_scan_parser.add_argument("--limit", type=int, default=None)
+    paper_scan_parser.add_argument("--league", default=None)
+    paper_scan_parser.add_argument(
+        "--provider", dest="providers", action="append", choices=list(_ALL_PROVIDERS),
+    )
+    paper_scan_parser.add_argument("--analysis-stake", type=float, default=None)
+
+    subparsers.add_parser("paper-portfolio", help="Show paper bankroll, open positions, and exposure (paper only)")
+
+    paper_stats_parser = subparsers.add_parser("paper-stats", help="Paper trading performance stats")
+    paper_stats_group = paper_stats_parser.add_mutually_exclusive_group()
+    paper_stats_group.add_argument("--today", action="store_true")
+    paper_stats_group.add_argument("--days", type=int, default=None)
+
+    subparsers.add_parser("settle-paper", help="Resolve open paper positions against provider market data")
+
     args = parser.parse_args(argv)
     if args.command == "check-connectivity":
         return _check_connectivity()
@@ -443,6 +464,18 @@ def main(argv: list[str] | None = None) -> int:
         return _scan_opportunities(args.verbose, args.limit, args.league, args.providers, args.analysis_stake)
     if args.command == "inventory-report":
         return _inventory_report(args.providers)
+    if args.command == "paper-scan":
+        from src.execution import paper_cli
+        return paper_cli.paper_scan(args.verbose, args.limit, args.league, args.providers, args.analysis_stake)
+    if args.command == "paper-portfolio":
+        from src.execution import paper_cli
+        return paper_cli.paper_portfolio()
+    if args.command == "paper-stats":
+        from src.execution import paper_cli
+        return paper_cli.paper_stats(args.today, args.days)
+    if args.command == "settle-paper":
+        from src.execution import paper_cli
+        return paper_cli.settle_paper()
     return 1
 
 
