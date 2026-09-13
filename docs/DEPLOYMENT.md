@@ -67,6 +67,7 @@ Render provides a 1GB persistent disk mounted at `/data`. This stores:
 - **Command**: `streamlit run src/control_panel.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
 - **Port**: Auto-assigned by Render
 - **Plan**: Starter ($7/mo)
+- **Live Execution tab warning**: this dashboard includes a "Live Execution" tab (Stage 4) for approving real-money prediction-market orders. Streamlit has no built-in authentication, so a `0.0.0.0`-bound deployment like this one is reachable by anyone with the URL. The tab detects a non-localhost `server.address`/known hosting-platform env vars (Render sets `RENDER`) and hides approval controls when exposure is detected, but keep `LIVE_TRADING_ENABLED=false` on any Render-hosted instance regardless — use live approval only from a locally-run control panel (`python -m streamlit run src/control_panel.py`, no address flag).
 
 ### Background Worker
 - **Command**: `python -m src.worker`

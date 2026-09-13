@@ -62,6 +62,29 @@ def _polymarket_taker_fee(contracts: Decimal, price: Decimal) -> Decimal:
     return cents / 100
 
 
+def build_polymarket_order_payload(
+    market_slug: str, outcome_side: str, quantity: Decimal, limit_price: Decimal,
+) -> dict[str, Any]:
+    """Pure payload construction (no I/O) -- the exact POST /v1/orders
+    body _submit_authorized_order sends, extracted so it can be
+    inspected/tested/dry-run-printed (e.g. by `provider-diagnostics`)
+    without ever touching the network. Fields confirmed directly from
+    docs.polymarket.us (2026-09-13): marketSlug, type, price{value,
+    currency}, quantity, tif, outcomeSide, action, manualOrderIndicator,
+    synchronousExecution. No clientOrderId -- confirmed absent."""
+    return {
+        "marketSlug": market_slug,
+        "type": "ORDER_TYPE_LIMIT",
+        "price": {"value": str(limit_price), "currency": "USD"},
+        "quantity": float(quantity),
+        "tif": "TIME_IN_FORCE_IOC",
+        "outcomeSide": outcome_side,
+        "action": "BUY",
+        "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_MANUAL",
+        "synchronousExecution": True,
+    }
+
+
 class PolymarketUSProvider(PredictionMarketProvider):
     name = "polymarket_us"
 
@@ -300,23 +323,46 @@ class PolymarketUSProvider(PredictionMarketProvider):
     # top-level "id" (exchange-assigned order id).
     #
     # Confirmed limitations (not guessed around): Polymarket US has NO
-    # client-supplied idempotency key and NO order-preview endpoint.
-    # This method therefore NEVER retries internally -- exactly one
-    # HTTP POST per call, full stop. LiveExecutionService is the one
-    # that decides whether an ambiguous outcome ever gets a second
-    # attempt (governed by MAX_FINANCIAL_POST_ATTEMPTS_PER_APPROVAL,
-    # which defaults to and is validated to stay 1).
+    # client-supplied idempotency key. This method therefore NEVER
+    # retries internally -- exactly one HTTP POST per call, full stop.
+    # LiveExecutionService is the one that decides whether an ambiguous
+    # outcome ever gets a second attempt (governed by
+    # MAX_FINANCIAL_POST_ATTEMPTS_PER_APPROVAL, which defaults to and is
+    # validated to stay 1).
+    #
+    # Stage 4.1 correction: a non-mutating preview endpoint (POST
+    # /v1/order/preview, same Ed25519 auth as create) WAS confirmed to
+    # exist -- capabilities.supports_preview is corrected to True below.
+    # It is not yet wired into the submission flow (out of scope for
+    # this stage's specific ask: hardening ambiguous-submission
+    # reconciliation, not adding a pre-submission preview step).
+    #
+    # Stage 4.1 reconciliation research (all confirmed from current
+    # docs.polymarket.us): GET /v1/order/{orderId} (single order, 404 if
+    # missing) -- only useful once an order id is already known, NOT for
+    # a fully ambiguous submission where no id was ever received.
+    # GET /v1/orders/open (open orders) -- will NOT show an order that
+    # filled immediately and is no longer open, so absence here alone
+    # never proves non-existence. GET /v1/positions exists but its one
+    # documented example used a different base URL
+    # (api.prod.polymarketexchange.com) than every other confirmed
+    # endpoint (api.polymarket.us) -- treated as UNCONFIRMED pending
+    # live verification, so get_positions() below tries the existing
+    # confirmed base URL rather than guessing a new one, and reconciliation
+    # logic (see live/reconciliation.py) treats a failure there as
+    # inconclusive, never as proof of anything. No order-history/search-
+    # by-criteria endpoint is documented at all -- confirmed absent.
 
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            supports_preview=False,             # confirmed absent from current docs
+            supports_preview=True,              # POST /v1/order/preview confirmed to exist
             supports_client_idempotency=False,  # confirmed absent from current docs
             supports_ioc=True,                  # tif: TIME_IN_FORCE_IOC (best-effort exact string)
             supports_fok=True,                  # tif: TIME_IN_FORCE_FOK (best-effort exact string)
-            supports_order_lookup=False,        # not implemented this stage -- see module docstring
-            supports_fill_lookup=False,
-            supports_cancel=False,
+            supports_order_lookup=True,         # GET /v1/order/{orderId} confirmed
+            supports_fill_lookup=False,         # no separate fills endpoint documented
+            supports_cancel=True,               # POST /v1/order/{orderId}/cancel confirmed to exist
             supports_modify=False,
         )
 
@@ -330,17 +376,10 @@ class PolymarketUSProvider(PredictionMarketProvider):
         positively classify -- treated as "order may exist," never
         auto-retried)."""
         path = "/v1/orders"
-        body = {
-            "marketSlug": authorization.provider_market_id,
-            "type": "ORDER_TYPE_LIMIT",
-            "price": {"value": str(limit_price), "currency": "USD"},
-            "quantity": float(quantity),
-            "tif": "TIME_IN_FORCE_IOC",
-            "outcomeSide": authorization.side,
-            "action": "BUY",
-            "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_MANUAL",
-            "synchronousExecution": True,
-        }
+        body = build_polymarket_order_payload(
+            market_slug=authorization.provider_market_id, outcome_side=authorization.side,
+            quantity=quantity, limit_price=limit_price,
+        )
 
         try:
             headers = self._signed_headers("POST", path)
@@ -420,6 +459,44 @@ class PolymarketUSProvider(PredictionMarketProvider):
             detail=f"ambiguous provider response: HTTP {resp.status_code}",
             raw_reference=_sanitize_error_body(resp),
         )
+
+    # -- Stage 4.1: read-only reconciliation surface ---------------------
+
+    def get_order_by_id(self, order_id: str) -> dict | None:
+        """GET /v1/order/{orderId}, confirmed (404 if missing -- treated
+        the same as any other failure here: None, never fabricated)."""
+        try:
+            body = self._authenticated_get(f"/v1/order/{order_id}")
+        except Exception:
+            return None
+        return body.get("order", body)
+
+    def get_recent_orders(self, **filters: Any) -> list[dict] | None:
+        """GET /v1/orders/open -- confirmed to exist, but ONLY shows
+        still-open orders. An order that filled immediately (the common
+        case for our IOC-style submissions) will NOT appear here even
+        though it exists -- callers must never treat an empty/no-match
+        result from this method alone as proof nothing was created."""
+        try:
+            body = self._authenticated_get("/v1/orders/open", params=filters or None)
+        except Exception:
+            return None
+        return body.get("orders", body if isinstance(body, list) else [])
+
+    def get_positions(self, **filters: Any) -> list[dict] | None:
+        """GET /v1/positions -- the endpoint is confirmed to exist, but
+        its one documented example used a different base URL
+        (api.prod.polymarketexchange.com) than every other confirmed
+        Polymarket US endpoint. This tries the same authenticated base
+        URL as everything else in this class rather than guessing a
+        second one; if that's wrong, this simply fails (returns None)
+        the same as any other unavailable read -- reconciliation logic
+        treats that as inconclusive, not as evidence of anything."""
+        try:
+            body = self._authenticated_get("/v1/positions", params=filters or None)
+        except Exception:
+            return None
+        return body.get("positions", body if isinstance(body, list) else [])
 
 
 _SENSITIVE_BODY_PATTERNS = ("key", "secret", "signature", "token", "password", "credential", "auth")

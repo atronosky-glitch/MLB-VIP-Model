@@ -19,6 +19,7 @@ in the database, created by clicking Approve.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import streamlit as st
@@ -27,9 +28,59 @@ from database.db_manager import get_connection
 from src.execution import get_provider
 from src.execution.live import approval, kill_switch, service, store
 
+_LOCAL_ADDRESSES = {None, "", "localhost", "127.0.0.1", "::1"}
+
+# Environment variables set by common hosting platforms this repo's own
+# docs/CLOUD_DEPLOYMENT.md and docs/DEPLOYMENT.md document deploying
+# control_panel.py to with --server.address 0.0.0.0 (phone/cloud
+# access) -- confirmed present in this repo, not hypothetical. Any of
+# these being set is treated as "probably not a private local session."
+_HOSTING_PLATFORM_ENV_VARS = (
+    "RENDER", "RENDER_SERVICE_ID", "RAILWAY_ENVIRONMENT", "DYNO", "FLY_APP_NAME",
+    "WEBSITE_INSTANCE_ID", "GAE_APPLICATION", "KUBERNETES_SERVICE_HOST",
+)
+
+
+def _detect_public_exposure_risk() -> str | None:
+    """Best-effort detection that this Streamlit process is bound to
+    more than localhost -- returns a human-readable reason if so,
+    None if it looks local-only. Never guaranteed complete (there is no
+    fully reliable way to introspect this from inside the app), so this
+    is defense-in-depth alongside LIVE_APPROVAL_UI_MODE=LOCAL_ONLY and
+    the documented operator responsibility to run this locally for live
+    approval -- not a substitute for either."""
+    try:
+        import streamlit.config as st_config
+        address = st_config.get_option("server.address")
+    except Exception:
+        address = None
+    if address not in _LOCAL_ADDRESSES:
+        return f"Streamlit server.address is {address!r}, not localhost"
+
+    for var in _HOSTING_PLATFORM_ENV_VARS:
+        if os.environ.get(var):
+            return f"detected hosting-platform environment variable {var} -- this looks like a cloud deployment"
+
+    return None
+
 
 def render_live_execution_tab(config: Any, db_path: str) -> None:
     st.subheader(":material/bolt: Live Execution")
+
+    exposure_risk = _detect_public_exposure_risk()
+    if exposure_risk:
+        st.error(
+            f"**LIVE APPROVAL BLOCKED: this session does not look local-only** ({exposure_risk}). "
+            "This repo's own docs/CLOUD_DEPLOYMENT.md and docs/DEPLOYMENT.md document running this exact "
+            "control panel with `--server.address 0.0.0.0` for phone/cloud access -- Streamlit has no "
+            "authentication layer, so anyone who can reach this page could otherwise click Approve. "
+            "Run `python -m streamlit run src/control_panel.py --server.address 127.0.0.1` (default, "
+            "no extra flags, also binds to localhost) on a machine you control to use live approval.",
+            icon=":material/dangerous:",
+        )
+        _render_read_only_summary(db_path)
+        return
+
     st.warning(
         "**Local-only human-approval surface.** This tab is not safe for public/remote exposure -- "
         "there is no authentication layer. Every approval and execution is still enforced server-side "
@@ -102,6 +153,19 @@ def render_live_execution_tab(config: Any, db_path: str) -> None:
         _render_recent_activity(conn)
     finally:
         conn.close()
+
+
+def _render_read_only_summary(db_path: str) -> None:
+    """Shown instead of the full approval UI when public-exposure risk
+    is detected -- counts only, no Approve controls rendered at all."""
+    conn = get_connection(db_path)
+    try:
+        pending = len(approval.get_pending(conn))
+        open_positions = len(store.get_open_live_positions(conn))
+    finally:
+        conn.close()
+    st.caption(f"{pending} prepared order(s) awaiting approval, {open_positions} open live position(s). "
+               "Details hidden until this session is confirmed local-only.")
 
 
 def _render_ready_for_approval(conn: Any, config: Any) -> None:

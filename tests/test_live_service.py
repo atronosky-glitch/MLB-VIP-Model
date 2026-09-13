@@ -281,7 +281,11 @@ class TestAmbiguousSubmission:
 
         result = service.execute_authorized(db_conn, authorization.approval_id, provider, config)
         assert result.outcome == "BLOCKED"
-        assert result.reason == "MANUAL_REVIEW_REQUIRED"
+        # The fake provider's default capabilities have no reconciliation
+        # read support, so reconciliation itself is INCONCLUSIVE -- still
+        # blocked, still manual review, just a more specific reason string
+        # now that Stage 4.1 wires reconciliation into this path.
+        assert result.reason == "INCONCLUSIVE"
         assert provider.submit_calls == 1
         assert len(store.get_open_live_positions(db_conn)) == 0
 

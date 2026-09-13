@@ -47,6 +47,20 @@ python -m streamlit run src/control_panel.py --server.port 8501 --server.address
 
 Access from phone: `http://<server-ip>:8501`
 
+> **Live Execution tab warning:** this control panel includes a "Live
+> Execution" tab for approving real-money prediction-market orders
+> (Stage 4). Streamlit has no authentication layer, so binding to
+> `0.0.0.0` makes that tab reachable by anyone who can reach this port.
+> The tab detects a non-localhost `server.address` (and common
+> hosting-platform environment variables) and refuses to render
+> approval controls when it looks network-exposed — but this is
+> defense-in-depth, not a substitute for care. Do not enable
+> `LIVE_TRADING_ENABLED` on a server reachable this way. For live
+> approval, run the control panel locally instead: `python -m
+> streamlit run src/control_panel.py` (no extra flags — Streamlit
+> defaults to binding `localhost` when `--server.address`/
+> `STREAMLIT_SERVER_ADDRESS` aren't set).
+
 ## Automated Scheduling
 
 ### Option A: Python worker (recommended)

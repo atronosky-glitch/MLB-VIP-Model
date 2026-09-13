@@ -481,6 +481,13 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("live-status", help="Show kill switch, circuit breakers, pending approvals, and open live positions")
 
+    diagnostics_parser = subparsers.add_parser(
+        "provider-diagnostics", help="Read-only per-provider diagnostic sweep (credentials/auth/balance/markets/orderbook/capabilities)"
+    )
+    diagnostics_parser.add_argument("--provider", required=True, choices=list(_ALL_PROVIDERS))
+
+    subparsers.add_parser("live-readiness", help="Read-only aggregate checklist across both providers; never enables anything")
+
     args = parser.parse_args(argv)
     if args.command == "check-connectivity":
         return _check_connectivity()
@@ -517,6 +524,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "live-status":
         from src.execution import live_cli
         return live_cli.live_status()
+    if args.command == "provider-diagnostics":
+        from src.execution import live_cli
+        return live_cli.provider_diagnostics(args.provider)
+    if args.command == "live-readiness":
+        from src.execution import live_cli
+        return live_cli.live_readiness()
     return 1
 
 

@@ -108,6 +108,10 @@ class _FakeProvider:
             quantity_filled=Decimal("14"), average_fill_price=Decimal("0.68"), order_state="FILLED",
         )
 
+    def health_check(self):
+        from src.execution.base import HealthCheckResult
+        return HealthCheckResult(provider="kalshi", ok=True, detail="ok", checked_at=datetime.now(timezone.utc))
+
     def get_markets(self, **filters):
         return [Market(id="M1", title="Athletics @ Toronto Blue Jays", status="open", raw={})]
 
@@ -335,5 +339,121 @@ class TestSafetyRegression:
              mock.patch("src.execution.live_cli._load_actionable_rows", return_value=[_row()]):
             main(["live-scan", "--verbose"])
             main(["live-status"])
+        assert provider.place_order_called is False
+        assert provider.cancel_order_called is False
+
+
+class TestProviderDiagnostics:
+    def test_no_credentials_reports_pending_not_a_fake_pass(self, capsys):
+        config = _FakeConfig()
+        config.kalshi_api_key_id = ""
+        config.kalshi_private_key_path = ""
+        with mock.patch("src.execution.live_cli.load_config", return_value=config):
+            exit_code = main(["provider-diagnostics", "--provider", "kalshi"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "Credentials configured...... NO" in out
+        assert "PENDING" in out
+
+    def test_never_prints_a_secret_value(self, capsys):
+        config = _FakeConfig()
+        config.kalshi_api_key_id = "SUPER_SECRET_KEY_ID_VALUE"
+        config.kalshi_private_key_path = "/path/to/key.pem"
+        config.kalshi_enabled = False
+        with mock.patch("src.execution.live_cli.load_config", return_value=config):
+            main(["provider-diagnostics", "--provider", "kalshi"])
+        out = capsys.readouterr().out
+        assert "SUPER_SECRET_KEY_ID_VALUE" not in out
+
+    def test_with_credentials_but_disabled_reports_pending(self, capsys):
+        config = _FakeConfig()
+        config.kalshi_api_key_id = "some-id"
+        config.kalshi_private_key_path = "/path/to/key.pem"
+        config.kalshi_enabled = False
+        with mock.patch("src.execution.live_cli.load_config", return_value=config):
+            exit_code = main(["provider-diagnostics", "--provider", "kalshi"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "PENDING" in out
+
+    def test_healthy_provider_reports_pass_and_capability_flags(self, capsys):
+        config = _FakeConfig()
+        config.kalshi_api_key_id = "some-id"
+        config.kalshi_private_key_path = "/path/to/key.pem"
+        config.kalshi_enabled = True
+        provider = _FakeProvider()
+        provider.capabilities = ProviderCapabilities(False, True, False, False, True, True, True, True)
+        with mock.patch("src.execution.live_cli.load_config", return_value=config), \
+             mock.patch("src.execution.live_cli.get_provider", return_value=provider):
+            exit_code = main(["provider-diagnostics", "--provider", "kalshi"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "Authentication.............. PASS" in out
+        assert "Balance...................... PASS" in out
+        assert "Order history................ SUPPORTED" in out
+        assert "OVERALL: READ-ONLY CONNECTIVITY OK" in out
+
+    def test_failed_health_check_reports_not_ready(self, capsys):
+        config = _FakeConfig()
+        config.kalshi_api_key_id = "some-id"
+        config.kalshi_private_key_path = "/path/to/key.pem"
+        config.kalshi_enabled = True
+
+        class UnhealthyProvider(_FakeProvider):
+            def health_check(self):
+                from src.execution.base import HealthCheckResult
+                return HealthCheckResult(provider="kalshi", ok=False, detail="401", checked_at=datetime.now(timezone.utc))
+
+        provider = UnhealthyProvider()
+        with mock.patch("src.execution.live_cli.load_config", return_value=config), \
+             mock.patch("src.execution.live_cli.get_provider", return_value=provider):
+            exit_code = main(["provider-diagnostics", "--provider", "kalshi"])
+        out = capsys.readouterr().out
+        assert exit_code == 1
+        assert "OVERALL: NOT READY" in out
+
+    def test_never_calls_place_or_cancel_order(self, capsys):
+        config = _FakeConfig()
+        config.kalshi_api_key_id = "some-id"
+        config.kalshi_private_key_path = "/path/to/key.pem"
+        config.kalshi_enabled = True
+        provider = _FakeProvider()
+        with mock.patch("src.execution.live_cli.load_config", return_value=config), \
+             mock.patch("src.execution.live_cli.get_provider", return_value=provider):
+            main(["provider-diagnostics", "--provider", "kalshi"])
+        assert provider.place_order_called is False
+        assert provider.cancel_order_called is False
+
+
+class TestLiveReadiness:
+    def test_no_credentials_anywhere_reports_pending(self, capsys, db_conn):
+        config = _FakeConfig()
+        config.kalshi_api_key_id = ""
+        config.kalshi_private_key_path = ""
+        config.polymarket_us_api_key_id = ""
+        config.polymarket_us_private_key_path = ""
+        with mock.patch("src.execution.live_cli.load_config", return_value=config), \
+             mock.patch("src.execution.live_cli.get_connection", return_value=_NonClosingConnProxy(db_conn)):
+            exit_code = main(["live-readiness"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "LIVE PROVIDER VERIFICATION PENDING" in out
+        assert "LIVE_TRADING_ENABLED=" in out  # honestly reflects config, whatever its value
+
+    def test_reports_polymarket_side_semantics_still_blocked(self, capsys, db_conn):
+        config = _FakeConfig()
+        with mock.patch("src.execution.live_cli.load_config", return_value=config), \
+             mock.patch("src.execution.live_cli.get_connection", return_value=_NonClosingConnProxy(db_conn)):
+            main(["live-readiness"])
+        out = capsys.readouterr().out
+        assert "BLOCKED (NO-side unverified)" in out
+
+    def test_never_calls_place_or_cancel_order(self, capsys, db_conn):
+        config = _FakeConfig()
+        provider = _FakeProvider()
+        with mock.patch("src.execution.live_cli.load_config", return_value=config), \
+             mock.patch("src.execution.live_cli.get_connection", return_value=_NonClosingConnProxy(db_conn)), \
+             mock.patch("src.execution.live_cli.get_provider", return_value=provider):
+            main(["live-readiness"])
         assert provider.place_order_called is False
         assert provider.cancel_order_called is False

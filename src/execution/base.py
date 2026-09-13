@@ -303,3 +303,25 @@ class PredictionMarketProvider(ABC):
         default returns None ("not implemented for this provider"),
         never fabricates a response. See capabilities.supports_order_lookup."""
         return None
+
+    def get_order_by_id(self, order_id: str) -> dict | None:
+        """Best-effort, read-only single-order lookup. Only useful when
+        an order id is already known (e.g. a CONFIRMED submission whose
+        fill status needs refreshing) -- NOT useful for reconciling a
+        fully ambiguous submission where no id was ever received; see
+        get_recent_orders/get_positions for that case. Concrete default
+        returns None."""
+        return None
+
+    def get_fills(self, **filters: Any) -> list[dict] | None:
+        """Best-effort, read-only fill-history lookup. Concrete default
+        returns None. See capabilities.supports_fill_lookup."""
+        return None
+
+    def get_positions(self, **filters: Any) -> list[dict] | None:
+        """Best-effort, read-only current-positions lookup -- one more
+        reconciliation signal (a position that changed by the expected
+        quantity is evidence a fill occurred, even if the order itself
+        doesn't show up in an open-orders list). Concrete default
+        returns None."""
+        return None

@@ -20,6 +20,7 @@ from typing import Any
 
 from src.execution.base import PredictionMarketProvider
 from src.execution.live import kill_switch, store
+from src.execution.live.reconciliation import ReconciliationResult, reconcile_ambiguous_submission
 from src.execution.live.models import (
     InvalidationReason, LiveOrder, LiveOrderStatus, LivePosition, LivePositionStatus,
     LiveSubmissionAttempt, SubmissionAttemptState, new_random_id,
@@ -161,10 +162,11 @@ def execute_authorized(
         quantity_filled = outcome.quantity_filled if outcome.quantity_filled is not None else Decimal("0")
         order_status = _order_status_from_provider_state(outcome.order_state, quantity_filled, revalidation.quantity)
 
+        client_order_id = approval_id if provider.capabilities.supports_client_idempotency else None
         live_order_id = store.persist_live_order(conn, LiveOrder(
             live_order_id=None, approval_id=approval_id, prepared_order_id=authorization["prepared_order_id"],
             provider=authorization["provider"], provider_order_id=outcome.provider_order_id,
-            client_order_id=None, market_id=authorization["provider_market_id"], side=authorization["side"],
+            client_order_id=client_order_id, market_id=authorization["provider_market_id"], side=authorization["side"],
             quantity_requested=revalidation.quantity, quantity_filled=quantity_filled,
             limit_price=revalidation.fill_price, average_fill_price=outcome.average_fill_price,
             fees=revalidation.fees or Decimal("0"),
@@ -212,28 +214,66 @@ def execute_authorized(
         store.log_event(conn, "PROVIDER_REJECTED", outcome.detail, approval_id=approval_id)
         return ExecutionResult("BLOCKED", "PROVIDER_REJECTED", outcome.detail, attempt_id=attempt_id)
 
-    # AMBIGUOUS: never auto-retried. Recorded for manual review; the
-    # circuit breaker still counts it as an error signal.
+    # AMBIGUOUS: never auto-retried, regardless of what reconciliation
+    # finds -- MAX_FINANCIAL_POST_ATTEMPTS_PER_APPROVAL stays 1. This
+    # only improves the audit trail / manual-review evidence quality.
     tripped = kill_switch.record_provider_error(
         conn, authorization["provider"], config.live_provider_error_threshold,
         config.live_provider_error_window_minutes,
     )
+
+    attempt_row = {
+        "market_id": authorization["provider_market_id"], "side": authorization["side"],
+        "quantity": revalidation.quantity, "limit_price": revalidation.fill_price,
+        "approval_id": approval_id,
+    }
+    try:
+        reconciliation = reconcile_ambiguous_submission(provider, attempt_row)
+    except Exception as exc:
+        reconciliation = ReconciliationResult(
+            "INCONCLUSIVE", None, f"reconciliation itself raised: {type(exc).__name__}: {exc}",
+        )
+
+    final_state = (
+        SubmissionAttemptState.RECONCILED_FOUND.value if reconciliation.status == "RECONCILED_FOUND"
+        else SubmissionAttemptState.RECONCILED_NOT_FOUND.value if reconciliation.status == "RECONCILED_NOT_FOUND"
+        else SubmissionAttemptState.MANUAL_REVIEW_REQUIRED.value
+    )
     store.update_submission_attempt_state(
-        conn, attempt_id, SubmissionAttemptState.MANUAL_REVIEW_REQUIRED.value, response_received_at=now2,
-        reconciliation_status="MANUAL_REVIEW_REQUIRED",
-        reconciliation_detail=(
-            f"{authorization['provider']} does not support automatic order-lookup reconciliation "
-            "in this stage -- ambiguous submissions always require manual review. " + outcome.detail
-        ),
+        conn, attempt_id, final_state, response_received_at=now2,
+        provider_order_id=reconciliation.provider_order_id,
+        reconciliation_status=reconciliation.status, reconciliation_detail=reconciliation.detail,
     )
     store.log_event(
         conn, "SUBMISSION_AMBIGUOUS",
-        f"{outcome.detail}; circuit_breaker_tripped={tripped}", approval_id=approval_id,
+        f"{outcome.detail}; reconciliation={reconciliation.status}: {reconciliation.detail}; "
+        f"circuit_breaker_tripped={tripped}",
+        approval_id=approval_id,
     )
     return ExecutionResult(
-        "BLOCKED", "MANUAL_REVIEW_REQUIRED",
-        f"ambiguous submission outcome, manual review required: {outcome.detail}", attempt_id=attempt_id,
+        "BLOCKED", reconciliation.status,
+        f"ambiguous submission outcome ({outcome.detail}); reconciliation={reconciliation.status}: "
+        f"{reconciliation.detail}",
+        attempt_id=attempt_id,
     )
+
+
+_PROVIDER_STATE_MAP = {
+    # Polymarket US (OrderState enum, uppercase)
+    "FILLED": LiveOrderStatus.FILLED,
+    "PARTIALLY_FILLED": LiveOrderStatus.PARTIALLY_FILLED,
+    "CANCELED": LiveOrderStatus.CANCELED,
+    "EXPIRED": LiveOrderStatus.EXPIRED,
+    "REJECTED": LiveOrderStatus.REJECTED,
+    # Kalshi (Order.status enum, lowercase -- confirmed from the official
+    # SDK: 'resting'/'canceled'/'executed'/'pending'). "executed" alone
+    # is ambiguous between full/partial fill, so it's deliberately NOT
+    # mapped directly here -- the quantity_filled/quantity_requested
+    # comparison below resolves it instead.
+    "resting": LiveOrderStatus.SUBMITTED,
+    "pending": LiveOrderStatus.SUBMITTED,
+    "canceled": LiveOrderStatus.CANCELED,
+}
 
 
 def _order_status_from_provider_state(
@@ -241,16 +281,12 @@ def _order_status_from_provider_state(
 ) -> LiveOrderStatus:
     """Never assumes HTTP 200/CONFIRMED == FILLED (section 16). Maps
     the provider's own reported order state when present and
-    recognized; otherwise falls back to inferring from quantity_filled,
-    and if that's unknown too, the conservative SUBMITTED (not FILLED)."""
-    if provider_state == "FILLED":
-        return LiveOrderStatus.FILLED
-    if provider_state in ("PARTIALLY_FILLED",):
-        return LiveOrderStatus.PARTIALLY_FILLED
-    if provider_state in ("CANCELED", "EXPIRED", "REJECTED"):
-        return LiveOrderStatus.CANCELED if provider_state == "CANCELED" else (
-            LiveOrderStatus.EXPIRED if provider_state == "EXPIRED" else LiveOrderStatus.REJECTED
-        )
+    unambiguously recognized; otherwise falls back to inferring from
+    quantity_filled, and if that's unknown too, the conservative
+    SUBMITTED (not FILLED)."""
+    mapped = _PROVIDER_STATE_MAP.get(provider_state)
+    if mapped is not None:
+        return mapped
     if quantity_filled > 0:
         return LiveOrderStatus.FILLED if quantity_filled >= quantity_requested else LiveOrderStatus.PARTIALLY_FILLED
     return LiveOrderStatus.SUBMITTED

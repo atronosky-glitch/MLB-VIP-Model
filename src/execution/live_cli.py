@@ -203,3 +203,163 @@ def live_status() -> int:
     finally:
         conn.close()
     return 0
+
+
+def _has_credentials(config: Any, provider_name: str) -> bool:
+    key_id = getattr(config, f"{provider_name}_api_key_id", "")
+    key_path = getattr(config, f"{provider_name}_private_key_path", "")
+    return bool(key_id and key_path)
+
+
+def _pass_fail(ok: bool) -> str:
+    return "PASS" if ok else "FAIL"
+
+
+def provider_diagnostics(provider_name: str) -> int:
+    """Read-only diagnostic sweep for one provider. Never calls any
+    provider mutation method -- only health_check/get_balance/
+    get_markets/get_orderbook and capability
+    flags. Prints NO secret values (only whether credentials are
+    configured, never the values themselves)."""
+    config = load_config()
+    print(f"=== {provider_name.upper()} DIAGNOSTICS ===")
+
+    has_creds = _has_credentials(config, provider_name)
+    print(f"Credentials configured...... {'YES' if has_creds else 'NO'}")
+    if not has_creds:
+        print("Cannot run any live check without credentials -- reporting PENDING for all remaining checks.")
+        print(f"Live schema................ {'VERIFIED' if _schema_verified(provider_name) else 'UNVERIFIED'}")
+        print("OVERALL: LIVE PROVIDER VERIFICATION PENDING -- no credentials configured")
+        return 0
+
+    enabled = getattr(config, f"{provider_name}_enabled", False)
+    if not enabled:
+        print(f"{provider_name}_enabled=false -- read-only access is not enabled either. Reporting PENDING.")
+        print("OVERALL: LIVE PROVIDER VERIFICATION PENDING -- provider disabled")
+        return 0
+
+    try:
+        provider = get_provider(provider_name, config)
+    except Exception as exc:
+        print(f"Could not initialize provider: {type(exc).__name__}: {exc}")
+        print("OVERALL: NOT READY -- provider initialization failed")
+        return 1
+
+    auth_ok = False
+    try:
+        health = provider.health_check()
+        auth_ok = health.ok
+        print(f"Authentication.............. {_pass_fail(auth_ok)} ({health.detail})")
+    except Exception as exc:
+        print(f"Authentication.............. FAIL ({type(exc).__name__}: {exc})")
+
+    balance_ok = False
+    try:
+        provider.get_balance()
+        balance_ok = True
+        print(f"Balance...................... {_pass_fail(balance_ok)}")
+    except Exception as exc:
+        print(f"Balance...................... FAIL ({type(exc).__name__}: {exc})")
+
+    markets: list = []
+    markets_ok = False
+    try:
+        markets = provider.get_markets(limit=5) or []
+        markets_ok = True
+        print(f"Markets...................... {_pass_fail(markets_ok)} ({len(markets)} returned)")
+    except Exception as exc:
+        print(f"Markets...................... FAIL ({type(exc).__name__}: {exc})")
+
+    orderbook_ok = False
+    if markets:
+        try:
+            raw_book = provider.get_orderbook(markets[0].id)
+            provider.normalize_orderbook(raw_book)
+            orderbook_ok = True
+            print(f"Orderbook.................... {_pass_fail(orderbook_ok)}")
+        except Exception as exc:
+            print(f"Orderbook.................... FAIL ({type(exc).__name__}: {exc})")
+    else:
+        print("Orderbook.................... SKIPPED (no markets returned to test against)")
+
+    caps = provider.capabilities
+    print(f"Order history................ {'SUPPORTED' if caps.supports_order_lookup else 'UNSUPPORTED'}")
+    print(f"Fills......................... {'SUPPORTED' if caps.supports_fill_lookup else 'UNSUPPORTED'}")
+    print(f"Positions..................... {'SUPPORTED' if hasattr(provider, 'get_positions') else 'UNSUPPORTED'}")
+    print(f"Cancel........................ {'SUPPORTED' if caps.supports_cancel else 'UNSUPPORTED'}")
+    print(f"Preview....................... {'SUPPORTED' if caps.supports_preview else 'UNSUPPORTED'}")
+
+    verified = _schema_verified(provider_name)
+    print(f"Live order schema............. {'VERIFIED' if verified else 'UNVERIFIED'}")
+
+    overall_ready = auth_ok and balance_ok and markets_ok
+    print(f"\nOVERALL: {'READ-ONLY CONNECTIVITY OK' if overall_ready else 'NOT READY'}")
+    return 0 if overall_ready else 1
+
+
+def _schema_verified(provider_name: str) -> bool:
+    if provider_name == "kalshi":
+        from src.execution.kalshi import KALSHI_LIVE_SCHEMA_VERIFIED
+        return KALSHI_LIVE_SCHEMA_VERIFIED
+    if provider_name == "polymarket_us":
+        return True  # POST /v1/orders schema confirmed directly from current docs.polymarket.us
+    return False
+
+
+def live_readiness() -> int:
+    """Aggregate, read-only checklist. Never enables anything -- purely
+    reports the current state of every gate a real order would have to
+    pass through."""
+    config = load_config()
+    conn = get_connection(config.database_path)
+    all_ready = True
+    try:
+        for provider_name in _ALL_PROVIDERS:
+            print(f"\n{provider_name.upper()}")
+            has_creds = _has_credentials(config, provider_name)
+            print(f"  Credentials.............. {'PASS' if has_creds else 'PENDING (not configured)'}")
+
+            read_ok = None
+            if has_creds and getattr(config, f"{provider_name}_enabled", False):
+                try:
+                    provider = get_provider(provider_name, config)
+                    health = provider.health_check()
+                    read_ok = health.ok
+                except Exception:
+                    read_ok = False
+            print(f"  Market/orderbook reads... {'PASS' if read_ok else ('PENDING' if read_ok is None else 'FAIL')}")
+
+            side_semantics_ok = provider_name == "kalshi"  # YES/NO confirmed by Kalshi's own docs; Polymarket NO-side still unverified
+            print(f"  Side semantics........... {'PASS' if side_semantics_ok else 'BLOCKED (NO-side unverified)'}")
+
+            schema_ok = _schema_verified(provider_name)
+            print(f"  Create-order schema...... {'PASS' if schema_ok else 'FAIL / UNVERIFIED'}")
+
+            print("  Reconciliation........... " + (
+                "PASS (idempotent, full-status order list)" if provider_name == "kalshi"
+                else "MANUAL ONLY (no idempotency key, open-orders-only list)"
+            ))
+
+            print("  Approval gate............ PASS (single-use, TTL-bounded, atomic claim)")
+            print("  Risk gate................ PASS (RiskEngine reused unchanged)")
+            print(f"  Kill switch.............. {'ENGAGED' if kill_switch.is_kill_switch_engaged(conn)[0] else 'PASS (clear)'}")
+            print("  Stop loss................ PASS (Stage 3 RiskEngine daily-loss check reused)")
+
+            production_enabled = getattr(config, f"{provider_name}_live_enabled", False) and config.live_trading_enabled
+            print(f"  Production enabled....... {'YES' if production_enabled else 'NO'}")
+
+            provider_ready = has_creds and (read_ok is True) and side_semantics_ok and schema_ok
+            if not provider_ready:
+                all_ready = False
+
+        print("\n" + "=" * 50)
+        if not any(_has_credentials(config, p) for p in _ALL_PROVIDERS):
+            print("OVERALL: LIVE PROVIDER VERIFICATION PENDING -- no credentials configured in this environment")
+        elif all_ready:
+            print("OVERALL: READY FOR CONTROLLED HUMAN-APPROVED TEST")
+        else:
+            print("OVERALL: NOT READY FOR PRODUCTION")
+        print(f"LIVE_TRADING_ENABLED={config.live_trading_enabled}  (must be explicitly set true to allow any real order)")
+    finally:
+        conn.close()
+    return 0

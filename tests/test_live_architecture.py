@@ -111,19 +111,36 @@ class TestPlaceOrderStillPermanentlyBlocked:
         assert "raise NotImplementedError" in source
 
 
-class TestKalshiFailsClosedByConstruction:
-    def test_kalshi_live_schema_verified_constant_is_false(self):
+class TestKalshiLiveSchemaGate:
+    """Stage 4.1: KALSHI_LIVE_SCHEMA_VERIFIED flipped to True after the
+    exact schema was confirmed from the official kalshi-python SDK
+    (see src/execution/kalshi.py's docstrings for the full citation).
+    This does NOT enable live trading by itself -- LIVE_TRADING_ENABLED,
+    KALSHI_LIVE_ENABLED, REQUIRE_HUMAN_APPROVAL, and a real human
+    approval are all still independently required and all still
+    default off/require action."""
+
+    def test_kalshi_live_schema_verified_is_now_true(self):
         from src.execution.kalshi import KALSHI_LIVE_SCHEMA_VERIFIED
-        assert KALSHI_LIVE_SCHEMA_VERIFIED is False
+        assert KALSHI_LIVE_SCHEMA_VERIFIED is True
 
     def test_kalshi_live_schema_verified_is_a_plain_module_constant(self):
         """Must be a hard-coded module constant, not read from
         config/env -- so no .env edit can ever flip it."""
         import src.execution.kalshi as kalshi_module
         text = Path(kalshi_module.__file__).read_text(encoding="utf-8")
-        assert "KALSHI_LIVE_SCHEMA_VERIFIED = False" in text
+        assert "KALSHI_LIVE_SCHEMA_VERIFIED = True" in text
         assert "config.kalshi_live_schema_verified" not in text.lower()
         assert "os.environ" not in text
+
+    def test_flipping_the_schema_gate_did_not_enable_any_config_flag(self):
+        """The gate being verified is orthogonal to actually being
+        allowed to trade -- confirm every other gate is still off by
+        default."""
+        from src.production_config import ProductionConfig
+        defaults = ProductionConfig()
+        assert defaults.live_trading_enabled is False
+        assert defaults.kalshi_live_enabled is False
 
 
 class TestDefaultLiveConfigStaysOff:

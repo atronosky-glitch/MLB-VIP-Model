@@ -38,20 +38,78 @@ def _response(status_code, json_body=None, raises_on_json=False, content=b"{}"):
 
 
 class TestCapabilities:
-    def test_no_preview_no_idempotency_confirmed_absent(self):
+    def test_no_idempotency_confirmed_absent(self):
+        """Confirmed absent from current docs.polymarket.us -- no
+        clientOrderId or equivalent field exists on order creation."""
         caps = _provider().capabilities
-        assert caps.supports_preview is False
         assert caps.supports_client_idempotency is False
+
+    def test_preview_confirmed_present(self):
+        """Stage 4.1 correction: POST /v1/order/preview was confirmed
+        to exist (same Ed25519 auth as create) -- not wired into the
+        submission flow yet, but the capability flag must reflect
+        reality, not the earlier (incomplete) research pass."""
+        caps = _provider().capabilities
+        assert caps.supports_preview is True
 
     def test_ioc_and_fok_supported_via_tif(self):
         caps = _provider().capabilities
         assert caps.supports_ioc is True
         assert caps.supports_fok is True
 
-    def test_order_lookup_not_implemented_this_stage(self):
+    def test_order_lookup_confirmed_via_get_order_by_id(self):
+        """GET /v1/order/{orderId} is confirmed -- only useful once an
+        order id is already known, not for a fully ambiguous submission."""
         caps = _provider().capabilities
-        assert caps.supports_order_lookup is False
+        assert caps.supports_order_lookup is True
+
+    def test_fill_lookup_still_not_available(self):
+        """No separate fills endpoint is documented for Polymarket US."""
+        caps = _provider().capabilities
         assert caps.supports_fill_lookup is False
+
+    def test_cancel_confirmed_present_but_not_implemented(self):
+        caps = _provider().capabilities
+        assert caps.supports_cancel is True
+
+
+class TestReconciliationReads:
+    def test_get_order_by_id_returns_the_order(self):
+        provider = _provider()
+        provider._authenticated_get = mock.Mock(return_value={"order": {"id": "ORDER-1", "state": "FILLED"}})
+        result = provider.get_order_by_id("ORDER-1")
+        assert result == {"id": "ORDER-1", "state": "FILLED"}
+        provider._authenticated_get.assert_called_once_with("/v1/order/ORDER-1")
+
+    def test_get_order_by_id_returns_none_on_404_or_error(self):
+        provider = _provider()
+        provider._authenticated_get = mock.Mock(side_effect=RuntimeError("404 not found"))
+        assert provider.get_order_by_id("does-not-exist") is None
+
+    def test_get_recent_orders_hits_open_orders_endpoint(self):
+        provider = _provider()
+        provider._authenticated_get = mock.Mock(return_value={"orders": [{"id": "ORDER-1"}]})
+        result = provider.get_recent_orders()
+        assert result == [{"id": "ORDER-1"}]
+        provider._authenticated_get.assert_called_once_with("/v1/orders/open", params=None)
+
+    def test_get_recent_orders_returns_none_on_error(self):
+        provider = _provider()
+        provider._authenticated_get = mock.Mock(side_effect=RuntimeError("boom"))
+        assert provider.get_recent_orders() is None
+
+    def test_get_positions_returns_none_on_error_never_guesses(self):
+        """If the uncertain base-URL issue means this 404s/errors in
+        reality, this must fail safely to None, not raise."""
+        provider = _provider()
+        provider._authenticated_get = mock.Mock(side_effect=RuntimeError("wrong host"))
+        assert provider.get_positions() is None
+
+    def test_get_positions_returns_the_list_on_success(self):
+        provider = _provider()
+        provider._authenticated_get = mock.Mock(return_value={"positions": [{"symbol": "X", "netPosition": 14}]})
+        result = provider.get_positions()
+        assert result == [{"symbol": "X", "netPosition": 14}]
 
 
 class TestPayloadGeneration:

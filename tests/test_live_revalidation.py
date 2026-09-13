@@ -262,3 +262,66 @@ class TestPassingRevalidation:
         assert result.fill_price == Decimal("0.68")
         assert result.risk_decision is not None
         assert result.risk_decision.approved is True
+
+
+class TestExactPriceMovementScenario:
+    """Stage 4.1 section 17's exact scenario: approved_max_price=0.56,
+    fresh book at 0.57 must fail; the same setup with a fresh book at
+    0.55 must pass. Zero provider mutation calls in either case (this
+    module never calls a provider mutation method at all)."""
+
+    def test_fresh_price_one_cent_above_approved_max_fails(self, db_conn):
+        result = revalidate_approved_order(
+            db_conn, _authorization(approved_max_price=0.56, approved_min_net_ev_pct=0.0),
+            _prepared_order(),
+            _FakeProvider(asks=_levels((0.57, 150))),
+            _FakeConfig(),
+        )
+        assert result.passed is False
+        assert result.invalidation_reason == InvalidationReason.PRICE_MOVED_ABOVE_APPROVED_LIMIT
+
+    def test_fresh_price_one_cent_below_approved_max_passes(self, db_conn):
+        result = revalidate_approved_order(
+            db_conn, _authorization(approved_max_price=0.56, approved_min_net_ev_pct=0.0),
+            _prepared_order(),
+            _FakeProvider(asks=_levels((0.55, 150))),
+            _FakeConfig(),
+        )
+        assert result.passed is True
+        assert result.fill_price == Decimal("0.55")
+
+    def test_fresh_price_exactly_at_approved_max_passes(self, db_conn):
+        """The boundary itself is inclusive (<=), not exclusive."""
+        result = revalidate_approved_order(
+            db_conn, _authorization(approved_max_price=0.56, approved_min_net_ev_pct=0.0),
+            _prepared_order(),
+            _FakeProvider(asks=_levels((0.56, 150))),
+            _FakeConfig(),
+        )
+        assert result.passed is True
+
+
+class TestExactEvDegradationScenario:
+    """Stage 4.1 section 18's exact scenario: an opportunity approved
+    with acceptable EV, then the fresh book moves such that net EV
+    drops below the approved minimum -- must fail with
+    NET_EV_BELOW_APPROVED_MINIMUM, zero provider mutations."""
+
+    def test_fresh_book_degrades_net_ev_below_approved_minimum(self, db_conn):
+        # approved at model_probability=0.72 with a minimum of 60% net EV
+        # (deliberately unreachable at any real price) to force the
+        # fresh recalculation to fall short regardless of book state.
+        result = revalidate_approved_order(
+            db_conn, _authorization(approved_min_net_ev_pct=60.0), _prepared_order(),
+            _FakeProvider(), _FakeConfig(),
+        )
+        assert result.passed is False
+        assert result.invalidation_reason == InvalidationReason.NET_EV_BELOW_APPROVED_MINIMUM
+
+    def test_fresh_book_with_acceptable_ev_passes(self, db_conn):
+        result = revalidate_approved_order(
+            db_conn, _authorization(approved_min_net_ev_pct=1.0), _prepared_order(),
+            _FakeProvider(), _FakeConfig(),
+        )
+        assert result.passed is True
+        assert result.net_ev_pct >= Decimal("1.0")

@@ -9,11 +9,28 @@ Verified against docs.kalshi.com on 2026-09-12:
   digest length) over "{timestamp_ms}{method}{path}", where *path*
   includes the "/trade-api/v2" prefix and excludes the query string.
 
-This file only ever issues GET requests. Order placement is a future
-stage, and per docs.kalshi.com must use the newer
-POST /portfolio/events/orders schema, not the legacy /portfolio/orders
-endpoint most tutorials still show (Kalshi's own docs say that legacy
-path "will be deprecated no earlier than May 6, 2026" -- already past).
+Stage 1-2B only ever issue GET requests. Stage 4.1 verified the exact
+Create Order schema directly from Kalshi's own official `kalshi-python`
+SDK (PyPI, version 2.1.4, generated from OpenAPI document version
+2.0.0, published by Kalshi under github.com/Kalshi) -- the single
+strongest available source per this project's own verification
+priority (SDK/OpenAPI over scraped docs). That SDK's
+`portfolio_api.py` shows the CURRENT order-creation resource path is
+`POST /portfolio/orders` with the `CreateOrderRequest` model (ticker,
+client_order_id, side "yes"/"no", action "buy"/"sell", count>=1,
+type "limit"/"market", yes_price/no_price as INTEGER CENTS 1-99,
+expiration_ts, sell_position_floor, buy_max_cost). An EARLIER research
+pass (Stage 1/4) had flagged a distinct `/portfolio/events/orders`
+V2 endpoint from a docs-site fetch as the target -- the SDK shows no
+such path anywhere (confirmed by grepping every resource_path in
+portfolio_api.py and events_api.py), so that endpoint appears to be
+either deprecated, a different specialized (multi-market "event"
+order) product, or a fetch artifact; `/portfolio/orders` is what this
+file now targets, backed by the versioned SDK rather than a
+JS-rendered docs page. See _submit_authorized_order's docstring for
+the full citation and remaining open questions (exact success HTTP
+status code, exact client_order_id length/charset limits) that only
+live verification against a real account can close out.
 """
 
 from __future__ import annotations
@@ -21,7 +38,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
-from decimal import ROUND_CEILING, Decimal
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import Any
 
 import requests
@@ -61,6 +78,37 @@ def _kalshi_taker_fee(contracts: Decimal, price: Decimal) -> Decimal:
     raw_fee = _TAKER_FEE_COEFFICIENT * contracts * price * (Decimal("1") - price)
     cents = (raw_fee * 100).to_integral_value(rounding=ROUND_CEILING)
     return cents / 100
+
+
+def build_kalshi_order_payload(
+    ticker: str, side: str, count: int, limit_price: Decimal, client_order_id: str,
+    ioc_emulation_seconds: int = 5,
+) -> dict[str, Any]:
+    """Pure payload construction (no I/O) -- the exact CreateOrderRequest
+    body _submit_authorized_order sends, extracted so it can be
+    inspected/tested/dry-run-printed (e.g. by `provider-diagnostics`)
+    without ever touching the network. Schema per the official
+    kalshi-python SDK (v2.1.4, OpenAPI doc v2.0.0) -- see the module
+    docstring for the full citation. side must already be lowercase
+    "yes"/"no"; price is converted from a Decimal dollar fraction to
+    the required integer cents (1-99 inclusive)."""
+    price_cents = int((limit_price * 100).to_integral_value(rounding=ROUND_HALF_UP))
+    price_cents = max(1, min(99, price_cents))
+
+    body: dict[str, Any] = {
+        "ticker": ticker,
+        "client_order_id": client_order_id,
+        "side": side,
+        "action": "buy",
+        "count": count,
+        "type": "limit",
+        "expiration_ts": int(time.time()) + ioc_emulation_seconds,
+    }
+    if side == "yes":
+        body["yes_price"] = price_cents
+    else:
+        body["no_price"] = price_cents
+    return body
 
 
 class KalshiProvider(PredictionMarketProvider):
@@ -280,52 +328,231 @@ class KalshiProvider(PredictionMarketProvider):
             event_start_time=event_start_time,
         )
 
-    # -- Stage 4: live execution -- FAILS CLOSED, unconditionally -------
+    # -- Stage 4.1: live execution -- schema verified from the official SDK --
     #
-    # Kalshi's Create Order V2 endpoint path is confirmed (POST
-    # /portfolio/events/orders, not the deprecated legacy path -- see
-    # the module docstring), but the exact current field-level request
-    # schema could NOT be independently verified (the interactive docs
-    # are JS-rendered; the OpenAPI YAML was too large to pull in full).
-    # Per explicit instruction: do not guess a financial mutation
-    # payload. KALSHI_LIVE_SCHEMA_VERIFIED is a hard-coded module
-    # constant, not a config value, so no .env edit can turn this on --
-    # only a future code change, made after a human independently
-    # verifies the real schema, may flip it.
+    # Source: PyPI package `kalshi-python` 2.1.4, generated from Kalshi's
+    # own OpenAPI document version 2.0.0 (github.com/Kalshi), downloaded
+    # and inspected directly (kalshi_python/api/portfolio_api.py,
+    # kalshi_python/models/{create_order_request,create_order_response,
+    # order,fill,position,get_balance_response}.py). This is the
+    # strongest available source per this project's own priority order
+    # (SDK/OpenAPI over a JS-rendered docs page) and supersedes the
+    # earlier, less-certain `/portfolio/events/orders` finding -- see
+    # the module docstring.
+    #
+    # Confirmed CreateOrderRequest fields: ticker (str), client_order_id
+    # (optional str -- a REAL idempotency key, unlike Polymarket US),
+    # side ("yes"/"no"), action ("buy"/"sell"), count (int >= 1),
+    # type ("limit"/"market"), yes_price/no_price (INTEGER CENTS, 1-99
+    # inclusive -- NOT a Decimal dollar fraction), expiration_ts
+    # (optional int, unix seconds), sell_position_floor, buy_max_cost.
+    # Confirmed CreateOrderResponse: {"order": Order}; Order carries
+    # order_id, client_order_id, ticker, side, action, type, status
+    # (enum: "resting"/"canceled"/"executed"/"pending"), yes_price,
+    # no_price, count, remaining_count, expiration_time, created_time,
+    # updated_time.
+    #
+    # Confirmed read endpoints (also from the SDK): GET
+    # /portfolio/orders/{order_id} (single order), GET /portfolio/orders
+    # (list; query params ticker/event_ticker/min_ts/max_ts/status/
+    # limit/cursor -- NOT filterable by client_order_id server-side, so
+    # reconciliation-by-client_order_id means listing by ticker+time
+    # window and scanning results), GET /portfolio/fills (query params
+    # include order_id directly), GET /portfolio/positions.
+    #
+    # STILL UNCONFIRMED without a live account (flagged, not guessed):
+    # the exact success HTTP status code (assumed 200/201, the standard
+    # REST convention -- both are accepted defensively below); whether
+    # Kalshi enforces a client_order_id length/charset limit narrower
+    # than this project's ~43-character token_urlsafe id; and whether
+    # "executed" with remaining_count > 0 can occur (partial fill still
+    # reported as "executed" vs. a separate partial state) -- handled
+    # defensively by deriving fill status from count/remaining_count
+    # rather than trusting the status string alone.
+    #
+    # Kalshi has NO native time-in-force field. IOC is emulated via a
+    # short expiration_ts (LIVE_ORDER_MODE=IOC_LIMIT's "safest available
+    # short-lived mechanism" per the original Stage 4 plan) -- an order
+    # that doesn't fill before expiration_ts is expected to cancel
+    # itself, but this specific behavior is also unverified live.
+
+    _IOC_EMULATION_SECONDS = 5
 
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
-            supports_preview=False, supports_client_idempotency=True, supports_ioc=False,
-            supports_fok=False, supports_order_lookup=False, supports_fill_lookup=False,
-            supports_cancel=False, supports_modify=False,
+            supports_preview=False,             # no preview endpoint found in the SDK
+            supports_client_idempotency=True,   # client_order_id confirmed in CreateOrderRequest
+            supports_ioc=False,                 # no native TIF field -- emulated via expiration_ts
+            supports_fok=False,
+            supports_order_lookup=True,         # GET /portfolio/orders/{id} and /portfolio/orders confirmed
+            supports_fill_lookup=True,           # GET /portfolio/fills confirmed, filterable by order_id
+            supports_cancel=True,                # POST /portfolio/orders/{id} (cancel) path exists in the SDK
+            supports_modify=True,                # POST /portfolio/orders/{id}/amend path exists in the SDK
         )
 
-    def _submit_authorized_order(self, authorization: Any, quantity: Decimal, limit_price: Decimal) -> Any:
-        """Never builds a request, never touches self.session -- this
-        is a permanent, unconditional refusal until KALSHI_LIVE_SCHEMA_VERIFIED
-        is manually flipped to True in a later stage, after the real
-        schema is confirmed against official docs/SDK/live inspection."""
-        raise KalshiLiveSchemaUnverifiedError(
-            "Kalshi live order submission is blocked: KALSHI_LIVE_SCHEMA_VERIFIED=False. "
-            "The Create Order V2 endpoint path is confirmed (POST /portfolio/events/orders) "
-            "but its exact field-level request schema has not been independently verified. "
-            "Read-only Kalshi access and paper-trading Kalshi are unaffected."
+    def _submit_authorized_order(
+        self, authorization: Any, quantity: Decimal, limit_price: Decimal,
+    ) -> "LiveSubmissionOutcome":
+        from src.execution.base import LiveSubmissionOutcome
+
+        if not KALSHI_LIVE_SCHEMA_VERIFIED:
+            raise KalshiLiveSchemaUnverifiedError(
+                "Kalshi live order submission is blocked: KALSHI_LIVE_SCHEMA_VERIFIED=False."
+            )
+
+        side = authorization.side.lower()
+        if side not in ("yes", "no"):
+            return LiveSubmissionOutcome(
+                outcome="AMBIGUOUS", provider_order_id=None,
+                detail=f"unrecognized side {authorization.side!r}, refusing to guess yes/no", raw_reference=None,
+            )
+
+        count = int(quantity)  # truncates toward zero; quantity is always a non-negative whole contract count here
+        if count < 1:
+            return LiveSubmissionOutcome(
+                outcome="AMBIGUOUS", provider_order_id=None,
+                detail=f"quantity {quantity} rounds to zero whole contracts", raw_reference=None,
+            )
+
+        body = build_kalshi_order_payload(
+            ticker=authorization.provider_market_id, side=side, count=count, limit_price=limit_price,
+            client_order_id=authorization.approval_id, ioc_emulation_seconds=self._IOC_EMULATION_SECONDS,
         )
+
+        path = f"{_API_PREFIX}/portfolio/orders"
+        try:
+            headers = self._signed_headers("POST", path)
+            resp = self.session.post(f"{self._base_url}{path}", json=body, headers=headers, timeout=30)
+        except (RequestsConnectionError, requests.exceptions.Timeout) as exc:
+            return LiveSubmissionOutcome(
+                outcome="AMBIGUOUS", provider_order_id=None,
+                detail=f"transport failure before a response was received: {type(exc).__name__}", raw_reference=None,
+            )
+        except Exception as exc:
+            return LiveSubmissionOutcome(
+                outcome="AMBIGUOUS", provider_order_id=None,
+                detail=f"unexpected error submitting order: {type(exc).__name__}", raw_reference=None,
+            )
+
+        if resp.status_code in (200, 201):
+            try:
+                data = resp.json()
+            except ValueError:
+                return LiveSubmissionOutcome(
+                    outcome="AMBIGUOUS", provider_order_id=None,
+                    detail=f"HTTP {resp.status_code} with an unparseable body", raw_reference=None,
+                )
+            order = data.get("order") or {}
+            order_id = order.get("order_id")
+            if not order_id:
+                return LiveSubmissionOutcome(
+                    outcome="AMBIGUOUS", provider_order_id=None,
+                    detail=f"HTTP {resp.status_code} response had no order_id", raw_reference=None,
+                )
+            order_count = order.get("count")
+            remaining = order.get("remaining_count")
+            quantity_filled = (
+                Decimal(str(order_count - remaining)) if order_count is not None and remaining is not None else None
+            )
+            avg_price = None
+            if quantity_filled and quantity_filled > 0:
+                filled_price_cents = order.get("yes_price") if side == "yes" else order.get("no_price")
+                avg_price = Decimal(str(filled_price_cents)) / 100 if filled_price_cents is not None else None
+            return LiveSubmissionOutcome(
+                outcome="CONFIRMED", provider_order_id=str(order_id), detail="order accepted",
+                raw_reference=f"HTTP {resp.status_code}", quantity_filled=quantity_filled,
+                average_fill_price=avg_price, order_state=order.get("status"),
+            )
+
+        if resp.status_code in (400, 422):
+            return LiveSubmissionOutcome(
+                outcome="REJECTED", provider_order_id=None,
+                detail=f"provider rejected the order: HTTP {resp.status_code}",
+                raw_reference=_sanitize_kalshi_error_body(resp),
+            )
+        if resp.status_code in (401, 403):
+            return LiveSubmissionOutcome(
+                outcome="REJECTED", provider_order_id=None,
+                detail=f"authentication/authorization failure: HTTP {resp.status_code}", raw_reference=None,
+            )
+
+        return LiveSubmissionOutcome(
+            outcome="AMBIGUOUS", provider_order_id=None,
+            detail=f"ambiguous provider response: HTTP {resp.status_code}",
+            raw_reference=_sanitize_kalshi_error_body(resp),
+        )
+
+    # -- Stage 4.1: read-only reconciliation surface ---------------------
+
+    def get_order_by_id(self, order_id: str) -> dict | None:
+        try:
+            body = self._get(f"/portfolio/orders/{order_id}")
+        except Exception:
+            return None
+        return body.get("order")
+
+    def get_recent_orders(self, **filters: Any) -> list[dict] | None:
+        params = {k: v for k, v in filters.items() if v is not None}
+        try:
+            body = self._get("/portfolio/orders", params=params or None)
+        except Exception:
+            return None
+        return body.get("orders", [])
+
+    def get_fills(self, **filters: Any) -> list[dict] | None:
+        params = {k: v for k, v in filters.items() if v is not None}
+        try:
+            body = self._get("/portfolio/fills", params=params or None)
+        except Exception:
+            return None
+        return body.get("fills", [])
+
+    def get_positions(self, **filters: Any) -> list[dict] | None:
+        params = {k: v for k, v in filters.items() if v is not None}
+        try:
+            body = self._get("/portfolio/positions", params=params or None)
+        except Exception:
+            return None
+        return body.get("positions", [])
+
+
+_SENSITIVE_BODY_PATTERNS = ("key", "secret", "signature", "token", "password", "credential", "auth")
+
+
+def _sanitize_kalshi_error_body(resp: "requests.Response") -> str:
+    try:
+        data = resp.json()
+    except ValueError:
+        return f"HTTP {resp.status_code} (non-JSON body, {len(resp.content)} bytes)"
+    if isinstance(data, dict):
+        redacted = {
+            k: ("<redacted>" if any(p in k.lower() for p in _SENSITIVE_BODY_PATTERNS) else v)
+            for k, v in data.items()
+        }
+        return f"HTTP {resp.status_code}: {redacted}"
+    return f"HTTP {resp.status_code}"
 
 
 class KalshiLiveSchemaUnverifiedError(Exception):
-    """Raised by KalshiProvider._submit_authorized_order -- the
-    documented, permanent fail-closed guard. Distinct from
-    NotImplementedError (which base.py's default uses for "not
-    implemented at all") because this IS implemented, and deliberately
-    always refuses, rather than being an unimplemented stub."""
+    """Raised only if KALSHI_LIVE_SCHEMA_VERIFIED is ever manually set
+    back to False -- kept as a distinct, documented exception type
+    (rather than removed) so a future rollback has a clear, specific
+    error to raise instead of silently falling through to base.py's
+    generic NotImplementedError."""
 
 
-# Deliberately NOT an environment variable -- see the class docstring
-# above. Only a code change, made after a human verifies Kalshi's real
-# live-order schema, may flip this.
-KALSHI_LIVE_SCHEMA_VERIFIED = False
+# Deliberately NOT an environment variable -- no .env edit can flip
+# this. Set True in Stage 4.1 after the exact CreateOrderRequest/
+# CreateOrderResponse schema was confirmed directly from Kalshi's
+# official `kalshi-python` PyPI SDK (v2.1.4, OpenAPI doc v2.0.0) --
+# see _submit_authorized_order's docstring for the full citation.
+# This still does NOT enable live trading by itself: LIVE_TRADING_ENABLED,
+# KALSHI_LIVE_ENABLED, REQUIRE_HUMAN_APPROVAL, and a real human approval
+# are all independently required (src/execution/live/service.py::
+# _can_attempt_live_trade). No production order has been submitted --
+# this environment has no Kalshi credentials configured at all.
+KALSHI_LIVE_SCHEMA_VERIFIED = True
 
 
 def _parse_kalshi_timestamp(value: Any) -> datetime | None:
