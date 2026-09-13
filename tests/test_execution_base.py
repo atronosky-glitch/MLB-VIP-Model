@@ -72,6 +72,37 @@ class TestPredictionMarketProviderABC:
         provider = _DummyProvider()
         assert provider.supports_live_execution is False
 
+    def test_submit_authorized_order_is_not_implemented_by_default(self):
+        """Stage 4: the real (gated) live-mutation entry point --
+        distinct from place_order, which stays permanently blocked
+        regardless of this method's existence."""
+        provider = _DummyProvider()
+        with pytest.raises(NotImplementedError):
+            provider._submit_authorized_order(None, Decimal("1"), Decimal("0.5"))
+
+    def test_place_order_still_not_implemented_after_stage_4_additions(self):
+        provider = _DummyProvider()
+        with pytest.raises(NotImplementedError):
+            provider.place_order()
+        with pytest.raises(NotImplementedError):
+            provider.cancel_order()
+
+    def test_capabilities_default_to_all_false(self):
+        provider = _DummyProvider()
+        caps = provider.capabilities
+        assert caps.supports_preview is False
+        assert caps.supports_client_idempotency is False
+        assert caps.supports_ioc is False
+        assert caps.supports_fok is False
+        assert caps.supports_order_lookup is False
+        assert caps.supports_fill_lookup is False
+        assert caps.supports_cancel is False
+        assert caps.supports_modify is False
+
+    def test_get_recent_orders_defaults_to_none(self):
+        provider = _DummyProvider()
+        assert provider.get_recent_orders() is None
+
 
 class TestNormalizedDataclasses:
     def test_market_round_trips_raw_payload(self):

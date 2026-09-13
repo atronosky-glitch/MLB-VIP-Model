@@ -608,6 +608,160 @@ def db_conn():
         );
         CREATE INDEX IF NOT EXISTS idx_risk_decisions_rec ON risk_decisions(recommendation_id);
         CREATE INDEX IF NOT EXISTS idx_risk_decisions_created ON risk_decisions(created_at);
+        CREATE TABLE IF NOT EXISTS prepared_live_orders (
+            prepared_order_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            opportunity_id        INTEGER,
+            recommendation_id     TEXT NOT NULL,
+            provider              TEXT NOT NULL,
+            provider_market_id    TEXT NOT NULL,
+            league                TEXT,
+            event                 TEXT,
+            event_id              TEXT NOT NULL,
+            side                  TEXT NOT NULL,
+            event_start_time      TEXT,
+            model_probability     REAL,
+            current_price         REAL,
+            expected_fill_price   REAL,
+            net_ev_pct            REAL,
+            recommended_units     REAL,
+            recommended_stake     REAL,
+            risk_approved_stake   REAL,
+            risk_approved_units   REAL,
+            quantity              REAL,
+            maximum_entry_price   REAL,
+            fees_estimate         REAL,
+            slippage_estimate     REAL,
+            available_liquidity   REAL,
+            fingerprint           TEXT NOT NULL,
+            risk_snapshot         TEXT,
+            status                TEXT NOT NULL DEFAULT 'READY',
+            created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at            TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prepared_live_orders_status ON prepared_live_orders(status);
+        CREATE INDEX IF NOT EXISTS idx_prepared_live_orders_fingerprint ON prepared_live_orders(fingerprint);
+        CREATE TABLE IF NOT EXISTS execution_authorizations (
+            approval_id             TEXT PRIMARY KEY,
+            prepared_order_id       INTEGER NOT NULL,
+            opportunity_id          INTEGER,
+            recommendation_id       TEXT NOT NULL,
+            provider                TEXT NOT NULL,
+            provider_market_id      TEXT NOT NULL,
+            side                    TEXT NOT NULL,
+            approved_units          REAL,
+            approved_stake_usd      REAL NOT NULL,
+            approved_quantity       REAL NOT NULL,
+            approved_max_price      REAL NOT NULL,
+            approved_min_net_ev_pct REAL NOT NULL,
+            approved_at             TEXT NOT NULL,
+            expires_at              TEXT NOT NULL,
+            approved_by             TEXT NOT NULL,
+            status                  TEXT NOT NULL DEFAULT 'PENDING',
+            used_at                 TEXT,
+            invalidated_at          TEXT,
+            invalidation_reason     TEXT,
+            created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_authorizations_status ON execution_authorizations(status);
+        CREATE INDEX IF NOT EXISTS idx_execution_authorizations_prepared ON execution_authorizations(prepared_order_id);
+        CREATE TABLE IF NOT EXISTS live_submission_attempts (
+            attempt_id              TEXT PRIMARY KEY,
+            approval_id             TEXT NOT NULL,
+            prepared_order_id       INTEGER NOT NULL,
+            provider                TEXT NOT NULL,
+            market_id                TEXT NOT NULL,
+            side                     TEXT NOT NULL,
+            quantity                 REAL NOT NULL,
+            limit_price              REAL NOT NULL,
+            state                    TEXT NOT NULL,
+            created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+            request_started_at       TEXT,
+            response_received_at     TEXT,
+            provider_order_id        TEXT,
+            reconciliation_status    TEXT,
+            reconciliation_detail    TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_submission_attempts_approval ON live_submission_attempts(approval_id);
+        CREATE INDEX IF NOT EXISTS idx_live_submission_attempts_state ON live_submission_attempts(state);
+        CREATE TABLE IF NOT EXISTS live_orders (
+            live_order_id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            approval_id                  TEXT NOT NULL,
+            prepared_order_id            INTEGER NOT NULL,
+            provider                     TEXT NOT NULL,
+            provider_order_id            TEXT,
+            client_order_id              TEXT,
+            market_id                    TEXT NOT NULL,
+            side                         TEXT NOT NULL,
+            quantity_requested           REAL NOT NULL,
+            quantity_filled              REAL NOT NULL DEFAULT 0,
+            limit_price                  REAL NOT NULL,
+            average_fill_price           REAL,
+            fees                         REAL NOT NULL DEFAULT 0,
+            status                       TEXT NOT NULL,
+            submitted_at                 TEXT NOT NULL,
+            last_updated_at              TEXT NOT NULL,
+            provider_response_reference  TEXT,
+            created_at                   TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_orders_approval ON live_orders(approval_id);
+        CREATE INDEX IF NOT EXISTS idx_live_orders_status ON live_orders(status);
+        CREATE TABLE IF NOT EXISTS live_fills (
+            fill_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider_fill_id    TEXT,
+            live_order_id       INTEGER NOT NULL,
+            quantity            REAL NOT NULL,
+            price               REAL NOT NULL,
+            fees                REAL NOT NULL DEFAULT 0,
+            timestamp           TEXT NOT NULL,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_fills_order ON live_fills(live_order_id);
+        CREATE TABLE IF NOT EXISTS live_positions (
+            position_id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            approval_id                 TEXT NOT NULL,
+            prepared_order_id           INTEGER NOT NULL,
+            live_order_id               INTEGER NOT NULL,
+            recommendation_id           TEXT NOT NULL,
+            provider                    TEXT NOT NULL,
+            provider_market_id          TEXT NOT NULL,
+            event_id                    TEXT NOT NULL,
+            side                        TEXT NOT NULL,
+            quantity                    REAL NOT NULL,
+            average_entry_price         REAL,
+            total_entry_cost            REAL NOT NULL,
+            fees_paid                   REAL NOT NULL DEFAULT 0,
+            opened_at                   TEXT NOT NULL,
+            status                      TEXT NOT NULL DEFAULT 'OPEN',
+            settled_at                  TEXT,
+            settlement_value            REAL,
+            realized_pnl                REAL,
+            created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_positions_status ON live_positions(status);
+        CREATE INDEX IF NOT EXISTS idx_live_positions_event ON live_positions(event_id);
+        CREATE TABLE IF NOT EXISTS live_execution_events (
+            event_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            approval_id        TEXT,
+            prepared_order_id  INTEGER,
+            event_type         TEXT NOT NULL,
+            detail             TEXT,
+            created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_execution_events_approval ON live_execution_events(approval_id);
+        CREATE TABLE IF NOT EXISTS live_kill_switch (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            engaged      INTEGER NOT NULL DEFAULT 0,
+            engaged_at   TEXT,
+            reason       TEXT
+        );
+        CREATE TABLE IF NOT EXISTS live_provider_circuit_state (
+            provider            TEXT PRIMARY KEY,
+            consecutive_errors  INTEGER NOT NULL DEFAULT 0,
+            window_start        TEXT,
+            tripped             INTEGER NOT NULL DEFAULT 0,
+            tripped_at          TEXT,
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS scheduled_jobs (
             job_id TEXT PRIMARY KEY,
             job_type TEXT NOT NULL,

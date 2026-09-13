@@ -102,6 +102,30 @@ DEFAULTS = {
     "max_opportunity_age_seconds": 30,
     "stop_after_daily_profit_target": False,
     "daily_profit_target_usd": 0.0,
+    # Stage 4: human-approved live (real-money) execution. Every value
+    # below defaults OFF/conservative. A real trade is only reachable if
+    # live_trading_enabled AND require_human_approval AND the specific
+    # provider's live flag are ALL true, AND a valid unexpired approval
+    # exists, AND RiskEngine approves the fresh re-check -- see
+    # src/execution/live/service.py::_can_attempt_live_trade(). No
+    # single toggle here can enable real order placement by itself.
+    "live_trading_enabled": False,
+    "require_human_approval": True,
+    "kalshi_live_enabled": False,
+    "polymarket_us_live_enabled": False,
+    "approval_ttl_seconds": 30,
+    "live_order_mode": "IOC_LIMIT",
+    "live_max_price_move_pct": 0.02,
+    "live_max_ev_degradation_pct": 0.5,
+    "live_require_fresh_orderbook": True,
+    "live_max_orderbook_age_seconds": 10,
+    "live_approval_ui_mode": "LOCAL_ONLY",
+    "streamlit_live_approval_enabled": False,
+    "live_allow_post_approval_size_reduction": False,
+    "max_financial_post_attempts_per_approval": 1,
+    "live_provider_error_threshold": 3,
+    "live_provider_error_window_minutes": 15,
+    "kill_switch_cancel_open_orders": False,
 }
 
 # ── Environment variable mapping ───────────────────────────────────
@@ -172,6 +196,23 @@ ENV_MAP = {
     "MAX_OPPORTUNITY_AGE_SECONDS": "max_opportunity_age_seconds",
     "STOP_AFTER_DAILY_PROFIT_TARGET": "stop_after_daily_profit_target",
     "DAILY_PROFIT_TARGET_USD": "daily_profit_target_usd",
+    "LIVE_TRADING_ENABLED": "live_trading_enabled",
+    "REQUIRE_HUMAN_APPROVAL": "require_human_approval",
+    "KALSHI_LIVE_ENABLED": "kalshi_live_enabled",
+    "POLYMARKET_US_LIVE_ENABLED": "polymarket_us_live_enabled",
+    "APPROVAL_TTL_SECONDS": "approval_ttl_seconds",
+    "LIVE_ORDER_MODE": "live_order_mode",
+    "LIVE_MAX_PRICE_MOVE_PCT": "live_max_price_move_pct",
+    "LIVE_MAX_EV_DEGRADATION_PCT": "live_max_ev_degradation_pct",
+    "LIVE_REQUIRE_FRESH_ORDERBOOK": "live_require_fresh_orderbook",
+    "LIVE_MAX_ORDERBOOK_AGE_SECONDS": "live_max_orderbook_age_seconds",
+    "LIVE_APPROVAL_UI_MODE": "live_approval_ui_mode",
+    "STREAMLIT_LIVE_APPROVAL_ENABLED": "streamlit_live_approval_enabled",
+    "LIVE_ALLOW_POST_APPROVAL_SIZE_REDUCTION": "live_allow_post_approval_size_reduction",
+    "MAX_FINANCIAL_POST_ATTEMPTS_PER_APPROVAL": "max_financial_post_attempts_per_approval",
+    "LIVE_PROVIDER_ERROR_THRESHOLD": "live_provider_error_threshold",
+    "LIVE_PROVIDER_ERROR_WINDOW_MINUTES": "live_provider_error_window_minutes",
+    "KILL_SWITCH_CANCEL_OPEN_ORDERS": "kill_switch_cancel_open_orders",
 }
 
 
@@ -271,6 +312,27 @@ class ProductionConfig:
     max_opportunity_age_seconds: int = 30
     stop_after_daily_profit_target: bool = False
     daily_profit_target_usd: float = 0.0
+
+    # Stage 4: human-approved live (real-money) execution -- all default
+    # OFF/conservative; see DEFAULTS above for the full explanation of
+    # the multi-gate requirement.
+    live_trading_enabled: bool = False
+    require_human_approval: bool = True
+    kalshi_live_enabled: bool = False
+    polymarket_us_live_enabled: bool = False
+    approval_ttl_seconds: int = 30
+    live_order_mode: str = "IOC_LIMIT"
+    live_max_price_move_pct: float = 0.02
+    live_max_ev_degradation_pct: float = 0.5
+    live_require_fresh_orderbook: bool = True
+    live_max_orderbook_age_seconds: int = 10
+    live_approval_ui_mode: str = "LOCAL_ONLY"
+    streamlit_live_approval_enabled: bool = False
+    live_allow_post_approval_size_reduction: bool = False
+    max_financial_post_attempts_per_approval: int = 1
+    live_provider_error_threshold: int = 3
+    live_provider_error_window_minutes: int = 15
+    kill_switch_cancel_open_orders: bool = False
 
     def redacted(self) -> dict[str, Any]:
         """Return config as dict with secret fields redacted."""
@@ -397,6 +459,36 @@ class ProductionConfig:
 
         if self.max_opportunity_age_seconds <= 0:
             errors.append("max_opportunity_age_seconds must be > 0")
+
+        if self.approval_ttl_seconds <= 0:
+            errors.append("approval_ttl_seconds must be > 0")
+
+        if self.live_order_mode not in ("IOC_LIMIT", "FOK_LIMIT"):
+            errors.append(f"invalid live_order_mode: {self.live_order_mode} (unrestricted market orders are not supported)")
+
+        if not 0.0 <= self.live_max_price_move_pct <= 1.0:
+            errors.append("live_max_price_move_pct must be between 0 and 1")
+
+        if not 0.0 <= self.live_max_ev_degradation_pct <= 1.0:
+            errors.append("live_max_ev_degradation_pct must be between 0 and 1")
+
+        if self.live_max_orderbook_age_seconds <= 0:
+            errors.append("live_max_orderbook_age_seconds must be > 0")
+
+        if self.live_approval_ui_mode != "LOCAL_ONLY":
+            errors.append(
+                f"invalid live_approval_ui_mode: {self.live_approval_ui_mode} "
+                "(only LOCAL_ONLY is supported -- there is no authentication layer for remote approval yet)"
+            )
+
+        if self.max_financial_post_attempts_per_approval != 1:
+            errors.append("max_financial_post_attempts_per_approval must be 1 (no provider supports safe automatic retries yet)")
+
+        if self.live_provider_error_threshold <= 0:
+            errors.append("live_provider_error_threshold must be > 0")
+
+        if self.live_provider_error_window_minutes <= 0:
+            errors.append("live_provider_error_window_minutes must be > 0")
 
         return errors
 
@@ -556,5 +648,34 @@ def create_env_example() -> str:
         "# MAX_OPPORTUNITY_AGE_SECONDS=30",
         "# STOP_AFTER_DAILY_PROFIT_TARGET=false",
         "# DAILY_PROFIT_TARGET_USD=0.00",
+        "",
+        "# Optional — Stage 4 human-approved LIVE (real-money) execution.",
+        "# EVERY value below must default to the safe/OFF value shown. A real",
+        "# order can only ever be attempted if live_trading_enabled AND",
+        "# require_human_approval AND the specific provider's live flag are ALL",
+        "# true, AND a valid unexpired human approval exists, AND RiskEngine",
+        "# approves a FRESH re-check immediately before submission. Kalshi live",
+        "# submission additionally fails closed unconditionally",
+        "# (KALSHI_LIVE_SCHEMA_VERIFIED=False, hard-coded in kalshi.py, not an",
+        "# env var) until its exact live-order schema is independently verified.",
+        "# DO NOT enable any of these in production without understanding every",
+        "# gate above.",
+        "# LIVE_TRADING_ENABLED=false",
+        "# REQUIRE_HUMAN_APPROVAL=true",
+        "# KALSHI_LIVE_ENABLED=false",
+        "# POLYMARKET_US_LIVE_ENABLED=false",
+        "# APPROVAL_TTL_SECONDS=30",
+        "# LIVE_ORDER_MODE=IOC_LIMIT",
+        "# LIVE_MAX_PRICE_MOVE_PCT=0.02",
+        "# LIVE_MAX_EV_DEGRADATION_PCT=0.5",
+        "# LIVE_REQUIRE_FRESH_ORDERBOOK=true",
+        "# LIVE_MAX_ORDERBOOK_AGE_SECONDS=10",
+        "# LIVE_APPROVAL_UI_MODE=LOCAL_ONLY",
+        "# STREAMLIT_LIVE_APPROVAL_ENABLED=false",
+        "# LIVE_ALLOW_POST_APPROVAL_SIZE_REDUCTION=false",
+        "# MAX_FINANCIAL_POST_ATTEMPTS_PER_APPROVAL=1",
+        "# LIVE_PROVIDER_ERROR_THRESHOLD=3",
+        "# LIVE_PROVIDER_ERROR_WINDOW_MINUTES=15",
+        "# KILL_SWITCH_CANCEL_OPEN_ORDERS=false",
     ]
     return "\n".join(lines)

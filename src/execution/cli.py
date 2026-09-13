@@ -455,6 +455,32 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("settle-paper", help="Resolve open paper positions against provider market data")
 
+    # Stage 4: human-approved live (real-money) execution -- see
+    # src/execution/live_cli.py. live-execute is the ONLY subcommand
+    # that can ever trigger a real provider mutation.
+    live_scan_parser = subparsers.add_parser(
+        "live-scan", help="Prepare live orders for review (never executes; see live-approve/live-execute)"
+    )
+    live_scan_parser.add_argument("--verbose", action="store_true")
+    live_scan_parser.add_argument("--limit", type=int, default=None)
+    live_scan_parser.add_argument("--league", default=None)
+    live_scan_parser.add_argument("--provider", dest="providers", action="append", choices=list(_ALL_PROVIDERS))
+
+    live_approve_parser = subparsers.add_parser("live-approve", help="Approve a prepared live order (real money)")
+    live_approve_parser.add_argument("prepared_order_id", type=int)
+    live_approve_parser.add_argument("--yes", action="store_true", help="Skip the interactive confirmation prompt")
+
+    live_reject_parser = subparsers.add_parser("live-reject", help="Reject a prepared live order")
+    live_reject_parser.add_argument("prepared_order_id", type=int)
+    live_reject_parser.add_argument("--reason", default=None)
+
+    live_execute_parser = subparsers.add_parser(
+        "live-execute", help="Execute an already-approved order (the only command that can place a real order)"
+    )
+    live_execute_parser.add_argument("approval_id", type=str)
+
+    subparsers.add_parser("live-status", help="Show kill switch, circuit breakers, pending approvals, and open live positions")
+
     args = parser.parse_args(argv)
     if args.command == "check-connectivity":
         return _check_connectivity()
@@ -476,6 +502,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "settle-paper":
         from src.execution import paper_cli
         return paper_cli.settle_paper()
+    if args.command == "live-scan":
+        from src.execution import live_cli
+        return live_cli.live_scan(args.verbose, args.limit, args.league, args.providers)
+    if args.command == "live-approve":
+        from src.execution import live_cli
+        return live_cli.live_approve(args.prepared_order_id, assume_yes=args.yes)
+    if args.command == "live-reject":
+        from src.execution import live_cli
+        return live_cli.live_reject(args.prepared_order_id, args.reason)
+    if args.command == "live-execute":
+        from src.execution import live_cli
+        return live_cli.live_execute(args.approval_id)
+    if args.command == "live-status":
+        from src.execution import live_cli
+        return live_cli.live_status()
     return 1
 
 

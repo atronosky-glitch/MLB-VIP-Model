@@ -30,7 +30,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from src.execution.base import (
     BestBidAsk, Balance, FeeEstimate, HealthCheckResult, Market,
     NormalizedOrderBook, Orderbook, OrderLevel,
-    PredictionMarketProvider, RawGameEvent, mask_secret,
+    PredictionMarketProvider, ProviderCapabilities, RawGameEvent, mask_secret,
 )
 from src.execution.credentials import load_rsa_private_key
 from src.execution.signing import build_signed_message, sign_rsa_pss
@@ -279,6 +279,53 @@ class KalshiProvider(PredictionMarketProvider):
             line=None,
             event_start_time=event_start_time,
         )
+
+    # -- Stage 4: live execution -- FAILS CLOSED, unconditionally -------
+    #
+    # Kalshi's Create Order V2 endpoint path is confirmed (POST
+    # /portfolio/events/orders, not the deprecated legacy path -- see
+    # the module docstring), but the exact current field-level request
+    # schema could NOT be independently verified (the interactive docs
+    # are JS-rendered; the OpenAPI YAML was too large to pull in full).
+    # Per explicit instruction: do not guess a financial mutation
+    # payload. KALSHI_LIVE_SCHEMA_VERIFIED is a hard-coded module
+    # constant, not a config value, so no .env edit can turn this on --
+    # only a future code change, made after a human independently
+    # verifies the real schema, may flip it.
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            supports_preview=False, supports_client_idempotency=True, supports_ioc=False,
+            supports_fok=False, supports_order_lookup=False, supports_fill_lookup=False,
+            supports_cancel=False, supports_modify=False,
+        )
+
+    def _submit_authorized_order(self, authorization: Any, quantity: Decimal, limit_price: Decimal) -> Any:
+        """Never builds a request, never touches self.session -- this
+        is a permanent, unconditional refusal until KALSHI_LIVE_SCHEMA_VERIFIED
+        is manually flipped to True in a later stage, after the real
+        schema is confirmed against official docs/SDK/live inspection."""
+        raise KalshiLiveSchemaUnverifiedError(
+            "Kalshi live order submission is blocked: KALSHI_LIVE_SCHEMA_VERIFIED=False. "
+            "The Create Order V2 endpoint path is confirmed (POST /portfolio/events/orders) "
+            "but its exact field-level request schema has not been independently verified. "
+            "Read-only Kalshi access and paper-trading Kalshi are unaffected."
+        )
+
+
+class KalshiLiveSchemaUnverifiedError(Exception):
+    """Raised by KalshiProvider._submit_authorized_order -- the
+    documented, permanent fail-closed guard. Distinct from
+    NotImplementedError (which base.py's default uses for "not
+    implemented at all") because this IS implemented, and deliberately
+    always refuses, rather than being an unimplemented stub."""
+
+
+# Deliberately NOT an environment variable -- see the class docstring
+# above. Only a code change, made after a human verifies Kalshi's real
+# live-order schema, may flip this.
+KALSHI_LIVE_SCHEMA_VERIFIED = False
 
 
 def _parse_kalshi_timestamp(value: Any) -> datetime | None:

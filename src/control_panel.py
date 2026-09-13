@@ -846,6 +846,7 @@ tabs = st.tabs([
     ":material/monitor_heart: Multi-League Health",
     ":material/balance: Arbitrage",
     ":material/compress: Middling",
+    ":material/bolt: Live Execution",
 ])
 
 # ==================================================================
@@ -2978,6 +2979,16 @@ with tabs[10]:
                 st.caption(f"Middling PnL chart unavailable: {e}")
     except Exception as e:
         st.error(f"Middling tab unavailable: {e}")
+
+# ==================================================================
+# Tab 12: Live Execution (Stage 4 -- human-approved real-money orders)
+# ==================================================================
+with tabs[11]:
+    try:
+        from src.live_execution_panel import render_live_execution_tab
+        render_live_execution_tab(config, db_path)
+    except Exception as e:
+        st.error(f"Live Execution tab unavailable: {e}")
 
 # ── Footer ─────────────────────────────────────────────────────────
 st.divider()

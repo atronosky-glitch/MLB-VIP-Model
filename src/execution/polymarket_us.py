@@ -32,9 +32,9 @@ import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from src.execution.base import (
-    BestBidAsk, Balance, FeeEstimate, HealthCheckResult, Market,
+    BestBidAsk, Balance, FeeEstimate, HealthCheckResult, LiveSubmissionOutcome, Market,
     NormalizedOrderBook, Orderbook, OrderLevel,
-    PredictionMarketProvider, RawGameEvent, mask_secret,
+    PredictionMarketProvider, ProviderCapabilities, RawGameEvent, mask_secret,
 )
 from src.execution.credentials import load_ed25519_private_key
 from src.execution.signing import build_signed_message, sign_ed25519
@@ -283,3 +283,160 @@ class PolymarketUSProvider(PredictionMarketProvider):
             line=None,
             event_start_time=event_date,
         )
+
+    # -- Stage 4: live execution -----------------------------------------
+    #
+    # POST /v1/orders, confirmed directly from docs.polymarket.us
+    # (2026-09-12). Confirmed request fields used here: marketSlug,
+    # type (ORDER_TYPE_LIMIT), price {value, currency}, quantity,
+    # outcomeSide (YES/NO), action (BUY/SELL), tif (TimeInForce enum --
+    # the exact "TIME_IN_FORCE_IOC" string form was inferred from the
+    # single confirmed sibling value "TIME_IN_FORCE_GOOD_TILL_DATE" and
+    # is flagged for live verification, same posture as everything else
+    # in this repo marked "best-effort"), manualOrderIndicator (confirmed
+    # via the original Stage 1 research: MANUAL_ORDER_INDICATOR_MANUAL /
+    # _AUTOMATIC -- MANUAL is used since a human explicitly approved
+    # every order this method ever sends). Confirmed response fields:
+    # top-level "id" (exchange-assigned order id).
+    #
+    # Confirmed limitations (not guessed around): Polymarket US has NO
+    # client-supplied idempotency key and NO order-preview endpoint.
+    # This method therefore NEVER retries internally -- exactly one
+    # HTTP POST per call, full stop. LiveExecutionService is the one
+    # that decides whether an ambiguous outcome ever gets a second
+    # attempt (governed by MAX_FINANCIAL_POST_ATTEMPTS_PER_APPROVAL,
+    # which defaults to and is validated to stay 1).
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            supports_preview=False,             # confirmed absent from current docs
+            supports_client_idempotency=False,  # confirmed absent from current docs
+            supports_ioc=True,                  # tif: TIME_IN_FORCE_IOC (best-effort exact string)
+            supports_fok=True,                  # tif: TIME_IN_FORCE_FOK (best-effort exact string)
+            supports_order_lookup=False,        # not implemented this stage -- see module docstring
+            supports_fill_lookup=False,
+            supports_cancel=False,
+            supports_modify=False,
+        )
+
+    def _submit_authorized_order(
+        self, authorization: Any, quantity: Decimal, limit_price: Decimal,
+    ) -> LiveSubmissionOutcome:
+        """Exactly one HTTP POST, no internal retry. Distinguishes
+        CONFIRMED (order id returned) / REJECTED (a synchronous
+        validation or auth failure, proven no order exists) / AMBIGUOUS
+        (timeout, connection error, or any response this code can't
+        positively classify -- treated as "order may exist," never
+        auto-retried)."""
+        path = "/v1/orders"
+        body = {
+            "marketSlug": authorization.provider_market_id,
+            "type": "ORDER_TYPE_LIMIT",
+            "price": {"value": str(limit_price), "currency": "USD"},
+            "quantity": float(quantity),
+            "tif": "TIME_IN_FORCE_IOC",
+            "outcomeSide": authorization.side,
+            "action": "BUY",
+            "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_MANUAL",
+            "synchronousExecution": True,
+        }
+
+        try:
+            headers = self._signed_headers("POST", path)
+            headers["Content-Type"] = "application/json"
+            resp = self.session.post(f"{_AUTH_BASE_URL}{path}", json=body, headers=headers, timeout=30)
+        except (RequestsConnectionError, requests.exceptions.Timeout) as exc:
+            return LiveSubmissionOutcome(
+                outcome="AMBIGUOUS", provider_order_id=None,
+                detail=f"transport failure before a response was received: {type(exc).__name__}",
+                raw_reference=None,
+            )
+        except Exception as exc:
+            return LiveSubmissionOutcome(
+                outcome="AMBIGUOUS", provider_order_id=None,
+                detail=f"unexpected error submitting order: {type(exc).__name__}", raw_reference=None,
+            )
+
+        if resp.status_code in (200, 201):
+            try:
+                data = resp.json()
+            except ValueError:
+                return LiveSubmissionOutcome(
+                    outcome="AMBIGUOUS", provider_order_id=None,
+                    detail=f"HTTP {resp.status_code} with an unparseable body", raw_reference=None,
+                )
+            order_id = data.get("id")
+            if not order_id:
+                return LiveSubmissionOutcome(
+                    outcome="AMBIGUOUS", provider_order_id=None,
+                    detail=f"HTTP {resp.status_code} response had no order id", raw_reference=None,
+                )
+            # synchronousExecution=True was requested, so a confirmed
+            # response SHOULD carry immediate fill data via
+            # executions[0].order -- extracted defensively (confirmed
+            # field names: avgPx, cumQuantity, state; never guessed if
+            # missing or unparseable, since "we don't know" is safer
+            # than a wrong fill amount).
+            qty_filled, avg_px, order_state = None, None, None
+            executions = data.get("executions") or []
+            if executions and isinstance(executions, list):
+                order_data = (executions[0] or {}).get("order") or {}
+                try:
+                    if order_data.get("cumQuantity") is not None:
+                        qty_filled = Decimal(str(order_data["cumQuantity"]))
+                    if order_data.get("avgPx") is not None:
+                        avg_px = Decimal(str(order_data["avgPx"]))
+                    order_state = order_data.get("state")
+                except (TypeError, ValueError, ArithmeticError):
+                    qty_filled, avg_px, order_state = None, None, None
+            return LiveSubmissionOutcome(
+                outcome="CONFIRMED", provider_order_id=str(order_id),
+                detail="order accepted", raw_reference=f"HTTP {resp.status_code}",
+                quantity_filled=qty_filled, average_fill_price=avg_px, order_state=order_state,
+            )
+
+        if resp.status_code in (400, 422):
+            # A synchronous validation rejection -- proven no order was
+            # created (these codes are returned before order matching).
+            return LiveSubmissionOutcome(
+                outcome="REJECTED", provider_order_id=None,
+                detail=f"provider rejected the order: HTTP {resp.status_code}",
+                raw_reference=_sanitize_error_body(resp),
+            )
+
+        if resp.status_code in (401, 403):
+            # Authentication failure -- the request never reached order
+            # processing, so no order could have been created.
+            return LiveSubmissionOutcome(
+                outcome="REJECTED", provider_order_id=None,
+                detail=f"authentication/authorization failure: HTTP {resp.status_code}", raw_reference=None,
+            )
+
+        # 409/429/5xx/anything else: cannot prove an order was or was
+        # not created. Fail closed to AMBIGUOUS rather than guess.
+        return LiveSubmissionOutcome(
+            outcome="AMBIGUOUS", provider_order_id=None,
+            detail=f"ambiguous provider response: HTTP {resp.status_code}",
+            raw_reference=_sanitize_error_body(resp),
+        )
+
+
+_SENSITIVE_BODY_PATTERNS = ("key", "secret", "signature", "token", "password", "credential", "auth")
+
+
+def _sanitize_error_body(resp: "requests.Response") -> str:
+    """A short, credential-redacted summary of an error response --
+    never the raw body, never headers (which would include the
+    Ed25519 signature)."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return f"HTTP {resp.status_code} (non-JSON body, {len(resp.content)} bytes)"
+    if isinstance(data, dict):
+        redacted = {
+            k: ("<redacted>" if any(p in k.lower() for p in _SENSITIVE_BODY_PATTERNS) else v)
+            for k, v in data.items()
+        }
+        return f"HTTP {resp.status_code}: {redacted}"
+    return f"HTTP {resp.status_code}"

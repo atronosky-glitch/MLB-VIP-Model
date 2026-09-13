@@ -136,6 +136,47 @@ class FeeEstimate:
     detail: str
 
 
+@dataclass(frozen=True)
+class LiveSubmissionOutcome:
+    """The result of one provider._submit_authorized_order() call
+    (Stage 4). Defined here, not in src/execution/live/, so provider
+    files never need to import anything from the live/ package --
+    LiveExecutionService (which DOES import both) is what translates
+    this into a SubmissionAttemptState.
+
+    outcome is one of:
+      "CONFIRMED" -- the provider definitely created an order.
+      "REJECTED"  -- the provider definitely did NOT create an order
+                     (a synchronous validation/auth failure, proven).
+      "AMBIGUOUS" -- transport failure, timeout, or an unrecognized
+                     response; the order MAY or MAY NOT have been
+                     created. Callers must never auto-retry on this.
+    raw_reference is a short, pre-sanitized string safe to persist
+    (never raw headers, secrets, or full response bodies)."""
+    outcome: str
+    provider_order_id: str | None
+    detail: str
+    raw_reference: str | None
+    quantity_filled: Decimal | None = None
+    average_fill_price: Decimal | None = None
+    order_state: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """What a provider's live-execution surface actually supports
+    (Stage 4) -- LiveExecutionService makes decisions from these,
+    never assumes parity between Kalshi and Polymarket US."""
+    supports_preview: bool
+    supports_client_idempotency: bool
+    supports_ioc: bool
+    supports_fok: bool
+    supports_order_lookup: bool
+    supports_fill_lookup: bool
+    supports_cancel: bool
+    supports_modify: bool
+
+
 class PredictionMarketProvider(ABC):
     """Read-only interface every prediction-market provider implements.
 
@@ -216,3 +257,49 @@ class PredictionMarketProvider(ABC):
             f"{type(self).__name__}.cancel_order is not available until a "
             "later execution-layer stage"
         )
+
+    # ── Stage 4: human-approved live execution ──────────────────────
+    #
+    # place_order/cancel_order above are UNCHANGED and stay permanently
+    # NotImplemented -- every Stage 1-3 regression test asserting that
+    # keeps passing. The actual (gated) live-mutation entry point is
+    # this differently-named, underscore-prefixed method instead, so
+    # "no direct provider.place_order(...) outside the central
+    # execution service" is trivially true: there is no other
+    # implementation of place_order to call. Only
+    # src/execution/live/service.py may call _submit_authorized_order --
+    # enforced by tests/test_live_architecture.py.
+
+    @property
+    def capabilities(self) -> "ProviderCapabilities":
+        """Conservative all-False default -- a provider must explicitly
+        declare what its live-execution surface supports rather than
+        LiveExecutionService assuming parity between providers."""
+        return ProviderCapabilities(
+            supports_preview=False, supports_client_idempotency=False, supports_ioc=False,
+            supports_fok=False, supports_order_lookup=False, supports_fill_lookup=False,
+            supports_cancel=False, supports_modify=False,
+        )
+
+    def _submit_authorized_order(
+        self, authorization: Any, quantity: Decimal, limit_price: Decimal,
+    ) -> "LiveSubmissionOutcome":
+        """The real (gated) live-order submission entry point. *quantity*
+        and *limit_price* are the REVALIDATED, just-recomputed values
+        from revalidation.py -- never the original approval-time values --
+        so the request this builds always reflects fresh market data,
+        never something stale from when the human clicked approve.
+        Default implementation mirrors place_order's own posture: refuse
+        until a provider explicitly implements it. Callers MUST pass a
+        real ExecutionAuthorization -- this is not a public API method."""
+        raise NotImplementedError(
+            f"{type(self).__name__}._submit_authorized_order is not implemented"
+        )
+
+    def get_recent_orders(self, **filters: Any) -> list[dict] | None:
+        """Best-effort, read-only order-history lookup for ambiguous-
+        submission reconciliation (ExecutionAuthorization not required --
+        this is a GET, same trust level as get_markets). Concrete
+        default returns None ("not implemented for this provider"),
+        never fabricates a response. See capabilities.supports_order_lookup."""
+        return None
