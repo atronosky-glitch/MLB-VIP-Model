@@ -243,3 +243,53 @@ def test_arbitrage_and_middling_tabs_have_a_game_status_dropdown():
     assert '_filter_by_game_status(active_mid, mid_status)' in source
     assert '"Status": "🔴 LIVE" if is_event_live(r.get("event_start_time")) else "PREGAME"' in source
     assert source.count('"Status": "🔴 LIVE" if is_event_live(r.get("event_start_time")) else "PREGAME"') == 2
+
+
+def _load_player_matchup_label():
+    """AST-extracts _GENERIC_OPPORTUNITY_LABELS + _player_matchup_label
+    together (the function reads the module-level constant), avoiding a
+    full control_panel.py import -- same reasoning as
+    _load_opportunity_freshness's own docstring."""
+    import ast
+
+    source = (ROOT / "src" / "control_panel.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    nodes = [
+        n for n in tree.body
+        if (isinstance(n, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_GENERIC_OPPORTUNITY_LABELS" for t in n.targets
+        )) or (isinstance(n, ast.FunctionDef) and n.name == "_player_matchup_label")
+    ]
+    assert len(nodes) == 2, "expected both the constant and the function"
+    namespace: dict = {}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "<extracted>", "exec"), namespace)
+    return namespace["_player_matchup_label"]
+
+
+class TestPlayerMatchupLabel:
+    """Real bug found live 2026-09-15: a game-level opportunity's
+    generic player_name placeholder ("Game Total") was masking the real
+    matchup in the "Player/Matchup" column even once matchup became
+    available (src/arb_middle_scan.py's _event_context fix)."""
+
+    def test_real_player_name_is_shown_with_matchup_in_parens(self):
+        label = _load_player_matchup_label()
+        row = {"player_name": "Aaron Judge", "matchup": "New York Yankees @ Boston Red Sox"}
+        assert label(row) == "Aaron Judge (New York Yankees @ Boston Red Sox)"
+
+    def test_real_player_name_alone_when_matchup_missing(self):
+        label = _load_player_matchup_label()
+        assert label({"player_name": "Aaron Judge", "matchup": None}) == "Aaron Judge"
+
+    def test_generic_game_total_placeholder_shows_matchup_instead(self):
+        label = _load_player_matchup_label()
+        row = {"player_name": "Game Total", "matchup": "Denver Broncos @ Kansas City Chiefs"}
+        assert label(row) == "Denver Broncos @ Kansas City Chiefs"
+
+    def test_generic_placeholder_with_no_matchup_falls_back_to_the_placeholder(self):
+        label = _load_player_matchup_label()
+        assert label({"player_name": "Game Total", "matchup": None}) == "Game Total"
+
+    def test_neither_present_is_empty_string_not_a_crash(self):
+        label = _load_player_matchup_label()
+        assert label({}) == ""

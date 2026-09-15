@@ -49,21 +49,60 @@ def _fetch_recent_odds_rows(conn, league: str, freshness_seconds: int) -> list[d
     ]
 
 
+# Purely cosmetic (see run_scan's docstring on where "sport" is actually
+# used, or rather isn't) -- kept correct anyway since it's cheap to.
+_SPORT_BY_LEAGUE = {"MLB": "baseball", "NFL": "football", "WNBA": "basketball"}
+
+
 def _event_context(conn, league: str) -> dict[str, dict]:
-    """matchup/event_start_time per event_id, for display — best-effort
-    from whatever recent historical_recommendations rows already know;
-    never blocks detection if unavailable."""
-    rows = conn.execute(
+    """matchup/event_start_time/sport per event_id, for display.
+
+    ``games`` (keyed by event_id, populated by the odds/schedule
+    pipeline independent of whether the model ever produced a
+    recommendation for that game) is the PRIMARY source -- confirmed
+    live 2026-09-15: a "Game Total" middle (built directly from raw
+    odds, not from any model recommendation, since the model doesn't
+    generate picks for plain game-total markets) showed matchup=None
+    and no league badge even though a real ``games`` row existed for
+    that event_id the whole time (Denver Broncos @ Kansas City Chiefs,
+    NFL) -- ``historical_recommendations`` simply has no row for an
+    event the model never touched. ``historical_recommendations`` is
+    kept as a fallback for anything ``games`` doesn't have (never the
+    reverse), since it's a second real source and there's no reason to
+    throw it away."""
+    context: dict[str, dict] = {}
+
+    game_rows = conn.execute(
+        """SELECT event_id, away_team, home_team, start_time
+           FROM games
+           WHERE league = ? AND event_id IS NOT NULL""",
+        (league,),
+    ).fetchall()
+    for r in game_rows:
+        d = dict(r)
+        away, home = d.get("away_team"), d.get("home_team")
+        context[d["event_id"]] = {
+            "matchup": f"{away} @ {home}" if away and home else None,
+            "event_start_time": d.get("start_time"),
+            "sport": _SPORT_BY_LEAGUE.get(league, "baseball"),
+        }
+
+    rec_rows = conn.execute(
         """SELECT event_id, matchup, event_start_time, sport
            FROM historical_recommendations
            WHERE league = ? AND event_id IS NOT NULL
            ORDER BY created_at DESC"""
         , (league,),
     ).fetchall()
-    context: dict[str, dict] = {}
-    for r in rows:
+    for r in rec_rows:
         d = dict(r)
         context.setdefault(d["event_id"], d)
+        # A games row might itself have a null matchup (missing team
+        # names) -- backfill from historical_recommendations rather
+        # than leaving it None when a better answer exists.
+        if not context[d["event_id"]].get("matchup") and d.get("matchup"):
+            context[d["event_id"]]["matchup"] = d["matchup"]
+
     return context
 
 

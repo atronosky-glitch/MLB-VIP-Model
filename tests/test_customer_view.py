@@ -27,6 +27,21 @@ def test_full_access_is_open_by_default_and_reversible():
     assert "hmac.compare_digest" in source
 
 
+def test_arbitrage_and_middle_cards_show_league_and_never_the_literal_none():
+    """Real bug found live 2026-09-15: both cards used
+    opp.get('matchup', '') -- a no-op default, since dict.get's default
+    only applies when the KEY is missing, not when its value is None
+    (which is exactly what a real row with no matchup has), so a
+    missing matchup rendered as the literal word "None" in the card.
+    Neither card showed a league badge either, even though `league` is
+    a real, reliably-populated column on both tables. Both are fixed to
+    use _league_badge(opp) and a real fallback string instead."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert source.count('matchup_text = opp.get("matchup") or "Matchup unavailable"') == 2
+    assert "opp.get('matchup', '')" not in source
+    assert source.count("_league_badge(opp)") >= 2
+
+
 def test_arbitrage_and_middling_sections_are_subscriber_gated():
     """2026-09-09: live arbitrage/middling opportunities must only be
     shown in full to authorized subscribers -- publicly telegraphing a

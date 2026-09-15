@@ -568,10 +568,11 @@ def _render_arbitrage_card(opp: dict) -> None:
     fresh = _freshness_label(opp.get("last_seen_at"))
     game_time = format_event_start_local(opp.get("event_start_time"))
     status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"
+    matchup_text = opp.get("matchup") or "Matchup unavailable"
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
-      <div class="pick-meta">{opp.get('matchup', '')} · {pick_label} · <span class="edge">{fresh}</span></div>
+      <div class="pick-meta">{_league_badge(opp)} · {matchup_text} · {pick_label} · <span class="edge">{fresh}</span></div>
       <div class="pick-meta">{status_label} · Game starts: {game_time}</div>
       <div class="pick-meta">{opp['side_a']} · {opp['side_a_sportsbook']} {opp['side_a_price']:+d}
         ({opp['side_a_stake_pct']:.0%} stake)</div>
@@ -616,10 +617,11 @@ def _render_middle_card(opp: dict) -> None:
         stake_line = f"Stake: {stake:.2f}u"
     else:
         stake_line = "Stake: — (not worth betting)"
+    matchup_text = opp.get("matchup") or "Matchup unavailable"
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])} {verdict_badge}</div>
-      <div class="pick-meta">{opp.get('matchup', '')} · {_market_label(opp['market_type'])} · <span class="edge">{fresh}</span></div>
+      <div class="pick-meta">{_league_badge(opp)} · {matchup_text} · {_market_label(opp['market_type'])} · <span class="edge">{fresh}</span></div>
       <div class="pick-meta">{status_label} · Game starts: {game_time}</div>
       <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
       <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>

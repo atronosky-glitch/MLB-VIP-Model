@@ -99,6 +99,50 @@ class TestRunScan:
         assert result["new_arbitrage"] == []
 
 
+class TestEventContext:
+    """Real bug found live 2026-09-15: a "Game Total" middle/arbitrage
+    opportunity (built directly from raw odds, no model recommendation
+    involved) showed matchup=None and no league identification at all
+    -- _event_context only ever looked at historical_recommendations,
+    which has no row for a game the model never touched. The `games`
+    table (populated by the odds/schedule pipeline independent of the
+    model) is the fix."""
+
+    def _insert_game(self, conn, event_id="E1", league="NFL", away="Denver Broncos", home="Kansas City Chiefs"):
+        conn.execute(
+            "INSERT INTO games (event_id, league, away_team, home_team, start_time) VALUES (?, ?, ?, ?, ?)",
+            (event_id, league, away, home, "2026-09-15T00:15:00Z"),
+        )
+        conn.commit()
+
+    def test_matchup_resolved_from_games_table_with_no_recommendation_row(self, db_conn):
+        self._insert_game(db_conn)
+        _insert_odds_row(
+            db_conn, sportsbook="BookA", side="OVER", price=110, decimal_odds=2.10,
+            market_type="game_total_ou", player_id="GAME", player_name="Game Total",
+            market_group_key="E1|game_total|46.0", line=46.0, odd_id="o1", league="NFL",
+        )
+        _insert_odds_row(
+            db_conn, sportsbook="BookB", side="UNDER", price=130, decimal_odds=2.30,
+            market_type="game_total_ou", player_id="GAME", player_name="Game Total",
+            market_group_key="E1|game_total|46.0", line=46.0, odd_id="o2", league="NFL",
+        )
+        result = run_scan(db_conn, league="NFL", freshness_seconds=10_000_000)
+        assert result["arbitrage"]["detected"] == 1
+        active = get_active_arbitrage_opportunities(db_conn, "NFL")
+        assert len(active) == 1
+        assert active[0]["matchup"] == "Denver Broncos @ Kansas City Chiefs"
+        assert active[0]["league"] == "NFL"
+
+    def test_no_games_row_and_no_recommendation_leaves_matchup_none_not_a_crash(self, db_conn):
+        _insert_odds_row(db_conn, sportsbook="BookA", side="OVER", price=110, decimal_odds=2.10, odd_id="o1")
+        _insert_odds_row(db_conn, sportsbook="BookB", side="UNDER", price=130, decimal_odds=2.30, odd_id="o2")
+        result = run_scan(db_conn, league="MLB", freshness_seconds=10_000_000)
+        assert result["arbitrage"]["detected"] == 1
+        active = get_active_arbitrage_opportunities(db_conn, "MLB")
+        assert active[0]["matchup"] is None
+
+
 class TestWorkerWiring:
     def test_arb_middle_scan_registered_in_dispatch(self):
         source = inspect.getsource(worker._execute_job)

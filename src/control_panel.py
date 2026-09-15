@@ -492,6 +492,29 @@ def _opportunity_freshness(timestamp: str | None, threshold_seconds: int = 900) 
     return f"Fresh ({age // 60}m ago)"
 
 
+# Generic placeholder player_name values arb/middle detection uses for
+# game-level markets (no real player involved) -- see src/middling.py
+# and src/arbitrage.py's row grouping.
+_GENERIC_OPPORTUNITY_LABELS = {"game total", "game", "game spread", "game moneyline"}
+
+
+def _player_matchup_label(r: dict) -> str:
+    """"Player/Matchup" column value for an arbitrage/middle opportunity
+    row. Real bug found live 2026-09-15: a game-level opportunity (no
+    real player, matchup unavailable at the time it was detected) showed
+    the literal player_name placeholder ("Game Total") with the real
+    matchup silently unavailable, even after src/arb_middle_scan.py's
+    _event_context fix made matchup available for these going forward --
+    player_name alone was masking it since it was checked first
+    unconditionally. Now prefers showing both when the player_name isn't
+    itself just a generic market-type label."""
+    player = (r.get("player_name") or "").strip()
+    matchup = (r.get("matchup") or "").strip()
+    if player and player.lower() not in _GENERIC_OPPORTUNITY_LABELS:
+        return f"{player} ({matchup})" if matchup else player
+    return matchup or player or ""
+
+
 def _usable_with_books(
     opportunities: list[dict], available_books: set[str], book_fields: tuple[str, str],
 ) -> list[dict]:
@@ -2801,7 +2824,7 @@ with tabs[9]:
                         st.caption(f"{len(arb_usable)} of {len(arb_status_filtered)} opportunities usable with the selected books.")
                     arb_table = [{
                         "League": r["league"],
-                        "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                        "Player/Matchup": _player_matchup_label(r),
                         "Market": f"{_format_market_type(r['market_type'])}" + (f" {r['line']}" if r.get("line") is not None else ""),
                         "Status": "🔴 LIVE" if is_event_live(r.get("event_start_time")) else "PREGAME",
                         "Game Starts": format_event_start_local(r.get("event_start_time")),
@@ -2821,7 +2844,7 @@ with tabs[9]:
         else:
             settled_arb_table = [{
                 "League": r["league"],
-                "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                "Player/Matchup": _player_matchup_label(r),
                 "Market": _format_market_type(r["market_type"]),
                 "Outcome": r["outcome"],
                 "Profit (u)": round(r["profit_units"], 4) if r["profit_units"] is not None else None,
@@ -2917,7 +2940,7 @@ with tabs[10]:
                         st.caption(f"{len(mid_usable)} of {len(mid_status_filtered)} opportunities usable with the selected books.")
                     mid_table = [{
                         "League": r["league"],
-                        "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                        "Player/Matchup": _player_matchup_label(r),
                         "Market": _format_market_type(r["market_type"]),
                         "Status": "🔴 LIVE" if is_event_live(r.get("event_start_time")) else "PREGAME",
                         "Game Starts": format_event_start_local(r.get("event_start_time")),
@@ -2944,7 +2967,7 @@ with tabs[10]:
         else:
             settled_mid_table = [{
                 "League": r["league"],
-                "Player/Matchup": r.get("player_name") or r.get("matchup") or "",
+                "Player/Matchup": _player_matchup_label(r),
                 "Market": _format_market_type(r["market_type"]),
                 "Outcome": r["outcome"],
                 "Profit (u)": round(r["profit_units"], 4) if r["profit_units"] is not None else None,
