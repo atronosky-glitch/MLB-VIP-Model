@@ -2876,7 +2876,11 @@ with tabs[10]:
     st.caption(
         "Over at a lower line and Under at a higher line, at two books. If the final "
         "number lands in the window, both bets win. Outside it, the guaranteed worst "
-        "case is capped small — never a full loss on both legs."
+        "case is capped small — never a full loss on both legs. \"Hit %\"/\"True EV\" "
+        "estimate how likely the window actually is to hit (devigged from market "
+        "consensus at each line) — Best Case ROI alone rewards wide windows regardless "
+        "of how unlikely they are; \"Stake (u)\" is a 25% fractional-Kelly recommendation "
+        "sized off True EV, 0u meaning skip it."
     )
     try:
         import pandas as pd
@@ -2921,6 +2925,9 @@ with tabs[10]:
                         "Window": r["window_width"],
                         "Worst Case": f"{r['worst_case_roi_pct']:+.2f}%",
                         "Best Case": f"{r['best_case_roi_pct']:+.2f}%",
+                        "Hit %": f"{r['hit_probability'] * 100:.1f}%" if r.get("hit_probability") is not None else "—",
+                        "True EV": f"{r['true_ev_pct']:+.2f}%" if r.get("true_ev_pct") is not None else "n/a",
+                        "Stake (u)": r["recommended_stake_units"] if r.get("recommended_stake_units") is not None else "—",
                         "Freshness": _opportunity_freshness(r.get("last_seen_at")),
                         "Detected": (r.get("detected_at") or "")[:16],
                     } for r in mid_usable]

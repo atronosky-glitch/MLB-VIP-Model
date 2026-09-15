@@ -32,18 +32,151 @@ def _implied_prob(decimal_odds: float) -> float:
     return 1.0 / decimal_odds
 
 
+# ── Hit-probability estimation and Kelly-based sizing ────────────────
+#
+# Neither worst_case_roi_pct nor best_case_roi_pct alone says whether a
+# middle is actually worth betting -- that depends on how LIKELY the
+# final number is to land in the window, which those two fields don't
+# estimate at all. This section adds that estimate (devigged from real
+# market consensus, never guessed) plus a Kelly-based stake so bad
+# windows (wide loss, thin hit chance) can be told apart from good ones
+# (tight window, real hit chance) instead of relying on best-case ROI
+# alone, which rewards wide windows regardless of how unlikely they are
+# to actually pay off.
+
+KELLY_FRACTION = 0.25  # matches src/tracker.py::compute_variable_stake's own 25% fractional Kelly
+MIN_STAKE_UNITS = 0.25
+MAX_STAKE_UNITS = 2.0
+
+
+def _no_vig_probability(key: tuple, line: float, side: str, price_consensus: dict) -> float | None:
+    """No-vig fair P(actual is on *side* of *line*), devigged from BOTH
+    sides' own consensus implied probability at this EXACT line -- not
+    the vig-inflated price of a single leg, which would overstate the
+    probability (vig inflates both sides' implied probability, so using
+    one side's raw price alone systematically overstates how likely it
+    is). Returns None if either side isn't quoted at this line by any
+    book -- common for far alt lines, and not something to guess around."""
+    over_p = price_consensus.get(key + (line, "OVER"))
+    under_p = price_consensus.get(key + (line, "UNDER"))
+    if over_p is None or under_p is None:
+        return None
+    total = over_p + under_p
+    if total <= 0:
+        return None
+    return (over_p if side == "OVER" else under_p) / total
+
+
+def estimate_middle_hit_probability(
+    key: tuple, over_line: float, under_line: float, price_consensus: dict,
+) -> tuple[float | None, str]:
+    """P(the final number lands strictly between over_line and
+    under_line), i.e. the probability BOTH legs of the middle win.
+
+    P(hit) = P(actual > over_line) + P(actual < under_line) - 1, using
+    each line's own no-vig fair probability (see ``_no_vig_probability``).
+    This is the standard middle-probability identity: P(actual >
+    over_line) already includes the hit region PLUS "actual >=
+    under_line", and P(actual < under_line) already includes the hit
+    region PLUS "actual <= over_line" -- adding them double-counts the
+    hit region exactly once, so subtracting 1 (the total probability of
+    the two non-overlapping "miss" regions plus the hit region) isolates
+    it.
+
+    Requires a two-sided (Over AND Under) consensus at BOTH lines.
+    Returns ``(None, "UNAVAILABLE")`` rather than fabricate a number
+    when that data isn't there -- matching this module's existing
+    "never guess" convention for line/price plausibility (see the
+    module and ``find_middle_opportunities`` docstrings). Returns
+    ``(p_hit, "DEVIGGED")`` otherwise, clamped to [0, 1] since real
+    market noise can occasionally push the raw identity a hair outside
+    that range.
+    """
+    p_over = _no_vig_probability(key, over_line, "OVER", price_consensus)
+    p_under = _no_vig_probability(key, under_line, "UNDER", price_consensus)
+    if p_over is None or p_under is None:
+        return None, "UNAVAILABLE"
+    p_hit = p_over + p_under - 1.0
+    return round(max(0.0, min(1.0, p_hit)), 6), "DEVIGGED"
+
+
+def kelly_fraction_bounded(p_hit: float, r_hit: float, r_miss: float) -> float:
+    """Optimal Kelly stake fraction for a two-outcome bet whose "miss"
+    loses only ``r_miss`` (a bounded fraction of stake, e.g. -0.03) not
+    the whole stake -- the actual shape of a middle's payoff (missing
+    the window loses roughly the combined vig, never everything, thanks
+    to how ``find_middle_between_lines`` sizes the two legs).
+
+    Derived from setting d/df[p*ln(1+f*r_hit) + (1-p)*ln(1+f*r_miss)] to
+    0. Because p + (1-p) = 1, the f^2 cross term cancels and the result
+    is a closed form (no numeric solve needed):
+
+        f* = -(p*r_hit + (1-p)*r_miss) / (r_hit * r_miss) = -EV / (r_hit * r_miss)
+
+    Sanity-checked against the textbook binary-Kelly formula f*=p-q/b:
+    setting r_miss=-1 (lose-everything) reduces this exactly to that
+    formula. Returns 0.0 when EV<=0 (no edge -- never a negative stake)
+    or r_hit<=0 (nothing to size). Returns 1.0 when r_miss>=0 (no real
+    downside at all -- that's arbitrage, not a middle, and Kelly has no
+    interior optimum against a riskless bet; sizing is capped externally
+    by MAX_STAKE_UNITS instead).
+    """
+    ev = p_hit * r_hit + (1.0 - p_hit) * r_miss
+    if ev <= 0 or r_hit <= 0:
+        return 0.0
+    if r_miss >= 0:
+        return 1.0
+    return max(0.0, -ev / (r_hit * r_miss))
+
+
+def compute_middle_stake_units(
+    hit_probability: float | None, best_case_roi_pct: float, worst_case_roi_pct: float,
+) -> float | None:
+    """25% fractional Kelly, clamped to [0.25, 2.0] units (1 unit = 1%
+    of bankroll) -- the same fractional-Kelly-with-clamp convention
+    src/tracker.py::compute_variable_stake uses for the model's own
+    picks.
+
+    Returns None (no recommendation -- not a silent default) when
+    hit_probability is unavailable: the entire point of this function
+    is separating the middles genuinely worth betting from the ones
+    that aren't, so guessing a stake without a real probability estimate
+    would defeat that purpose. Returns 0.0 (a real, computed "don't bet
+    this one") when true EV works out <= 0.
+    """
+    if hit_probability is None:
+        return None
+    r_hit = best_case_roi_pct / 100.0
+    r_miss = worst_case_roi_pct / 100.0
+    full_kelly = kelly_fraction_bounded(hit_probability, r_hit, r_miss)
+    if full_kelly <= 0:
+        return 0.0
+    units = full_kelly * KELLY_FRACTION * 100.0
+    return round(max(MIN_STAKE_UNITS, min(MAX_STAKE_UNITS, units)), 2)
+
+
 def find_middle_between_lines(
     over_line: float,
     over_price: dict,
     under_line: float,
     under_price: dict,
     stake_total: float = 1.0,
+    hit_probability: float | None = None,
+    hit_probability_confidence: str = "UNAVAILABLE",
 ) -> dict | None:
     """Check one specific (lower Over line, higher Under line) pair.
 
     ``over_price``/``under_price``: ``{"sportsbook": str, "price": int,
     "decimal_odds": float}``. Returns None if ``over_line >= under_line``
     (no window — not a middle at all) or if the prices are missing.
+
+    ``hit_probability``/``hit_probability_confidence`` are optional --
+    when the caller has already devigged a real P(hit) estimate (see
+    ``estimate_middle_hit_probability``), pass it through here to get
+    ``true_ev_pct`` and a Kelly-sized ``recommended_stake_units`` back
+    in the result. Left at their defaults (None/"UNAVAILABLE"), both
+    come back None -- this function never estimates a probability
+    itself, only uses one if given.
     """
     if over_line is None or under_line is None or over_line >= under_line:
         return None
@@ -71,6 +204,19 @@ def find_middle_between_lines(
     # Best case: the number lands strictly inside the window and both win.
     best_case_return = payout_if_over_wins + payout_if_under_wins - stake_total
 
+    worst_case_roi_pct = round((worst_case_return / stake_total) * 100, 4)
+    best_case_roi_pct = round((best_case_return / stake_total) * 100, 4)
+
+    true_ev_pct = None
+    recommended_stake_units = None
+    if hit_probability is not None:
+        true_ev_pct = round(
+            hit_probability * best_case_roi_pct + (1.0 - hit_probability) * worst_case_roi_pct, 4,
+        )
+        recommended_stake_units = compute_middle_stake_units(
+            hit_probability, best_case_roi_pct, worst_case_roi_pct,
+        )
+
     return {
         "over_line": over_line,
         "over_sportsbook": over_price.get("sportsbook"),
@@ -83,14 +229,19 @@ def find_middle_between_lines(
         "under_decimal_odds": under_dec,
         "under_stake_pct": round(prob_under / combined, 6),
         "window_width": round(under_line - over_line, 4),
-        "worst_case_roi_pct": round((worst_case_return / stake_total) * 100, 4),
-        "best_case_roi_pct": round((best_case_return / stake_total) * 100, 4),
+        "worst_case_roi_pct": worst_case_roi_pct,
+        "best_case_roi_pct": best_case_roi_pct,
+        "hit_probability": hit_probability,
+        "hit_probability_confidence": hit_probability_confidence,
+        "true_ev_pct": true_ev_pct,
+        "recommended_stake_units": recommended_stake_units,
     }
 
 
 def find_middle_opportunities(
     rows: list[dict],
     max_worst_case_loss_pct: float = 5.0,
+    min_true_ev_pct: float | None = None,
 ) -> list[dict]:
     """Scan a batch of raw odds rows for middle opportunities.
 
@@ -124,6 +275,24 @@ def find_middle_opportunities(
     all — found live 2026-09-10 evaluating exchange venues: a perfectly
     normal, plausible line can still carry one thin-liquidity outlier
     price a line-only check can't catch.
+
+    Each result also carries a devigged ``hit_probability`` (see
+    ``estimate_middle_hit_probability``) plus the ``true_ev_pct`` and
+    Kelly-sized ``recommended_stake_units`` it implies, whenever both
+    lines have two-sided consensus pricing to devig from —
+    ``worst_case_roi_pct``/``best_case_roi_pct`` alone say nothing about
+    how LIKELY the window actually is to hit, which is what separates a
+    middle genuinely worth betting from one that only looks good on a
+    wide-but-unlikely window. When that probability can't be estimated
+    (thin alt-line data, one side never two-sided), those three fields
+    come back None rather than a guess — still returned, just flagged
+    ``hit_probability_confidence="UNAVAILABLE"`` instead of silently
+    dropped.
+
+    ``min_true_ev_pct``, if given, additionally drops any opportunity
+    whose ``true_ev_pct`` is known and below this threshold — but never
+    an "UNAVAILABLE"-confidence one, since there's no computed EV to
+    compare against a threshold in that case.
     """
     price_consensus = consensus_prices(rows)
 
@@ -190,13 +359,30 @@ def find_middle_opportunities(
                     # own line movement between two points in time or
                     # two separate markets, not a cross-book price error.
                     pass
-                result = find_middle_between_lines(over_line, over_price, under_line, under_price)
+                hit_probability, hit_confidence = estimate_middle_hit_probability(
+                    key, over_line, under_line, price_consensus,
+                )
+                result = find_middle_between_lines(
+                    over_line, over_price, under_line, under_price,
+                    hit_probability=hit_probability, hit_probability_confidence=hit_confidence,
+                )
                 if result is None:
                     continue
                 if result["worst_case_roi_pct"] < -max_worst_case_loss_pct:
                     continue
+                if (
+                    min_true_ev_pct is not None
+                    and result["true_ev_pct"] is not None
+                    and result["true_ev_pct"] < min_true_ev_pct
+                ):
+                    continue
                 result.update(meta[key])
                 opportunities.append(result)
 
-    opportunities.sort(key=lambda o: -o["best_case_roi_pct"])
+    # Sort by true EV when it's known (a real, probability-weighted
+    # ranking) -- fall back to best-case ROI only for the UNAVAILABLE-
+    # confidence opportunities where there's no computed EV to sort by.
+    opportunities.sort(
+        key=lambda o: -(o["true_ev_pct"] if o["true_ev_pct"] is not None else o["best_case_roi_pct"])
+    )
     return opportunities

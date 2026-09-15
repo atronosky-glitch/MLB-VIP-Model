@@ -272,12 +272,28 @@ def _middle_line(o: dict[str, Any]) -> str:
     best_str = f"{best:+.2f}%" if best is not None else "?"
     worst_str = f"{worst:+.2f}%" if worst is not None else "?"
     header = f"**{player}** — {market}" + (f" ({matchup})" if matchup else "")
-    return (
-        f"{header}\n"
+    lines = [
+        header,
         f"  Over {o.get('over_line', '?')} @ **{o.get('over_sportsbook', '?')}** ({_american(o.get('over_price'))})"
-        f"  /  Under {o.get('under_line', '?')} @ **{o.get('under_sportsbook', '?')}** ({_american(o.get('under_price'))})\n"
-        f"  Best case: {best_str} | Worst case: {worst_str}"
-    )
+        f"  /  Under {o.get('under_line', '?')} @ **{o.get('under_sportsbook', '?')}** ({_american(o.get('under_price'))})",
+        f"  Best case: {best_str} | Worst case: {worst_str}",
+    ]
+    lines.append(_middle_ev_line(o))
+    return "\n".join(lines)
+
+
+def _middle_ev_line(o: dict[str, Any]) -> str:
+    """Devigged hit probability + true EV + Kelly-sized stake, when
+    estimable — see src/middling.py::estimate_middle_hit_probability.
+    Best/worst-case ROI alone don't say how likely the window is to hit,
+    which is what this line adds."""
+    hit_prob = o.get("hit_probability")
+    true_ev = o.get("true_ev_pct")
+    stake = o.get("recommended_stake_units")
+    if hit_prob is None or true_ev is None:
+        return "  Hit probability: not estimable (thin alt-line data) — treat this one with caution"
+    stake_str = f"{stake:.2f}u" if stake else "0u (no edge — skip)"
+    return f"  Est. hit chance: {hit_prob * 100:.1f}% | True EV: {true_ev:+.2f}% | Suggested stake: {stake_str}"
 
 
 def _compact_line(rec: dict[str, Any]) -> str:

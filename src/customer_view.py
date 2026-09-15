@@ -586,6 +586,19 @@ def _render_middle_card(opp: dict) -> None:
     fresh = _freshness_label(opp.get("last_seen_at"))
     game_time = format_event_start_local(opp.get("event_start_time"))
     status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"
+    hit_prob = opp.get("hit_probability")
+    true_ev = opp.get("true_ev_pct")
+    stake = opp.get("recommended_stake_units")
+    if hit_prob is not None and true_ev is not None:
+        ev_class = "result-win" if true_ev > 0 else "result-loss"
+        stake_label = f"{stake:.2f}u" if stake else "skip — no edge"
+        ev_line = (
+            f'<div class="unit-line">Est. hit chance: {hit_prob * 100:.1f}% '
+            f'· True EV: <span class="{ev_class}">{true_ev:+.2f}%</span> '
+            f'· Suggested stake: {stake_label}</div>'
+        )
+    else:
+        ev_line = '<div class="pick-meta">Hit chance not estimable for this window (thin alt-line data)</div>'
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])}</div>
@@ -595,6 +608,7 @@ def _render_middle_card(opp: dict) -> None:
       <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
       <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>
         · Best case: <span class="result-win">+{opp['best_case_roi_pct']:.2f}%</span></div>
+      {ev_line}
     </div>
     """, unsafe_allow_html=True)
 

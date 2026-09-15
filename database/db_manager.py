@@ -1063,6 +1063,18 @@ def init_db(db_path: str | None = None) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_league ON middle_opportunities(league)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mid_detected ON middle_opportunities(detected_at)")
 
+    # 2026-09-14: devigged P(both legs win) plus the true-EV/Kelly-sized
+    # stake it implies -- see src/middling.py::estimate_middle_hit_probability.
+    # worst_case_roi_pct/best_case_roi_pct alone don't say how LIKELY the
+    # window is to hit, which is what separates a middle worth betting
+    # from one that only looks good on a wide-but-unlikely window.
+    _add_columns_if_missing(conn, "middle_opportunities", [
+        ("hit_probability", "REAL"),
+        ("hit_probability_confidence", "TEXT DEFAULT 'UNAVAILABLE'"),
+        ("true_ev_pct", "REAL"),
+        ("recommended_stake_units", "REAL"),
+    ])
+
     # Discord alert dedup (2026-09-10). historical_recommendations rows are
     # frozen at creation (never re-evaluated), so "have I already alerted
     # this one" needs an explicit record here. Arbitrage/middle
@@ -2862,8 +2874,9 @@ def sync_middle_opportunities(
                 over_line, over_sportsbook, over_price, over_decimal_odds, over_stake_pct,
                 under_line, under_sportsbook, under_price, under_decimal_odds, under_stake_pct,
                 window_width, worst_case_roi_pct, best_case_roi_pct,
+                hit_probability, hit_probability_confidence, true_ev_pct, recommended_stake_units,
                 detected_at, last_seen_at, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
             ON CONFLICT (opportunity_id) DO UPDATE SET
                 over_sportsbook = excluded.over_sportsbook,
                 over_price = excluded.over_price,
@@ -2875,6 +2888,10 @@ def sync_middle_opportunities(
                 under_stake_pct = excluded.under_stake_pct,
                 worst_case_roi_pct = excluded.worst_case_roi_pct,
                 best_case_roi_pct = excluded.best_case_roi_pct,
+                hit_probability = excluded.hit_probability,
+                hit_probability_confidence = excluded.hit_probability_confidence,
+                true_ev_pct = excluded.true_ev_pct,
+                recommended_stake_units = excluded.recommended_stake_units,
                 last_seen_at = excluded.last_seen_at,
                 status = 'ACTIVE'
         """, (
@@ -2883,7 +2900,9 @@ def sync_middle_opportunities(
             opp.get("player_id"), opp.get("player_name"), opp.get("market_type"),
             opp["over_line"], opp["over_sportsbook"], opp["over_price"], opp["over_decimal_odds"], opp["over_stake_pct"],
             opp["under_line"], opp["under_sportsbook"], opp["under_price"], opp["under_decimal_odds"], opp["under_stake_pct"],
-            opp["window_width"], opp["worst_case_roi_pct"], opp["best_case_roi_pct"], now, now,
+            opp["window_width"], opp["worst_case_roi_pct"], opp["best_case_roi_pct"],
+            opp.get("hit_probability"), opp.get("hit_probability_confidence", "UNAVAILABLE"),
+            opp.get("true_ev_pct"), opp.get("recommended_stake_units"), now, now,
         ))
     if current_ids:
         placeholders = ",".join("?" * len(current_ids))
@@ -3076,10 +3095,17 @@ def grade_middle_opportunities(conn: DB) -> dict:
         outcome_under = _leg_outcome(conn, r["event_id"], r["player_id"], r["market_type"], "UNDER", r["under_line"])
         if outcome_over is None or outcome_under is None:
             continue
-        profit = _two_leg_profit(
+        profit_per_unit = _two_leg_profit(
             r["over_stake_pct"], r["over_decimal_odds"], outcome_over,
             r["under_stake_pct"], r["under_decimal_odds"], outcome_under,
         )
+        # Scale by the Kelly-sized recommendation when one exists (2026-09-14)
+        # so realized P&L reflects what was actually sized, not always a
+        # flat 1-unit stake. Rows with no recommendation (pre-migration
+        # rows, or hit_probability was UNAVAILABLE) keep the original
+        # 1-unit-total-stake convention unchanged.
+        stake_units = r["recommended_stake_units"] if r.get("recommended_stake_units") is not None else 1.0
+        profit = profit_per_unit * stake_units
         conn.execute(
             """UPDATE middle_opportunities
                SET status = 'GRADED', outcome = ?, profit_units = ?, graded_at = ?
