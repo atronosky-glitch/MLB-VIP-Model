@@ -362,3 +362,92 @@ def _load_actionable_recommendations(
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+# ── Manual webhook verification (2026-09-15) ──────────────────────────
+#
+# Confirmed live 2026-09-15: neither Discord channel had ever delivered
+# anything, root-caused to MLB_DISCORD_WEBHOOKS/_ARB_MIDDLE/_MIDDLE never
+# being declared in render.yaml's worker service. This command lets an
+# operator confirm each configured webhook is actually reachable, without
+# touching dedup state (discord_alerts_sent) or sending any real alert
+# content -- safe to run as often as needed.
+
+def test_webhooks(config: Any = None) -> dict[str, Any]:
+    """Send one clearly-labeled test message to every configured Discord
+    webhook (EV picks, arbitrage/middle, middles-only), one URL at a
+    time, reporting PASS/FAIL per URL. Never touches dedup state, never
+    sends real alert content."""
+    if config is None:
+        from src.production_config import load_config
+        config = load_config()
+
+    channels = {
+        "ev_picks": getattr(config, "discord_webhook_urls", "") or "",
+        "arbitrage": getattr(config, "discord_webhook_urls_arb_middle", "") or "",
+        "middles": getattr(config, "discord_webhook_urls_middle", "") or "",
+    }
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    results: dict[str, Any] = {}
+    any_configured = False
+
+    for channel_name, raw_urls in channels.items():
+        urls = [u.strip() for u in raw_urls.split(",") if u.strip()]
+        if not urls:
+            results[channel_name] = {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0}
+            continue
+        any_configured = True
+        passed = failed = 0
+        for url in urls:
+            ok = send_webhook_message(
+                url,
+                f"MLB VIP Model — Discord delivery test ({channel_name}) — {timestamp}. "
+                "If you can see this, this channel's webhook is working correctly.",
+                embed_title="✅ Delivery Test",
+                embed_color=0x00CC66,
+            )
+            if ok:
+                passed += 1
+            else:
+                failed += 1
+        results[channel_name] = {"configured": True, "urls_tested": len(urls), "passed": passed, "failed": failed}
+
+    return {"any_configured": any_configured, "channels": results}
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(prog="python -m src.discord_delivery")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "test-webhooks",
+        help="Send a safe, clearly-labeled test message to every configured Discord webhook",
+    )
+    args = parser.parse_args(argv)
+
+    if args.command == "test-webhooks":
+        result = test_webhooks()
+        if not result["any_configured"]:
+            print(
+                "No Discord webhooks configured -- MLB_DISCORD_WEBHOOKS, "
+                "MLB_DISCORD_WEBHOOKS_ARB_MIDDLE, and MLB_DISCORD_WEBHOOKS_MIDDLE are all empty."
+            )
+            return 1
+        overall_ok = True
+        for channel, info in result["channels"].items():
+            if not info["configured"]:
+                print(f"{channel}: NOT CONFIGURED")
+                continue
+            status = "PASS" if info["failed"] == 0 else "FAIL"
+            if info["failed"]:
+                overall_ok = False
+            print(f"{channel}: {status} ({info['passed']}/{info['urls_tested']} webhook(s) succeeded)")
+        return 0 if overall_ok else 1
+
+    return 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

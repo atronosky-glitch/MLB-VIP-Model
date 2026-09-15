@@ -39,7 +39,20 @@ def test_worth_it_shows_label_hit_chance_true_ev_and_stake():
     assert "NOT WORTH IT" not in out
     assert "15.0%" in out
     assert "+2.35%" in out
-    assert "0.75u" in out
+    assert "0.75" in out
+
+
+def test_stake_line_is_its_own_bold_unmissable_line():
+    """The bet size has to be readable at a glance before the middle
+    settles, not buried inside the hit-chance/EV line -- same
+    "STAKE: X.XXu" prominence the site's main EV-pick cards give
+    "Stake: X.XXu" (see src/customer_view.py's _render_pick_card)."""
+    out = format_middle_alert([_opp(
+        hit_probability=0.15, true_ev_pct=2.35, verdict="WORTH_IT", recommended_stake_units=0.75,
+    )])
+    stake_lines = [ln for ln in out.splitlines() if "STAKE" in ln]
+    assert len(stake_lines) == 1
+    assert stake_lines[0].strip() == "**STAKE: 0.75 units**"
 
 
 def test_not_worth_it_shows_label_and_no_stake_number():
@@ -48,9 +61,11 @@ def test_not_worth_it_shows_label_and_no_stake_number():
     )])
     assert "NOT WORTH IT" in out
     assert "not worth betting" in out.lower()
-    # No stake unit figure anywhere on this line -- never a bare 0u either.
-    assert "0.00u" not in out
-    assert "0u" not in out
+    stake_lines = [ln for ln in out.splitlines() if "STAKE" in ln]
+    assert len(stake_lines) == 1
+    assert stake_lines[0].strip() == "**STAKE: — (not worth betting)**"
+    # No stake unit figure on the STAKE line itself -- never a bare 0 either.
+    assert "0" not in stake_lines[0]
 
 
 def test_empty_opportunities_returns_empty_string():

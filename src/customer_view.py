@@ -600,16 +600,22 @@ def _render_middle_card(opp: dict) -> None:
     verdict_badge = _MIDDLE_VERDICT_BADGE.get(verdict, _MIDDLE_VERDICT_BADGE["UNKNOWN"])
     if hit_prob is not None and true_ev is not None:
         ev_class = "result-win" if true_ev > 0 else "result-loss"
-        # A stake number is only ever shown for a WORTH_IT verdict --
-        # recommended_stake_units is None (not 0) for anything else, so
-        # this never mistakes "no recommendation" for "bet 0 units."
-        stake_part = f" · Suggested stake: {stake:.2f}u" if verdict == "WORTH_IT" and stake else ""
         ev_line = (
-            f'<div class="unit-line">Est. hit chance: {hit_prob * 100:.1f}% '
-            f'· True EV: <span class="{ev_class}">{true_ev:+.2f}%</span>{stake_part}</div>'
+            f'<div class="pick-meta">Est. hit chance: {hit_prob * 100:.1f}% '
+            f'· True EV: <span class="{ev_class}">{true_ev:+.2f}%</span></div>'
         )
     else:
         ev_line = '<div class="pick-meta">Hit chance not estimable for this window (thin alt-line data)</div>'
+    # Same "Stake: X.XXu" phrasing/placement as the main EV-pick cards
+    # (see _render_pick_card) -- one consistent, unmissable place to
+    # read the bet size before it settles, site-wide. A stake number is
+    # only ever shown for a WORTH_IT verdict -- recommended_stake_units
+    # is None (not 0) for anything else, so this never mistakes "no
+    # recommendation" for "bet 0 units."
+    if verdict == "WORTH_IT" and stake:
+        stake_line = f"Stake: {stake:.2f}u"
+    else:
+        stake_line = "Stake: — (not worth betting)"
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])} {verdict_badge}</div>
@@ -617,6 +623,7 @@ def _render_middle_card(opp: dict) -> None:
       <div class="pick-meta">{status_label} · Game starts: {game_time}</div>
       <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
       <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
+      <div class="unit-line">{stake_line}</div>
       <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>
         · Best case: <span class="result-win">+{opp['best_case_roi_pct']:.2f}%</span></div>
       {ev_line}
