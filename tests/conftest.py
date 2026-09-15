@@ -447,6 +447,7 @@ def db_conn():
             hit_probability REAL,
             hit_probability_confidence TEXT DEFAULT 'UNAVAILABLE',
             true_ev_pct REAL,
+            verdict TEXT DEFAULT 'UNKNOWN',
             recommended_stake_units REAL,
             detected_at TEXT NOT NULL DEFAULT (datetime('now')),
             last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),

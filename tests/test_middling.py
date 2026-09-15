@@ -381,6 +381,35 @@ def test_find_middle_opportunities_min_true_ev_pct_filters_bad_windows():
     assert unfiltered not in filtered
 
 
+def test_find_middle_opportunities_devig_ignores_extreme_exchange_outlier():
+    """Real bug found live 2026-09-15 against production data: a thin-
+    liquidity exchange venue (novig/prophetx) quoting an extreme
+    near-100%-confidence price (e.g. -9900) on a line where only one
+    other book quotes it was dominating the raw 2-point median
+    (statistics.median of an even-length list averages the two middle
+    values), corrupting the devig math -- spuriously near-zero
+    hit_probability for real middles that clearly weren't that unlikely.
+
+    Hand-computed: clean devig (bookA/bookB only) gives hit_probability
+    ~0.176. If the outlier corrupted the consensus the way it did in
+    production, it would instead compute to ~0.597 -- a huge,
+    unmistakable difference, not a rounding nuance."""
+    rows = [
+        _row("E1", "GAME", "game_total_ou", "OVER", "bookA", -150, 1.666667, 46.0),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "bookA", 130, 2.30, 46.0),
+        _row("E1", "GAME", "game_total_ou", "OVER", "novig", -9900, 1.010101, 46.0),
+        _row("E1", "GAME", "game_total_ou", "OVER", "bookB", 140, 2.40, 47.0),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "bookB", -160, 1.625, 47.0),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "prophetx", -9250, 1.010811, 47.0),
+    ]
+    results = find_middle_opportunities(rows, max_worst_case_loss_pct=1000.0)
+    assert len(results) >= 1
+    result = results[0]
+    assert result["hit_probability_confidence"] == "DEVIGGED"
+    assert abs(result["hit_probability"] - 0.1761) < 0.01
+    assert result["hit_probability"] < 0.3  # nowhere near the ~0.597 a contaminated median would give
+
+
 def test_find_middle_opportunities_never_filters_unavailable_confidence_by_true_ev():
     """min_true_ev_pct must never silently drop an opportunity whose
     true EV simply couldn't be computed -- only ones with a known,

@@ -24,8 +24,21 @@ version of a feature whose entire point is safety.
 from __future__ import annotations
 
 from collections import defaultdict
+from statistics import median
 
 from src.line_plausibility import consensus_lines, is_plausible_line, consensus_prices, is_plausible_price
+
+# Any single book's implied probability outside this band is excluded
+# from the devig consensus below (never from bet-leg selection --
+# that's a separate, already-handled question) -- confirmed live
+# 2026-09-15: thin-liquidity exchange venues (novig, prophetx) quote
+# near-100%-confidence prices (e.g. -9900, -9250, implying ~99%) on
+# some lines. With only 1-2 books quoting a line, a single such
+# outlier can dominate a raw median (Python's statistics.median of an
+# even-length list averages the two middle values) and corrupt the
+# no-vig hit-probability math for every middle built from that line --
+# this was producing spuriously near-zero hit_probability estimates.
+_DEVIG_SANE_PROBABILITY_BAND = (0.03, 0.97)
 
 
 def _implied_prob(decimal_odds: float) -> float:
@@ -47,6 +60,35 @@ def _implied_prob(decimal_odds: float) -> float:
 KELLY_FRACTION = 0.25  # matches src/tracker.py::compute_variable_stake's own 25% fractional Kelly
 MIN_STAKE_UNITS = 0.25
 MAX_STAKE_UNITS = 2.0
+
+
+def _clean_devig_consensus(lines_map: dict[float, dict[str, dict]], key: tuple) -> dict[tuple, float]:
+    """Devig-safe consensus for hit-probability estimation, built ONLY
+    from rows that already passed find_middle_opportunities's per-row
+    plausibility filter (is_plausible_price) -- NOT price_consensus (a
+    raw median over every ingested row, unfiltered). With only 1-2
+    books quoting a line, a raw median can still be dominated by a
+    single thin-liquidity outlier that slipped past that filter (it's
+    checked against a consensus computed from the very same unfiltered
+    rows, so a lone extreme quote can pass by being compared to
+    itself) -- so entries outside _DEVIG_SANE_PROBABILITY_BAND are
+    additionally excluded here, specifically for devig purposes (never
+    for bet-leg selection, which is unaffected and handled elsewhere).
+    A line/side where every quote gets excluded this way simply
+    contributes no key here, correctly propagating to
+    hit_probability=None ("UNAVAILABLE") for any leg that needs it --
+    never a guess."""
+    lo, hi = _DEVIG_SANE_PROBABILITY_BAND
+    clean: dict[tuple, float] = {}
+    for line, sides in lines_map.items():
+        for side, books in sides.items():
+            probs = [
+                _implied_prob(entry["decimal_odds"]) for entry in books.values()
+                if lo <= _implied_prob(entry["decimal_odds"]) <= hi
+            ]
+            if probs:
+                clean[key + (line, side)] = median(probs)
+    return clean
 
 
 def _no_vig_probability(key: tuple, line: float, side: str, price_consensus: dict) -> float | None:
@@ -350,6 +392,7 @@ def find_middle_opportunities(
             continue
         market_type = meta[key]["market_type"]
         group_consensus = consensus.get(key)
+        clean_consensus = _clean_devig_consensus(lines_map, key)
         for i, over_line in enumerate(distinct_lines):
             if group_consensus is not None and not is_plausible_line(market_type, over_line, group_consensus):
                 continue
@@ -374,7 +417,7 @@ def find_middle_opportunities(
                     # two separate markets, not a cross-book price error.
                     pass
                 hit_probability, hit_confidence = estimate_middle_hit_probability(
-                    key, over_line, under_line, price_consensus,
+                    key, over_line, under_line, clean_consensus,
                 )
                 result = find_middle_between_lines(
                     over_line, over_price, under_line, under_price,

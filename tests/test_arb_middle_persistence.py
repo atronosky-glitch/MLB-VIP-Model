@@ -137,6 +137,40 @@ class TestSyncMiddleOpportunities:
         assert result["new_ids"] == []
         assert result["active"] == 1
 
+    def test_verdict_and_hit_probability_fields_round_trip_through_persistence(self, db_conn):
+        """Real bug found live 2026-09-15: verdict/hit_probability/
+        true_ev_pct/recommended_stake_units were added to
+        find_middle_opportunities()'s in-memory result but verdict was
+        never wired into this INSERT -- every dashboard/customer-view
+        read (a fresh SELECT * from this table) silently lost it and
+        always fell back to an UNKNOWN badge, even for a real WORTH_IT
+        opportunity. Only the worker's real-time Discord delivery was
+        unaffected (it reads the in-memory list directly, never through
+        this table)."""
+        opp = _mid_opp()
+        opp["hit_probability"] = 0.15
+        opp["hit_probability_confidence"] = "DEVIGGED"
+        opp["true_ev_pct"] = 2.35
+        opp["verdict"] = "WORTH_IT"
+        opp["recommended_stake_units"] = 0.75
+        sync_middle_opportunities(db_conn, "MLB", [opp])
+        active = get_active_middle_opportunities(db_conn, "MLB")
+        assert len(active) == 1
+        assert active[0]["verdict"] == "WORTH_IT"
+        assert active[0]["hit_probability"] == 0.15
+        assert active[0]["true_ev_pct"] == 2.35
+        assert active[0]["recommended_stake_units"] == 0.75
+
+    def test_missing_verdict_defaults_to_unknown_not_a_crash(self, db_conn):
+        """An opportunity dict without the new fields at all (e.g. a
+        pre-migration caller, or a genuinely UNAVAILABLE-confidence
+        middle) must still insert cleanly, defaulting verdict to
+        UNKNOWN rather than raising a KeyError."""
+        sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
+        active = get_active_middle_opportunities(db_conn, "MLB")
+        assert active[0]["verdict"] == "UNKNOWN"
+        assert active[0]["recommended_stake_units"] is None
+
 
 class TestGradeArbitrageOpportunities:
     def test_ungraded_while_stat_result_unresolved(self, db_conn):

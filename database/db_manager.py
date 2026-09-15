@@ -1072,6 +1072,15 @@ def init_db(db_path: str | None = None) -> None:
         ("hit_probability", "REAL"),
         ("hit_probability_confidence", "TEXT DEFAULT 'UNAVAILABLE'"),
         ("true_ev_pct", "REAL"),
+        # 2026-09-15: verdict was added to src/middling.py's in-memory
+        # result dict alongside the fields above but never persisted --
+        # every dashboard/customer-view read (a fresh SELECT * from
+        # this table) lost it, always falling back to an UNKNOWN badge
+        # even when hit_probability/true_ev_pct had real values. Only
+        # the worker's real-time Discord delivery was unaffected (it
+        # reads find_middle_opportunities()'s in-memory return value
+        # directly, never round-tripping through this table).
+        ("verdict", "TEXT DEFAULT 'UNKNOWN'"),
         ("recommended_stake_units", "REAL"),
     ])
 
@@ -2874,9 +2883,9 @@ def sync_middle_opportunities(
                 over_line, over_sportsbook, over_price, over_decimal_odds, over_stake_pct,
                 under_line, under_sportsbook, under_price, under_decimal_odds, under_stake_pct,
                 window_width, worst_case_roi_pct, best_case_roi_pct,
-                hit_probability, hit_probability_confidence, true_ev_pct, recommended_stake_units,
+                hit_probability, hit_probability_confidence, true_ev_pct, verdict, recommended_stake_units,
                 detected_at, last_seen_at, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
             ON CONFLICT (opportunity_id) DO UPDATE SET
                 over_sportsbook = excluded.over_sportsbook,
                 over_price = excluded.over_price,
@@ -2891,6 +2900,7 @@ def sync_middle_opportunities(
                 hit_probability = excluded.hit_probability,
                 hit_probability_confidence = excluded.hit_probability_confidence,
                 true_ev_pct = excluded.true_ev_pct,
+                verdict = excluded.verdict,
                 recommended_stake_units = excluded.recommended_stake_units,
                 last_seen_at = excluded.last_seen_at,
                 status = 'ACTIVE'
@@ -2902,7 +2912,7 @@ def sync_middle_opportunities(
             opp["under_line"], opp["under_sportsbook"], opp["under_price"], opp["under_decimal_odds"], opp["under_stake_pct"],
             opp["window_width"], opp["worst_case_roi_pct"], opp["best_case_roi_pct"],
             opp.get("hit_probability"), opp.get("hit_probability_confidence", "UNAVAILABLE"),
-            opp.get("true_ev_pct"), opp.get("recommended_stake_units"), now, now,
+            opp.get("true_ev_pct"), opp.get("verdict", "UNKNOWN"), opp.get("recommended_stake_units"), now, now,
         ))
     if current_ids:
         placeholders = ",".join("?" * len(current_ids))
