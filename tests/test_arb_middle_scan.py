@@ -210,7 +210,7 @@ class TestWorkerWiring:
             min_ev_pct = 2.0
 
         new_arb = [{"player_name": "Test Pitcher"}]
-        new_mid = [{"player_name": "Test Batter"}]
+        new_mid = [{"player_name": "Test Batter", "verdict": "WORTH_IT"}]
 
         def fake_run_scan(conn, league="MLB", **kwargs):
             return {"league": league, "rows_examined": 0,
@@ -227,6 +227,40 @@ class TestWorkerWiring:
         mock_arb.assert_called_once_with(new_arb, ["https://discord.com/api/webhooks/arb-only"])
         mock_mid.assert_called_once_with(new_mid, ["https://discord.com/api/webhooks/middle-only"])
         mock_ev.assert_not_called()
+
+    def test_only_worth_it_middles_are_alerted_not_worth_it_and_unknown_are_filtered(self, db_conn):
+        """A middle the model judges NOT_WORTH_IT or UNKNOWN is still
+        detected/persisted (visible in the dashboard) but must never
+        reach Discord as if it were an actionable alert -- see
+        src/middling.py's verdict field."""
+        class FakeConfig:
+            discord_webhook_urls = ""
+            discord_webhook_urls_arb_middle = ""
+            discord_webhook_urls_middle = "https://discord.com/api/webhooks/middle-only"
+            database_path = "unused"
+            min_confidence_score = 40.0
+            min_ev_pct = 2.0
+
+        new_mid = [
+            {"player_name": "Worth It Batter", "verdict": "WORTH_IT"},
+            {"player_name": "Not Worth It Batter", "verdict": "NOT_WORTH_IT"},
+            {"player_name": "Unknown Batter", "verdict": "UNKNOWN"},
+        ]
+
+        def fake_run_scan(conn, league="MLB", **kwargs):
+            return {"league": league, "rows_examined": 0,
+                    "arbitrage": {"detected": 0}, "middles": {"detected": 3},
+                    "new_arbitrage": [],
+                    "new_middles": new_mid if league == "MLB" else []}
+
+        with patch("src.arb_middle_scan.run_scan", side_effect=fake_run_scan), \
+             patch("src.discord_delivery.deliver_middle_alerts") as mock_mid:
+            worker._run_arb_middle_scan(db_conn, config=FakeConfig())
+
+        mock_mid.assert_called_once()
+        delivered = mock_mid.call_args[0][0]
+        assert len(delivered) == 1
+        assert delivered[0]["player_name"] == "Worth It Batter"
 
     def test_middles_do_not_alert_when_only_the_arbitrage_channel_is_configured(self, db_conn):
         class FakeConfig:

@@ -173,10 +173,15 @@ def find_middle_between_lines(
     ``hit_probability``/``hit_probability_confidence`` are optional --
     when the caller has already devigged a real P(hit) estimate (see
     ``estimate_middle_hit_probability``), pass it through here to get
-    ``true_ev_pct`` and a Kelly-sized ``recommended_stake_units`` back
-    in the result. Left at their defaults (None/"UNAVAILABLE"), both
-    come back None -- this function never estimates a probability
-    itself, only uses one if given.
+    ``true_ev_pct``, a ``verdict`` ("WORTH_IT"/"NOT_WORTH_IT"/"UNKNOWN"),
+    and -- WORTH_IT only -- a Kelly-sized ``recommended_stake_units``
+    back in the result. A NOT_WORTH_IT middle still gets ``true_ev_pct``
+    (so it's visible WHY) but ``recommended_stake_units`` stays None,
+    never 0 -- 0 would read as "a real recommendation of size zero"
+    instead of "no recommendation at all." Left at their defaults
+    (None/"UNAVAILABLE"), everything new comes back None/"UNKNOWN" --
+    this function never estimates a probability itself, only uses one
+    if given.
     """
     if over_line is None or under_line is None or over_line >= under_line:
         return None
@@ -209,13 +214,21 @@ def find_middle_between_lines(
 
     true_ev_pct = None
     recommended_stake_units = None
+    verdict = "UNKNOWN"
     if hit_probability is not None:
         true_ev_pct = round(
             hit_probability * best_case_roi_pct + (1.0 - hit_probability) * worst_case_roi_pct, 4,
         )
-        recommended_stake_units = compute_middle_stake_units(
-            hit_probability, best_case_roi_pct, worst_case_roi_pct,
-        )
+        verdict = "WORTH_IT" if true_ev_pct > 0 else "NOT_WORTH_IT"
+        if verdict == "WORTH_IT":
+            # Sizing is only ever attached to a WORTH_IT verdict -- a
+            # NOT_WORTH_IT middle keeps true_ev_pct visible (so it's
+            # clear WHY) but gets no stake number at all, not even 0,
+            # so nothing downstream can mistake "no edge" for "a real
+            # recommendation of size zero."
+            recommended_stake_units = compute_middle_stake_units(
+                hit_probability, best_case_roi_pct, worst_case_roi_pct,
+            )
 
     return {
         "over_line": over_line,
@@ -234,6 +247,7 @@ def find_middle_between_lines(
         "hit_probability": hit_probability,
         "hit_probability_confidence": hit_probability_confidence,
         "true_ev_pct": true_ev_pct,
+        "verdict": verdict,
         "recommended_stake_units": recommended_stake_units,
     }
 

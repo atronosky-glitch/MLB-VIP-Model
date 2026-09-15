@@ -97,6 +97,24 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python -m src.worker
     envVars:
+      # Discord webhook URLs for the arb-middle-scan job's real-time
+      # alerts (src/worker.py::_deliver_new_opportunity_alerts, every
+      # ARB_MIDDLE_SCAN_INTERVAL_MINUTES). Three separate channels, no
+      # fallback between them -- leaving one unset just means that
+      # category never alerts, not that it spills into another channel.
+      # Found live 2026-09-15: none of these three keys were declared
+      # anywhere in this blueprint, so this worker service has never had
+      # a value for them unless manually added out-of-band in the Render
+      # dashboard -- which would fully explain zero alerts ever firing.
+      # Must be set manually in the Render dashboard (webhook URLs are
+      # credentials -- anyone holding one can post to that channel --
+      # so none are committed here).
+      - key: MLB_DISCORD_WEBHOOKS
+        sync: false
+      - key: MLB_DISCORD_WEBHOOKS_ARB_MIDDLE
+        sync: false
+      - key: MLB_DISCORD_WEBHOOKS_MIDDLE
+        sync: false
       - key: PYTHON_VERSION
         value: "3.12.5"
       - key: PYTHONPATH

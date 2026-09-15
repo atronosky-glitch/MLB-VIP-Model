@@ -582,6 +582,13 @@ def _render_arbitrage_card(opp: dict) -> None:
     """, unsafe_allow_html=True)
 
 
+_MIDDLE_VERDICT_BADGE = {
+    "WORTH_IT": '<span class="pill result-win" style="border-color:var(--win)">✅ WORTH IT</span>',
+    "NOT_WORTH_IT": '<span class="pill result-loss" style="border-color:var(--loss)">❌ NOT WORTH IT</span>',
+    "UNKNOWN": '<span class="pill">❓ UNKNOWN</span>',
+}
+
+
 def _render_middle_card(opp: dict) -> None:
     fresh = _freshness_label(opp.get("last_seen_at"))
     game_time = format_event_start_local(opp.get("event_start_time"))
@@ -589,19 +596,23 @@ def _render_middle_card(opp: dict) -> None:
     hit_prob = opp.get("hit_probability")
     true_ev = opp.get("true_ev_pct")
     stake = opp.get("recommended_stake_units")
+    verdict = opp.get("verdict")
+    verdict_badge = _MIDDLE_VERDICT_BADGE.get(verdict, _MIDDLE_VERDICT_BADGE["UNKNOWN"])
     if hit_prob is not None and true_ev is not None:
         ev_class = "result-win" if true_ev > 0 else "result-loss"
-        stake_label = f"{stake:.2f}u" if stake else "skip — no edge"
+        # A stake number is only ever shown for a WORTH_IT verdict --
+        # recommended_stake_units is None (not 0) for anything else, so
+        # this never mistakes "no recommendation" for "bet 0 units."
+        stake_part = f" · Suggested stake: {stake:.2f}u" if verdict == "WORTH_IT" and stake else ""
         ev_line = (
             f'<div class="unit-line">Est. hit chance: {hit_prob * 100:.1f}% '
-            f'· True EV: <span class="{ev_class}">{true_ev:+.2f}%</span> '
-            f'· Suggested stake: {stake_label}</div>'
+            f'· True EV: <span class="{ev_class}">{true_ev:+.2f}%</span>{stake_part}</div>'
         )
     else:
         ev_line = '<div class="pick-meta">Hit chance not estimable for this window (thin alt-line data)</div>'
     st.markdown(f"""
     <div class="pick">
-      <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])}</div>
+      <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])} {verdict_badge}</div>
       <div class="pick-meta">{opp.get('matchup', '')} · {_market_label(opp['market_type'])} · <span class="edge">{fresh}</span></div>
       <div class="pick-meta">{status_label} · Game starts: {game_time}</div>
       <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>

@@ -274,6 +274,7 @@ def test_find_middle_between_lines_without_hit_probability_leaves_new_fields_non
     assert result["hit_probability"] is None
     assert result["hit_probability_confidence"] == "UNAVAILABLE"
     assert result["true_ev_pct"] is None
+    assert result["verdict"] == "UNKNOWN"
     assert result["recommended_stake_units"] is None
 
 
@@ -288,7 +289,59 @@ def test_find_middle_between_lines_with_hit_probability_computes_true_ev_and_sta
     assert result["hit_probability_confidence"] == "DEVIGGED"
     expected_ev = 0.15 * result["best_case_roi_pct"] + 0.85 * result["worst_case_roi_pct"]
     assert abs(result["true_ev_pct"] - round(expected_ev, 4)) < 1e-6
+    assert result["verdict"] == "WORTH_IT"
     assert result["recommended_stake_units"] is not None
+    assert result["recommended_stake_units"] > 0
+
+
+def test_find_middle_between_lines_not_worth_it_gets_no_stake_units():
+    """A window whose true EV is negative must be labeled NOT_WORTH_IT
+    and carry NO stake recommendation at all -- not 0, which would read
+    as 'a real recommendation of size zero' instead of 'no
+    recommendation.' true_ev_pct itself must still be visible so it's
+    clear WHY."""
+    over_price = {"sportsbook": "BookA", "price": -110, "decimal_odds": 1.909}
+    under_price = {"sportsbook": "BookB", "price": -110, "decimal_odds": 1.909}
+    result = find_middle_between_lines(
+        8.5, over_price, 9.5, under_price,
+        hit_probability=0.01, hit_probability_confidence="DEVIGGED",
+    )
+    assert result["true_ev_pct"] is not None
+    assert result["true_ev_pct"] <= 0
+    assert result["verdict"] == "NOT_WORTH_IT"
+    assert result["recommended_stake_units"] is None
+
+
+def test_find_middle_opportunities_verdict_and_stake_units_stay_consistent():
+    """Invariant check across every opportunity find_middle_opportunities
+    returns, regardless of the specific data: WORTH_IT <=> a positive
+    stake is attached; NOT_WORTH_IT/UNKNOWN <=> no stake is attached.
+    Never a 0-unit "recommendation" standing in for "don't bet.\""""
+    rows = [
+        _row("E1", "GAME", "game_total_ou", "OVER", "BookA", -122, 1.8197, 8.5),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "BookA", 122, 2.2200, 8.5),
+        _row("E1", "GAME", "game_total_ou", "OVER", "BookA", 150, 2.50, 9.5),
+        _row("E1", "GAME", "game_total_ou", "UNDER", "BookA", -150, 1.6667, 9.5),
+        _row("E2", "GAME", "game_total_ou", "OVER", "BookA", -400, 1.25, 6.5),
+        _row("E2", "GAME", "game_total_ou", "UNDER", "BookA", 400, 5.00, 6.5),
+        _row("E2", "GAME", "game_total_ou", "OVER", "BookA", 400, 5.00, 8.5),
+        _row("E2", "GAME", "game_total_ou", "UNDER", "BookA", -400, 1.25, 8.5),
+        _row("E3", "P1", "batting_totalBases_ou", "OVER", "BookA", -110, 1.909, 1.5),
+        _row("E3", "P1", "batting_totalBases_ou", "UNDER", "BookB", -110, 1.909, 2.5),
+    ]
+    results = find_middle_opportunities(rows, max_worst_case_loss_pct=100.0)
+    assert len(results) >= 1
+    for opp in results:
+        if opp["verdict"] == "WORTH_IT":
+            assert opp["recommended_stake_units"] is not None
+            assert opp["recommended_stake_units"] > 0
+            assert opp["true_ev_pct"] is not None and opp["true_ev_pct"] > 0
+        else:
+            assert opp["recommended_stake_units"] is None
+            if opp["verdict"] == "UNKNOWN":
+                assert opp["hit_probability_confidence"] == "UNAVAILABLE"
+            else:  # NOT_WORTH_IT
+                assert opp["true_ev_pct"] is not None and opp["true_ev_pct"] <= 0
 
 
 def test_find_middle_opportunities_attaches_hit_probability_when_deviggable():

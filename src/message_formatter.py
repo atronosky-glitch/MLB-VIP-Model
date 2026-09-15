@@ -263,6 +263,13 @@ def _arbitrage_line(o: dict[str, Any]) -> str:
     )
 
 
+_VERDICT_LABELS = {
+    "WORTH_IT": "✅ WORTH IT",
+    "NOT_WORTH_IT": "❌ NOT WORTH IT",
+    "UNKNOWN": "❓ UNKNOWN (not enough data)",
+}
+
+
 def _middle_line(o: dict[str, Any]) -> str:
     player = o.get("player_name") or "?"
     market = (o.get("market_type") or "?").replace("_", " ").title()
@@ -271,7 +278,8 @@ def _middle_line(o: dict[str, Any]) -> str:
     worst = o.get("worst_case_roi_pct")
     best_str = f"{best:+.2f}%" if best is not None else "?"
     worst_str = f"{worst:+.2f}%" if worst is not None else "?"
-    header = f"**{player}** — {market}" + (f" ({matchup})" if matchup else "")
+    verdict_label = _VERDICT_LABELS.get(o.get("verdict"), _VERDICT_LABELS["UNKNOWN"])
+    header = f"**[{verdict_label}]** {player} — {market}" + (f" ({matchup})" if matchup else "")
     lines = [
         header,
         f"  Over {o.get('over_line', '?')} @ **{o.get('over_sportsbook', '?')}** ({_american(o.get('over_price'))})"
@@ -283,17 +291,21 @@ def _middle_line(o: dict[str, Any]) -> str:
 
 
 def _middle_ev_line(o: dict[str, Any]) -> str:
-    """Devigged hit probability + true EV + Kelly-sized stake, when
-    estimable — see src/middling.py::estimate_middle_hit_probability.
-    Best/worst-case ROI alone don't say how likely the window is to hit,
-    which is what this line adds."""
+    """Devigged hit probability + true EV, plus a Kelly-sized stake ONLY
+    for a WORTH_IT verdict -- see src/middling.py::estimate_middle_hit_
+    probability. Best/worst-case ROI alone don't say how likely the
+    window is to hit, which is what this line adds. A NOT_WORTH_IT or
+    UNKNOWN middle never shows a stake number, not even 0 -- that would
+    read as a real sizing recommendation instead of "don't bet this.\""""
     hit_prob = o.get("hit_probability")
     true_ev = o.get("true_ev_pct")
-    stake = o.get("recommended_stake_units")
     if hit_prob is None or true_ev is None:
         return "  Hit probability: not estimable (thin alt-line data) — treat this one with caution"
-    stake_str = f"{stake:.2f}u" if stake else "0u (no edge — skip)"
-    return f"  Est. hit chance: {hit_prob * 100:.1f}% | True EV: {true_ev:+.2f}% | Suggested stake: {stake_str}"
+    base = f"  Est. hit chance: {hit_prob * 100:.1f}% | True EV: {true_ev:+.2f}%"
+    stake = o.get("recommended_stake_units")
+    if o.get("verdict") == "WORTH_IT" and stake:
+        return f"{base} | Suggested stake: {stake:.2f}u"
+    return f"{base} | No stake — not worth betting"
 
 
 def _compact_line(rec: dict[str, Any]) -> str:

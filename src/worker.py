@@ -446,7 +446,13 @@ def _deliver_new_opportunity_alerts(conn: DB, config, results: dict[str, dict]) 
                 new_arbs = result.get("new_arbitrage") or []
                 if new_arbs and arb_urls:
                     deliver_arbitrage_alerts(new_arbs, arb_urls)
-                new_mids = result.get("new_middles") or []
+                # Only alert middles the model actually judges worth
+                # betting (verdict="WORTH_IT", see src/middling.py) --
+                # a NOT_WORTH_IT/UNKNOWN middle is still detected and
+                # persisted (so it shows in the dashboard), but pushing
+                # it to Discord as if it were an actionable alert would
+                # defeat the entire point of estimating true EV.
+                new_mids = [m for m in (result.get("new_middles") or []) if m.get("verdict") == "WORTH_IT"]
                 if new_mids and middle_urls:
                     deliver_middle_alerts(new_mids, middle_urls)
             except Exception:
