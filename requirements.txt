@@ -5,6 +5,8 @@ gspread>=6.1.0
 streamlit>=1.35.0,<2.0.0
 psycopg2-binary>=2.9.9
 cryptography>=42.0.0
+bcrypt>=4.0.0
+extra-streamlit-components>=0.1.60
 
 # Testing (dev only)
 pytest>=8.0.0

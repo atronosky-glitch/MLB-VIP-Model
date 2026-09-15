@@ -834,6 +834,35 @@ def db_conn():
             requests_last       INTEGER,
             cache_hit           INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS customer_accounts (
+            account_id             TEXT PRIMARY KEY,
+            email                  TEXT NOT NULL,
+            phone                  TEXT,
+            password_hash          TEXT NOT NULL,
+            email_verified         INTEGER NOT NULL DEFAULT 0,
+            email_verify_token     TEXT,
+            email_verify_sent_at   TEXT,
+            phone_verified         INTEGER NOT NULL DEFAULT 0,
+            marketing_consent      INTEGER NOT NULL DEFAULT 0,
+            marketing_consent_at   TEXT,
+            marketing_consent_version TEXT,
+            created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_accounts_email ON customer_accounts(email);
+        CREATE TABLE IF NOT EXISTS customer_sessions (
+            session_token   TEXT PRIMARY KEY,
+            account_id      TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at      TEXT NOT NULL,
+            last_seen_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS customer_settings (
+            account_id   TEXT PRIMARY KEY,
+            unit_usd     REAL,
+            state        TEXT,
+            updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     """)
 
     # Restore globals

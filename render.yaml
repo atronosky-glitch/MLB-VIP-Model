@@ -88,6 +88,23 @@ services:
         value: production
       - key: MLB_SHADOW_MODE
         value: "true"
+      # Customer accounts (src/customer_accounts.py) -- email
+      # verification via SendGrid. Reserved here (sync: false) so
+      # Render prompts for them in the dashboard rather than storing
+      # values in this blueprint; account creation itself works with
+      # these unset, it just can't send a verification email until
+      # they're filled in.
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_FROM_EMAIL
+        sync: false
+      - key: SITE_BASE_URL
+        sync: false
+      # Deliberately NOT declared here: MLB_CUSTOMER_FREE_ACCESS. Leaving
+      # it undeclared keeps today's code default ("true" -- full access,
+      # no account required) in effect until the operator explicitly
+      # sets it to "false" in the Render dashboard, a deliberate,
+      # separate decision this blueprint never makes on its own.
 
   # ── Background Worker (long-running service) ─────────────────────
   - type: worker

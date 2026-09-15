@@ -11,9 +11,11 @@ import hmac
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import altair as alt
+import extra_streamlit_components as stx
 import pandas as pd
 import streamlit as st
 
@@ -21,10 +23,18 @@ from database.db_manager import (
     get_connection, init_db, get_performance_baseline, get_today_in_configured_timezone,
     format_event_start_local, is_event_live, get_bet_links,
 )
+from src.customer_accounts import (
+    Account, SignUpError, sign_up, log_in, create_session, get_account_by_session,
+    delete_session, request_email_verification, verify_email_token,
+    get_settings as get_account_settings, save_settings as save_account_settings,
+    MARKETING_CONSENT_TEXT,
+)
 from src.grading import performance_summary, breakdown_by_field, assign_bucket, EV_BUCKETS
 from src.sportsbook_picker import render_sportsbook_picker
 from src.odds_api_client import TRACKED_BOOKMAKERS
 from src.tracker import compute_variable_stake
+
+SESSION_COOKIE_NAME = "mlb_vip_session"
 
 logger = logging.getLogger(__name__)
 
@@ -172,19 +182,104 @@ p,div,span,button { font-family:'Inter',sans-serif; }
 """, unsafe_allow_html=True)
 
 
-def _authorized_request() -> bool:
+def _authorized_request(account: "Account | None" = None) -> bool:
     """Staging entitlement adapter; replace with billing webhook/provider later.
 
     2026-09-09: full site access opened to everyone (operator decision —
     no paywall while the product is still being validated). To restore
     the token-gated behavior below, set MLB_CUSTOMER_FREE_ACCESS=false
     on the customer-site service — no code change needed either way.
+
+    2026-09-15: a real logged-in account (see src/customer_accounts.py)
+    is now an ADDITIONAL way to become authorized, checked only once
+    free access is off and the legacy shared token doesn't match —
+    neither of those two original paths is touched. In production this
+    means requiring a real account is a config flip
+    (MLB_CUSTOMER_FREE_ACCESS=false), not a code change: at that point
+    the only ways in are the legacy shared token (which the operator can
+    simply stop distributing) or signing up for a real account.
     """
     if os.getenv("MLB_CUSTOMER_FREE_ACCESS", "true").strip().lower() != "false":
         return True
     expected = os.getenv("MLB_CUSTOMER_ACCESS_TOKEN", "")
     supplied = st.query_params.get("access", "")
-    return bool(expected and supplied and hmac.compare_digest(supplied, expected))
+    if expected and supplied and hmac.compare_digest(supplied, expected):
+        return True
+    return account is not None
+
+
+def _get_cookie_manager() -> stx.CookieManager:
+    """One CookieManager per browser session (st.session_state, not
+    @st.cache_resource) -- confirmed live 2026-09-15: this Streamlit
+    version's cache-replay-rules policy explicitly forbids a widget-like
+    component call (which CookieManager's underlying getAll bidirectional
+    component call counts as) inside an @st.cache_resource/@st.cache_data
+    function, raising CachedWidgetWarning. session_state avoids that
+    entirely and is the correct scope anyway -- one manager per visitor,
+    not one shared globally across every visitor on the server."""
+    if "_cookie_manager" not in st.session_state:
+        st.session_state["_cookie_manager"] = stx.CookieManager(key="mlb_vip_cookie_manager")
+    return st.session_state["_cookie_manager"]
+
+
+def _get_session_token() -> str | None:
+    """Reads via st.context.cookies -- an official, public, SYNCHRONOUS
+    Streamlit API (added well before this version) that reads the raw
+    Cookie request header directly, no custom-component round-trip and
+    no race. extra_streamlit_components' CookieManager has no official
+    read equivalent this reliable (confirmed live 2026-09-15: a fresh
+    CookieManager's own initial getAll() component call doesn't resolve
+    on the first script run of a new page load, so .get(...) reliably
+    returned None even with a real cookie already sitting in the
+    browser) -- it's kept only for SETTING a cookie, since
+    st.context.cookies is read-only."""
+    return st.context.cookies.get(SESSION_COOKIE_NAME)
+
+
+def _set_session_cookie(token: str) -> None:
+    expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    _get_cookie_manager().set(SESSION_COOKIE_NAME, token, expires_at=expires_at, key="set_session_cookie")
+
+
+def _clear_session_cookie() -> None:
+    try:
+        _get_cookie_manager().delete(SESSION_COOKIE_NAME, key="delete_session_cookie")
+    except KeyError:
+        pass  # already absent -- nothing to clear
+
+
+def _current_account() -> "Account | None":
+    """Checks st.session_state first (set immediately after a
+    successful login/signup in this same session -- see
+    _get_session_token's docstring for why that write-side cookie set
+    can't be relied on synchronously within the SAME session), then
+    st.context.cookies (the official, synchronous read -- reliable on
+    a fresh page load, unlike the CookieManager component read)."""
+    token = st.session_state.get("_session_token") or _get_session_token()
+    if not token:
+        return None
+    conn = get_connection()
+    try:
+        return get_account_by_session(conn, token)
+    finally:
+        conn.close()
+
+
+def _log_out() -> None:
+    token = st.session_state.get("_session_token") or _get_session_token()
+    if token:
+        conn = get_connection()
+        try:
+            delete_session(conn, token)
+        finally:
+            conn.close()
+    _clear_session_cookie()
+    # Clear any per-account widget/session state so a different account
+    # logging in next (same tab, no reload) never briefly shows the
+    # previous account's identity or Bet Now settings before its own
+    # DB-loaded defaults land.
+    for key in ("bet_now_state", "bet_now_unit_usd", "_current_account_id", "_session_token"):
+        st.session_state.pop(key, None)
 
 
 def _market_label(value: str) -> str:
@@ -264,26 +359,47 @@ def _resolve_bet_link(raw_link: str | None, state: str | None, stake_usd: float 
     return url, None
 
 
-def _render_bet_now_settings() -> tuple[str | None, float | None]:
-    """State + $-per-unit inputs, remembered for this browser tab's
-    session only (st.session_state) -- this site has no login/cookie/
-    persistence system, so neither survives a reload or a future visit;
-    said so plainly rather than silently losing the setting. Returns
-    (state_abbreviation_or_None, dollars_per_unit_or_None)."""
-    with st.expander("⚙️ Bet Now settings (this visit only)", expanded=False):
+def _render_bet_now_settings(account: "Account | None" = None) -> tuple[str | None, float | None]:
+    """State + $-per-unit inputs. Logged in: loaded from and saved to
+    customer_settings via _save_bet_now_settings_on_change, so they
+    survive across visits. Logged out (only reachable in free-access
+    mode): remembered for this browser tab's session only, same as
+    before accounts existed -- said so plainly rather than silently
+    losing the setting. Returns (state_abbreviation_or_None,
+    dollars_per_unit_or_None)."""
+    saved_state, saved_unit_usd = None, None
+    if account is not None and "bet_now_state" not in st.session_state:
+        # Only seed from the DB on the very first render of this widget
+        # key in the session -- once the key exists, Streamlit's own
+        # session_state governs the displayed value on reruns (passing a
+        # different index=/value= after that point has no visible
+        # effect), which is what we want: an in-session edit should
+        # stick, not be clobbered back to the last-saved DB value.
+        saved = get_account_settings(get_connection(), account.account_id)
+        saved_state, saved_unit_usd = saved["state"], saved["unit_usd"]
+
+    label = "⚙️ Bet Now settings" if account is not None else "⚙️ Bet Now settings (this visit only)"
+    with st.expander(label, expanded=False):
         cols = st.columns(2)
+        state_options = ["Not set"] + _US_STATE_ABBREVIATIONS
         with cols[0]:
             state = st.selectbox(
-                "Your state", ["Not set"] + _US_STATE_ABBREVIATIONS, index=0, key="bet_now_state",
+                "Your state", state_options,
+                index=state_options.index(saved_state) if saved_state in state_options else 0,
+                key="bet_now_state", on_change=_save_bet_now_settings_on_change,
                 help="Needed for books whose bet slip link is state-specific (e.g. BetMGM).",
             )
         with cols[1]:
             unit_usd = st.number_input(
-                "$ per unit", min_value=0.0, value=st.session_state.get("bet_now_unit_usd", 0.0),
-                step=1.0, key="bet_now_unit_usd",
+                "$ per unit", min_value=0.0,
+                value=st.session_state.get("bet_now_unit_usd", saved_unit_usd or 0.0),
+                step=1.0, key="bet_now_unit_usd", on_change=_save_bet_now_settings_on_change,
                 help="Used to show a suggested dollar stake next to each pick (units × $/unit).",
             )
-        st.caption("Remembered only while this tab stays open — not saved for your next visit.")
+        if account is not None:
+            st.caption("Saved to your account — remembered on your next visit too.")
+        else:
+            st.caption("Remembered only while this tab stays open — not saved for your next visit.")
     return (None if state == "Not set" else state), (unit_usd or None)
 
 
@@ -445,6 +561,158 @@ def _attach_bet_links(
             links.get((eid, pid, opp.get("market_type"), opp.get("under_line"), "UNDER", opp.get("under_sportsbook")))
             if eid and pid else None
         )
+
+
+def _save_bet_now_settings_on_change() -> None:
+    """on_change callback for the Bet Now settings widgets -- a
+    module-level function (not a closure) reading the current account
+    id out of session_state, matching Streamlit's own on_change
+    calling convention. A no-op for a logged-out visitor (nothing to
+    save against)."""
+    account_id = st.session_state.get("_current_account_id")
+    if not account_id:
+        return
+    conn = get_connection()
+    try:
+        state = st.session_state.get("bet_now_state")
+        unit_usd = st.session_state.get("bet_now_unit_usd")
+        save_account_settings(
+            conn, account_id, (unit_usd or None), (None if state == "Not set" else state),
+        )
+    finally:
+        conn.close()
+
+
+def _render_auth_ui() -> None:
+    """Sign-up / log-in forms, shown instead of the site whenever a
+    real account is required (MLB_CUSTOMER_FREE_ACCESS=false) and the
+    visitor isn't authorized yet."""
+    st.subheader("Sign in to continue")
+    tab_login, tab_signup = st.tabs(["Log In", "Sign Up"])
+
+    with tab_login:
+        with st.form("login_form"):
+            email = st.text_input("Email", key="login_email")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Log In", type="primary", use_container_width=True)
+        if submitted:
+            conn = get_connection()
+            try:
+                account = log_in(conn, email, password)
+                if account is None:
+                    st.error("Invalid email or password.")
+                else:
+                    token = create_session(conn, account.account_id)
+                    _set_session_cookie(token)
+                    # Confirmed live 2026-09-15: extra_streamlit_components'
+                    # cookie-set component call needs real wall-clock time
+                    # to actually execute its JS in the browser before a
+                    # rerun tears the component down -- an immediate
+                    # st.rerun() here reliably wrote NOTHING to
+                    # document.cookie in testing, a known, documented
+                    # limitation of this library (not fixable by call
+                    # order alone). This session doesn't depend on the
+                    # cookie either way (see _current_account's
+                    # st.session_state-first lookup) -- this brief pause
+                    # is purely so the cookie is actually there for a
+                    # FUTURE reload/visit.
+                    time.sleep(1)
+                    st.session_state["_session_token"] = token
+                    st.session_state["_current_account_id"] = account.account_id
+                    st.rerun()
+            finally:
+                conn.close()
+
+    with tab_signup:
+        with st.form("signup_form"):
+            email = st.text_input("Email", key="signup_email")
+            phone = st.text_input("Phone (optional)", key="signup_phone")
+            password = st.text_input("Password", type="password", key="signup_password")
+            password_confirm = st.text_input("Confirm password", type="password", key="signup_password_confirm")
+            consent = st.checkbox(MARKETING_CONSENT_TEXT, value=False, key="signup_consent")
+            st.caption("See our [Privacy Policy](?page=privacy) and [Terms of Service](?page=terms).")
+            submitted = st.form_submit_button("Sign Up", type="primary", use_container_width=True)
+        if submitted:
+            if password != password_confirm:
+                st.error("Passwords don't match.")
+            else:
+                conn = get_connection()
+                try:
+                    try:
+                        account = sign_up(conn, email, phone, password, consent)
+                    except SignUpError as exc:
+                        st.error(str(exc))
+                    else:
+                        token = create_session(conn, account.account_id)
+                        _set_session_cookie(token)
+                        # See the matching comment in the log-in handler
+                        # above -- this pause is purely so the cookie
+                        # commits for a FUTURE reload; this session
+                        # already doesn't depend on it via session_state.
+                        time.sleep(1)
+                        st.session_state["_session_token"] = token
+                        st.session_state["_current_account_id"] = account.account_id
+                        request_email_verification(conn, account, base_url=os.environ.get("SITE_BASE_URL"))
+                        st.rerun()
+                finally:
+                    conn.close()
+
+
+def _render_verify_email_banner(account: "Account | None") -> None:
+    if account is not None and not account.email_verified:
+        st.info("Verify your email to make sure you never miss an update — check your inbox for a link from us.")
+
+
+def _handle_email_verification_query_param() -> None:
+    """Handles a ?verify=<token> landing link from the verification
+    email -- shown as a one-time banner, then the normal page continues
+    underneath (never a dead end / separate page)."""
+    token = st.query_params.get("verify")
+    if not token:
+        return
+    conn = get_connection()
+    try:
+        if verify_email_token(conn, token):
+            st.success("Email verified — thanks!")
+        else:
+            st.warning("That verification link is invalid or already used.")
+    finally:
+        conn.close()
+    st.query_params.pop("verify", None)
+
+
+_PRIVACY_POLICY_DRAFT = """
+**DRAFT — not yet reviewed by a lawyer. Replace before relying on this for a real launch.**
+
+We collect the email, phone number, and account settings you provide when you create an
+account. Email and phone are used to operate your account (e.g. email verification) and,
+only if you opted in at signup, for marketing messages from us. You can withdraw marketing
+consent at any time (reply STOP to any text, or contact us to update your email preferences).
+We do not sell your personal information to third parties.
+"""
+
+_TERMS_OF_SERVICE_DRAFT = """
+**DRAFT — not yet reviewed by a lawyer. Replace before relying on this for a real launch.**
+
+This site provides sports-betting research and analysis for informational purposes only.
+It does not guarantee profit or place bets on your behalf. You are responsible for
+complying with the laws and sportsbook terms that apply to you. By creating an account you
+agree to these terms.
+"""
+
+
+def _render_policy_page(page: str) -> bool:
+    """Returns True (and renders) if `page` is a policy-page query
+    param -- caller should stop rendering the normal site in that case."""
+    if page == "privacy":
+        st.subheader("Privacy Policy")
+        st.markdown(_PRIVACY_POLICY_DRAFT)
+        return True
+    if page == "terms":
+        st.subheader("Terms of Service")
+        st.markdown(_TERMS_OF_SERVICE_DRAFT)
+        return True
+    return False
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -855,7 +1123,30 @@ def _render_middle_card(opp: dict, state: str | None = None, unit_usd: float | N
     """, unsafe_allow_html=True)
 
 
-authorized = _authorized_request()
+if _render_policy_page(st.query_params.get("page", "")):
+    st.stop()
+
+_handle_email_verification_query_param()
+
+current_account = _current_account()
+if current_account is not None:
+    st.session_state["_current_account_id"] = current_account.account_id
+
+authorized = _authorized_request(current_account)
+require_account = os.getenv("MLB_CUSTOMER_FREE_ACCESS", "true").strip().lower() == "false"
+
+if require_account and not authorized:
+    st.markdown("""
+    <div class="topnav">
+      <div class="topnav-brand">
+        <span class="topnav-mark">VIP</span>
+        <span class="topnav-word">Sharp Market Intelligence</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+    _render_auth_ui()
+    st.stop()
+
 try:
     data = load_customer_data(authorized)
 except Exception:
@@ -881,6 +1172,12 @@ st.markdown(f"""
   <span class="pill">{today} · {'FULL ACCESS' if authorized else 'PUBLIC VIEW'}</span>
 </div>
 """, unsafe_allow_html=True)
+
+if current_account is not None:
+    _render_verify_email_banner(current_account)
+    if st.button("Log out", key="log_out_btn"):
+        _log_out()
+        st.rerun()
 
 if st.session_state.view_mode is not None:
     if st.button("← All Options", key="back_to_menu"):
@@ -947,7 +1244,7 @@ elif st.session_state.view_mode == "ev":
             st.success("No Top Picks Yet")
             st.caption("The model has not identified an opportunity meeting today's qualification standards.")
     else:
-        bet_now_state, bet_now_unit_usd = _render_bet_now_settings()
+        bet_now_state, bet_now_unit_usd = _render_bet_now_settings(current_account)
         st.subheader("Today's Top Picks — Upcoming")
         if data["upcoming"]:
             with st.expander("Filter upcoming picks", expanded=False):
@@ -1082,7 +1379,7 @@ elif st.session_state.view_mode == "arbitrage":
     if not authorized:
         st.info("Subscriber access unlocks live arbitrage opportunities.")
     else:
-        arb_bet_now_state, _ = _render_bet_now_settings()
+        arb_bet_now_state, _ = _render_bet_now_settings(current_account)
         if not data["active_arbitrage"]:
             st.success("No arbitrage opportunities right now.")
             st.caption("Rechecked every ~15 minutes as odds move.")
@@ -1124,7 +1421,7 @@ elif st.session_state.view_mode == "middling":
     if not authorized:
         st.info("Subscriber access unlocks live middling opportunities.")
     else:
-        mid_bet_now_state, mid_bet_now_unit_usd = _render_bet_now_settings()
+        mid_bet_now_state, mid_bet_now_unit_usd = _render_bet_now_settings(current_account)
         if not data["active_middles"]:
             st.success("No middle opportunities right now.")
             st.caption("Rechecked every ~15 minutes as odds move.")

@@ -1696,6 +1696,58 @@ def init_db(db_path: str | None = None) -> None:
         "CREATE INDEX IF NOT EXISTS idx_lr_category ON learning_recommendations(category)"
     )
 
+    # Customer accounts (2026-09-15): real per-customer identity for the
+    # customer-facing site (src/customer_view.py), replacing the
+    # single-shared-secret access gate. Server-side session store
+    # (customer_sessions), not a stateless/signed token -- logout is a
+    # single DELETE, no JWT-blocklist problem, and it matches this
+    # schema's existing plain-TEXT-key, no-FK convention. phone_verified
+    # stays permanently 0 for now (no SMS verification service is wired
+    # up -- see src/customer_accounts.py's module docstring) but the
+    # column exists so that can be turned on later without a schema
+    # rework. marketing_consent_at/_version form an audit trail of
+    # exactly what consent text a customer agreed to and when --
+    # required for TCPA/CAN-SPAM-aware marketing use of the phone/email
+    # collected here, not just a UI nicety.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS customer_accounts (
+            account_id             TEXT PRIMARY KEY,
+            email                  TEXT NOT NULL,
+            phone                  TEXT,
+            password_hash          TEXT NOT NULL,
+            email_verified         INTEGER NOT NULL DEFAULT 0,
+            email_verify_token     TEXT,
+            email_verify_sent_at   TEXT,
+            phone_verified         INTEGER NOT NULL DEFAULT 0,
+            marketing_consent      INTEGER NOT NULL DEFAULT 0,
+            marketing_consent_at   TEXT,
+            marketing_consent_version TEXT,
+            created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_accounts_email ON customer_accounts(email)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS customer_sessions (
+            session_token   TEXT PRIMARY KEY,
+            account_id      TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at      TEXT NOT NULL,
+            last_seen_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_customer_sessions_account ON customer_sessions(account_id)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS customer_settings (
+            account_id   TEXT PRIMARY KEY,
+            unit_usd     REAL,
+            state        TEXT,
+            updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
     try:
         diagnostic = verify_required_schema(conn)
         conn.commit()
