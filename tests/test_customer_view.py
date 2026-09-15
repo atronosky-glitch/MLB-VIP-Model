@@ -42,6 +42,22 @@ def test_arbitrage_and_middle_cards_show_league_and_never_the_literal_none():
     assert source.count("_league_badge(opp)") >= 2
 
 
+def test_customer_facing_middles_are_filtered_to_confirmed_positive_ev_only():
+    """2026-09-15 (operator request): a middle must only ever be shown
+    to customers as something to bet on if it's a CONFIRMED positive-EV
+    bet (verdict == WORTH_IT) -- NOT_WORTH_IT and UNKNOWN ones must not
+    appear at all, not even with a "not worth it"/"unknown" label. The
+    settled/graded history stays unfiltered (a track record, not a live
+    pick list)."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert (
+        'active_middles = [\n'
+        '                m for m in get_active_middle_opportunities(conn) if m.get("verdict") == "WORTH_IT"\n'
+        '            ]'
+    ) in source
+    assert "graded_middles = get_graded_middle_opportunities(conn)" in source
+
+
 def test_arbitrage_and_middling_sections_are_subscriber_gated():
     """2026-09-09: live arbitrage/middling opportunities must only be
     shown in full to authorized subscribers -- publicly telegraphing a

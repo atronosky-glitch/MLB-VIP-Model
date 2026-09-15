@@ -354,7 +354,16 @@ def load_customer_data(authorized: bool) -> dict:
             )
             active_arbitrage = get_active_arbitrage_opportunities(conn)
             graded_arbitrage = get_graded_arbitrage_opportunities(conn)
-            active_middles = get_active_middle_opportunities(conn)
+            # Only ever show a middle that's a CONFIRMED positive-EV bet
+            # (verdict == WORTH_IT) -- 2026-09-15 (operator request): a
+            # wide-but-unlikely window or one we genuinely can't estimate
+            # (UNKNOWN) shouldn't be presented as something to bet on at
+            # all, not even with a "not worth it"/"unknown" label.
+            # graded_middles (settled history) is left unfiltered -- it's
+            # a track record of what WAS shown, not a live pick list.
+            active_middles = [
+                m for m in get_active_middle_opportunities(conn) if m.get("verdict") == "WORTH_IT"
+            ]
             graded_middles = get_graded_middle_opportunities(conn)
 
         return {
