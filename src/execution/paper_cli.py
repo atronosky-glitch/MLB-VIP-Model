@@ -236,7 +236,11 @@ def paper_stats(today: bool, days: int | None) -> int:
         print(f"Gross payout: ${stats['gross_payout']}")
         print(f"Fees: ${stats['fees']}")
         print(f"Realized P&L: ${stats['realized_pnl']}")
-        print(f"Units won/lost: {stats['units_won_lost']}u")
+        # Decimal division preserves the divisor's exponent, so a $0 P&L
+        # over a float-derived unit size can internally be Decimal('0E+1')
+        # -- the ``:f`` format spec renders it as plain "0", never
+        # scientific notation, without rounding the value itself.
+        print(f"Units won/lost: {stats['units_won_lost']:f}u")
         print(f"ROI: {stats['roi_pct']:.2f}%")
         print(f"Avg net EV at entry: {stats['avg_net_ev_at_entry']:.2f}%")
         print(f"Best trade: {stats['best_trade']}")

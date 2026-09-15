@@ -77,6 +77,35 @@ class TestPublicMarketDataCallsCarryNoAuth:
         assert markets[0].id == "will-x-happen"
         assert markets[0].status == "active"
 
+    def test_get_markets_defaults_to_active_open_markets(self, provider):
+        """Confirmed live 2026-09-14: /v1/markets with no query params
+        returns closed/historical markets (some over a year old) ahead
+        of open ones, silently starving every caller of real matches.
+        get_markets() must default to active=true&closed=false."""
+        resp = _FakeResp(200, {"markets": []})
+        with mock.patch.object(provider.session, "get", return_value=resp) as mg:
+            provider.get_markets()
+        params = mg.call_args[1]["params"]
+        assert params["active"] == "true"
+        assert params["closed"] == "false"
+
+    def test_get_markets_caller_override_wins_over_the_default(self, provider):
+        resp = _FakeResp(200, {"markets": []})
+        with mock.patch.object(provider.session, "get", return_value=resp) as mg:
+            provider.get_markets(active="false", closed="true")
+        params = mg.call_args[1]["params"]
+        assert params["active"] == "false"
+        assert params["closed"] == "true"
+
+    def test_get_markets_still_passes_through_other_filters(self, provider):
+        resp = _FakeResp(200, {"markets": []})
+        with mock.patch.object(provider.session, "get", return_value=resp) as mg:
+            provider.get_markets(limit=200)
+        params = mg.call_args[1]["params"]
+        assert params["limit"] == 200
+        assert params["active"] == "true"
+        assert params["closed"] == "false"
+
     def test_get_market_by_slug(self, provider):
         resp = _FakeResp(200, {"market": {"slug": "will-x-happen", "title": "Will X?"}})
         with mock.patch.object(provider.session, "get", return_value=resp) as mg:

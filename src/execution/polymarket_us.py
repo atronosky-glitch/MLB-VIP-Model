@@ -158,7 +158,17 @@ class PolymarketUSProvider(PredictionMarketProvider):
     # -- read-only interface (public market data) ---------------------
 
     def get_markets(self, **filters: Any) -> list[Market]:
-        body = self._public_get("/v1/markets", params=filters or None)
+        """List markets. Defaults to currently open ones (``active=true,
+        closed=false``) -- confirmed live 2026-09-14 that ``/v1/markets``
+        with NO query params returns closed/historical markets (some
+        over a year old) ahead of open ones, which silently starved
+        every caller (scan-opportunities, paper-scan, inspect-markets,
+        inventory-report, live-scan) of real matches. Callers can still
+        override either filter explicitly (e.g. to inspect closed
+        markets) -- an explicit ``active``/``closed`` kwarg here always
+        wins over this default."""
+        params = {"active": "true", "closed": "false", **filters}
+        body = self._public_get("/v1/markets", params=params)
         return [
             Market(
                 id=m.get("slug", m.get("id", "")),

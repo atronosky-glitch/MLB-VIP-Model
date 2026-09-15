@@ -127,6 +127,22 @@ class TestDailyStats:
         assert stats["trades"] == 0
         assert stats["realized_pnl"] == Decimal("0")
 
+    def test_zero_pnl_units_display_as_plain_zero_not_scientific_notation(self, db_conn):
+        """Real bug found live 2026-09-14: Decimal division preserves the
+        divisor's exponent, so 0 realized_pnl / a float-derived unit size
+        (e.g. Decimal(str(10.0))) can internally be Decimal('0E+1'), which
+        `str()`/a bare f-string renders as "0E+1" instead of "0" in
+        `paper-stats --today`. The VALUE stays full precision (never
+        rounded/quantized -- see test_units_won_lost_via_daily_stats in
+        test_paper_broker.py, which needs 6 decimal places preserved
+        exactly); only display must avoid scientific notation, via the
+        ``:f`` format spec used in src/execution/paper_cli.py."""
+        store.get_or_create_account(db_conn, Decimal("1000"))
+        stats = portfolio.compute_daily_stats(db_conn, Decimal(str(10.0)))
+        assert stats["units_won_lost"] == Decimal("0")
+        assert "E" not in f"{stats['units_won_lost']:f}"
+        assert "E" not in f"{stats['roi_pct']:f}"
+
     def test_one_winning_trade(self, db_conn):
         store.get_or_create_account(db_conn, Decimal("1000"))
         order_id = store.persist_paper_order(db_conn, _order(approved_stake=Decimal("10")))
