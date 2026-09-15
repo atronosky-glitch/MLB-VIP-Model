@@ -67,11 +67,18 @@ def parse_game_odds(
                     continue  # not a game market this sport registers
 
                 for outcome in market.get("outcomes") or []:
+                    # Outcome-level link is the most specific (a direct
+                    # bet-slip deep link on supporting books); fall back
+                    # to market- then bookmaker-level per The Odds API's
+                    # own documented hierarchy for includeLinks=true --
+                    # same as src/odds_api_props_parser.py's identical
+                    # handling, confirmed live 2026-09-15.
+                    bet_link = outcome.get("link") or market.get("link") or bookmaker.get("link")
                     row = _build_row(
                         event_id=event_id, home_team=home_team, away_team=away_team,
                         book_name=book_name, book_last_update=book_last_update,
                         market_key=market_key, market_type=market_type, outcome=outcome,
-                        display_name_map=display_name_map,
+                        display_name_map=display_name_map, bet_link=bet_link,
                     )
                     audit_row = dict(row)
                     audit_row["excluded"] = 1 if row["validation_status"] != "VALID" else 0
@@ -87,7 +94,7 @@ def _build_row(
     *, event_id: str, home_team: str, away_team: str,
     book_name: str, book_last_update: str | None,
     market_key: str, market_type: str, outcome: dict,
-    display_name_map: dict[str, str],
+    display_name_map: dict[str, str], bet_link: str | None = None,
 ) -> dict:
     captured_at = datetime.now(timezone.utc).isoformat()
     observation_time = ""
@@ -188,6 +195,7 @@ def _build_row(
         "validation_reason": "; ".join(issues) if issues else "OK",
         "captured_at": captured_at,
         "observation_time": observation_time,
+        "bet_link": bet_link,
     }
 
 

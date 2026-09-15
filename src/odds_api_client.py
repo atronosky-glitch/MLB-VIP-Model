@@ -210,7 +210,7 @@ class OddsAPIClient:
         the next ~24h of real games) — still worth passing explicitly for
         any sport where that assumption might not hold.
         """
-        params = {"markets": markets, "oddsFormat": odds_format}
+        params = {"markets": markets, "oddsFormat": odds_format, "includeLinks": "true"}
         if bookmakers:
             params["bookmakers"] = bookmakers
         else:
@@ -232,8 +232,15 @@ class OddsAPIClient:
     ) -> tuple[dict, bool]:
         """Per-event odds (used for player props). Same credit formula —
         and same *bookmakers*-takes-priority-over-*regions* behavior — as
-        get_odds; see that docstring."""
-        params = {"markets": markets, "oddsFormat": odds_format}
+        get_odds; see that docstring.
+
+        ``includeLinks=true`` is always sent -- confirmed live 2026-09-15
+        against real NFL player-prop markets: adds a per-outcome
+        ``link`` field (a direct bet-slip deep link for supporting
+        books -- DraftKings/FanDuel/BetMGM/ESPN Bet/Hard Rock
+        Bet/BetRivers all confirmed live), with no extra API credit
+        cost and no plan-tier gate found in testing."""
+        params = {"markets": markets, "oddsFormat": odds_format, "includeLinks": "true"}
         if bookmakers:
             params["bookmakers"] = bookmakers
         else:

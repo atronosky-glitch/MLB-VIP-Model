@@ -397,6 +397,12 @@ _PLAYER_PROP_MIGRATIONS = [
     ("team_id", "TEXT DEFAULT ''"),
     ("team_name", "TEXT DEFAULT ''"),
     ("league", "TEXT DEFAULT 'MLB'"),
+    # 2026-09-15: a per-outcome sportsbook bet-slip deep link, captured
+    # from The Odds API's includeLinks=true response (see
+    # src/odds_api_props_parser.py::_build_prop_row) -- powers the
+    # customer-facing "Bet Now" button. Null when the book doesn't
+    # support it or none was returned -- never fabricated.
+    ("bet_link", "TEXT"),
 ]
 
 
@@ -631,7 +637,8 @@ def init_db(db_path: str | None = None) -> None:
             mapping_method      TEXT DEFAULT '',
             validation_reason   TEXT DEFAULT '',
             captured_at         TEXT,
-            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            bet_link            TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_odds_event ON odds(event_id);
@@ -1875,14 +1882,16 @@ def save_player_prop_batch(
                  team_id, team_name, market_type, market_group_key,
                  side, line, price, decimal_odds, is_alt_line, available,
                  validation_status, mapping_confidence, mapping_method,
-                 validation_reason, captured_at)
+                 validation_reason, captured_at, bet_link)
             VALUES
                 (:event_id, :odd_id, :sportsbook, :player_id, :player_name,
                  :team_id, :team_name, :market_type, :market_group_key,
                  :side, :line, :price, :decimal_odds, :is_alt_line, :available,
                  :validation_status, :mapping_confidence, :mapping_method,
-                 :validation_reason, :captured_at)
+                 :validation_reason, :captured_at, :bet_link)
         """
+        for row in rows:
+            row.setdefault("bet_link", None)
         conn.executemany(sql, rows)
 
         if audit_rows:
@@ -1912,6 +1921,47 @@ def save_player_prop_batch(
         raise
 
     return len(rows)
+
+
+def get_bet_links(conn: DB, keys: list[tuple]) -> dict[tuple, str]:
+    """Freshest ``bet_link`` per (event_id, player_id, market_type, line,
+    side, sportsbook) key -- powers the customer-facing "Bet Now" button
+    (see src/customer_view.py). ``keys`` is a list of those 6-tuples,
+    exactly matching the columns already stored on each
+    historical_recommendations row. A key with no matching link (book
+    doesn't support it, or nothing captured yet) is simply absent from
+    the result -- never a guessed or stale link.
+
+    Filters by event_id first (a much smaller candidate set than the
+    full table) then matches the rest of the key and picks the newest
+    ``captured_at`` in Python -- avoids a fragile, backend-specific
+    dynamic tuple-IN-list SQL query across the SQLite/Postgres split
+    this repo supports."""
+    if not keys:
+        return {}
+    event_ids = sorted({k[0] for k in keys if k[0]})
+    if not event_ids:
+        return {}
+    placeholders = ",".join("?" * len(event_ids))
+    rows = conn.execute(
+        f"""SELECT event_id, player_id, market_type, line, side, sportsbook, bet_link, captured_at
+            FROM player_prop_odds
+            WHERE event_id IN ({placeholders}) AND bet_link IS NOT NULL""",
+        tuple(event_ids),
+    ).fetchall()
+
+    wanted = set(keys)
+    freshest: dict[tuple, tuple[str, str]] = {}
+    for r in rows:
+        d = dict(r)
+        key = (d["event_id"], d["player_id"], d["market_type"], d["line"], d["side"], d["sportsbook"])
+        if key not in wanted:
+            continue
+        existing = freshest.get(key)
+        if existing is None or (d["captured_at"] or "") > existing[1]:
+            freshest[key] = (d["bet_link"], d["captured_at"] or "")
+
+    return {key: link for key, (link, _) in freshest.items()}
 
 
 # ==================================================================

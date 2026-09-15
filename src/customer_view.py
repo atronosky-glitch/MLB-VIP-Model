@@ -10,6 +10,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import altair as alt
@@ -18,11 +19,12 @@ import streamlit as st
 
 from database.db_manager import (
     get_connection, init_db, get_performance_baseline, get_today_in_configured_timezone,
-    format_event_start_local, is_event_live,
+    format_event_start_local, is_event_live, get_bet_links,
 )
 from src.grading import performance_summary, breakdown_by_field, assign_bucket, EV_BUCKETS
 from src.sportsbook_picker import render_sportsbook_picker
 from src.odds_api_client import TRACKED_BOOKMAKERS
+from src.tracker import compute_variable_stake
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,10 @@ p,div,span,button { font-family:'Inter',sans-serif; }
 .check-mark { display:inline-flex; align-items:center; justify-content:center; width:1.25rem; height:1.25rem; border-radius:4px; border:1px solid var(--accent); color:var(--accent); font-size:.7rem; font-weight:800; flex:none; }
 .hero-cta { margin:.3rem 0 1.4rem; display:flex; gap:.75rem; flex-wrap:wrap; }
 .btn-primary { background:var(--accent); color:#fff; font-weight:700; padding:.68rem 1.3rem; border-radius:6px; text-decoration:none; font-size:.9rem; display:inline-block; }
+.bet-now-row { display:flex; justify-content:flex-end; align-items:center; gap:.6rem; margin-top:.75rem; flex-wrap:wrap; }
+.bet-now-suggested { color:var(--muted); font-size:.82rem; }
+.bet-now-btn { background:var(--win); color:#fff !important; font-weight:800; padding:.55rem 1.1rem; border-radius:6px; text-decoration:none; font-size:.85rem; letter-spacing:.02em; display:inline-block; box-shadow:0 1px 3px rgba(22,163,74,.35); }
+.bet-now-btn:hover { background:#15803d; }
 .btn-secondary { background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:600; padding:.64rem 1.25rem; border-radius:6px; text-decoration:none; font-size:.9rem; display:inline-block; }
 .footer-band { border-top:1px solid var(--line); padding:1.6rem 0 .4rem; margin-top:.6rem; }
 .footer-label { color:var(--muted); font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; font-weight:600; }
@@ -193,6 +199,119 @@ def _league_badge(pick: dict) -> str:
     return f"{_LEAGUE_EMOJI.get(league, '')} {league}".strip()
 
 
+# ── "Bet Now" deep links ──────────────────────────────────────────────
+#
+# Real, live-verified 2026-09-15: The Odds API's includeLinks=true
+# returns a per-outcome sportsbook bet-slip deep link (see
+# src/odds_api_props_parser.py / src/odds_api_game_parser.py for where
+# it's captured, database.db_manager.get_bet_links for the lookup).
+# Some books' links carry real template placeholders -- {state}
+# (BetMGM, BetRivers -- regulated US betting is per-state) and
+# {wagerAmount} (BetRivers only, confirmed live -- a genuine stake
+# pre-fill). {pickType} (also BetRivers) could NOT be verified: no
+# public docs exist, and this app's browser tool refuses to navigate to
+# a real regulated sportsbook URL (a compliance restriction, respected
+# here rather than routed around). Any link left with an unresolved
+# placeholder after substitution is treated as unusable -- no button
+# shown -- rather than risk sending a customer to a malformed bet slip.
+
+_US_STATE_ABBREVIATIONS = (
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN "
+    "MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA "
+    "WA WV WI WY DC"
+).split()
+
+_UNRESOLVED_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z]+\}")
+
+
+def _suggested_stake_units(pick: dict) -> float | None:
+    """Stake size for the "Bet Now" button's suggested-amount text.
+
+    ``risk_units`` (used by the existing "Stake: X.XXu" result line) is
+    only ever populated by src/automatic_grading.py AFTER a pick
+    settles -- confirmed live 2026-09-15 it's always None for an
+    upcoming/research pick, which would otherwise make a suggested
+    dollar amount impossible before the game even happens. Falls back
+    to computing a prospective size with the SAME formula
+    (src/tracker.py::compute_variable_stake, 25% fractional Kelly) from
+    fields already on the pick at recommendation time (ev_pct,
+    offered_decimal_odds, model_score) -- not a new sizing concept,
+    just the existing one evaluated early instead of retroactively.
+    Deliberately does NOT touch the pre-existing "Stake: —" pre-
+    settlement display, which may reflect its own separate reason to
+    stay blank pre-game."""
+    if pick.get("risk_units") is not None:
+        return pick["risk_units"]
+    return compute_variable_stake(pick.get("ev_pct"), pick.get("offered_decimal_odds"), pick.get("model_score"))
+
+
+def _resolve_bet_link(raw_link: str | None, state: str | None, stake_usd: float | None) -> tuple[str | None, str | None]:
+    """(usable_url, note). usable_url is None when there's no link at
+    all, or when a template placeholder in it couldn't be safely
+    resolved -- never a guessed or broken URL. note explains why when
+    usable_url is None (e.g. "set your state above")."""
+    if not raw_link:
+        return None, None
+    url = raw_link
+    if "{state}" in url:
+        if not state:
+            return None, "Set your state above to enable this link"
+        url = url.replace("{state}", state.lower())
+    if "{wagerAmount}" in url and stake_usd:
+        url = url.replace("{wagerAmount}", f"{stake_usd:.2f}")
+    if _UNRESOLVED_PLACEHOLDER_RE.search(url):
+        return None, "Deep link unavailable for this book (unverified link format)"
+    return url, None
+
+
+def _render_bet_now_settings() -> tuple[str | None, float | None]:
+    """State + $-per-unit inputs, remembered for this browser tab's
+    session only (st.session_state) -- this site has no login/cookie/
+    persistence system, so neither survives a reload or a future visit;
+    said so plainly rather than silently losing the setting. Returns
+    (state_abbreviation_or_None, dollars_per_unit_or_None)."""
+    with st.expander("⚙️ Bet Now settings (this visit only)", expanded=False):
+        cols = st.columns(2)
+        with cols[0]:
+            state = st.selectbox(
+                "Your state", ["Not set"] + _US_STATE_ABBREVIATIONS, index=0, key="bet_now_state",
+                help="Needed for books whose bet slip link is state-specific (e.g. BetMGM).",
+            )
+        with cols[1]:
+            unit_usd = st.number_input(
+                "$ per unit", min_value=0.0, value=st.session_state.get("bet_now_unit_usd", 0.0),
+                step=1.0, key="bet_now_unit_usd",
+                help="Used to show a suggested dollar stake next to each pick (units × $/unit).",
+            )
+        st.caption("Remembered only while this tab stays open — not saved for your next visit.")
+    return (None if state == "Not set" else state), (unit_usd or None)
+
+
+def _bet_now_html(
+    label: str, raw_link: str | None, state: str | None,
+    stake_units: float | None, unit_usd: float | None,
+) -> str:
+    """One "Bet Now" button + suggested-stake text, as an HTML snippet
+    to embed inside an existing .pick card's markdown block."""
+    stake_usd = (stake_units * unit_usd) if (stake_units and unit_usd) else None
+    url, note = _resolve_bet_link(raw_link, state, stake_usd)
+    if stake_usd is not None:
+        suggested = f"Suggested stake: ${stake_usd:.2f}"
+    elif stake_units is not None:
+        suggested = f"Suggested stake: {stake_units:.2f}u — set $/unit above for a dollar amount"
+    else:
+        suggested = ""
+    if url is None:
+        return (
+            f'<div class="bet-now-row"><span class="bet-now-suggested">{suggested}</span></div>'
+            if suggested else ""
+        )
+    return (
+        f'<div class="bet-now-row"><span class="bet-now-suggested">{suggested}</span>'
+        f'<a class="bet-now-btn" href="{url}" target="_blank" rel="noopener">🎯 BET NOW — {label}</a></div>'
+    )
+
+
 def _fair_odds_label(pick: dict) -> str:
     fair = pick.get("fair_american_odds")
     return f"{fair:+d}" if isinstance(fair, int) else ("—" if fair is None else f"{fair:+.0f}")
@@ -263,6 +382,71 @@ def public_lock_view(row: dict) -> dict:
     }
 
 
+def _pick_bet_link_key(pick: dict) -> tuple | None:
+    """(event_id, player_id, market_type, line, side, sportsbook) key for
+    a single-leg pick -- None when event_id/player_id aren't available
+    (never guessed)."""
+    event_id, player_id = pick.get("event_id"), pick.get("player_id")
+    if not event_id or not player_id:
+        return None
+    return (event_id, player_id, pick.get("market_type"), pick.get("line"), pick.get("side"), pick.get("sportsbook"))
+
+
+def _attach_bet_links(
+    conn, upcoming: list[dict], research: list[dict],
+    active_arbitrage: list[dict], active_middles: list[dict],
+) -> None:
+    """Mutates each dict in place with its "Bet Now" deep link(s), via
+    database.db_manager::get_bet_links -- see src/odds_api_props_parser.py
+    and src/odds_api_game_parser.py for where the link is captured.
+    Single-leg picks get `bet_link`; arbitrage (two sportsbooks) gets
+    `bet_link_a`/`bet_link_b`; middles (Over/Under, two sportsbooks) get
+    `bet_link_over`/`bet_link_under`. A leg with no matching link is left
+    None -- the button for that leg simply doesn't render, never a
+    guessed or stale one."""
+    keys: list[tuple] = []
+    for p in upcoming + research:
+        k = _pick_bet_link_key(p)
+        if k:
+            keys.append(k)
+    for opp in active_arbitrage:
+        eid, pid = opp.get("event_id"), opp.get("player_id")
+        if eid and pid:
+            keys.append((eid, pid, opp.get("market_type"), opp.get("line"), opp.get("side_a"), opp.get("side_a_sportsbook")))
+            keys.append((eid, pid, opp.get("market_type"), opp.get("line"), opp.get("side_b"), opp.get("side_b_sportsbook")))
+    for opp in active_middles:
+        eid, pid = opp.get("event_id"), opp.get("player_id")
+        if eid and pid:
+            keys.append((eid, pid, opp.get("market_type"), opp.get("over_line"), "OVER", opp.get("over_sportsbook")))
+            keys.append((eid, pid, opp.get("market_type"), opp.get("under_line"), "UNDER", opp.get("under_sportsbook")))
+
+    links = get_bet_links(conn, keys) if keys else {}
+
+    for p in upcoming + research:
+        k = _pick_bet_link_key(p)
+        p["bet_link"] = links.get(k) if k else None
+    for opp in active_arbitrage:
+        eid, pid = opp.get("event_id"), opp.get("player_id")
+        opp["bet_link_a"] = (
+            links.get((eid, pid, opp.get("market_type"), opp.get("line"), opp.get("side_a"), opp.get("side_a_sportsbook")))
+            if eid and pid else None
+        )
+        opp["bet_link_b"] = (
+            links.get((eid, pid, opp.get("market_type"), opp.get("line"), opp.get("side_b"), opp.get("side_b_sportsbook")))
+            if eid and pid else None
+        )
+    for opp in active_middles:
+        eid, pid = opp.get("event_id"), opp.get("player_id")
+        opp["bet_link_over"] = (
+            links.get((eid, pid, opp.get("market_type"), opp.get("over_line"), "OVER", opp.get("over_sportsbook")))
+            if eid and pid else None
+        )
+        opp["bet_link_under"] = (
+            links.get((eid, pid, opp.get("market_type"), opp.get("under_line"), "UNDER", opp.get("under_sportsbook")))
+            if eid and pid else None
+        )
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def load_customer_data(authorized: bool) -> dict:
     """Load only fields allowed for the request's entitlement level."""
@@ -313,8 +497,8 @@ def load_customer_data(authorized: bool) -> dict:
         upcoming = []
         if authorized:
             upcoming = conn.execute("""
-                SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
-                       hr.sportsbook, hr.offered_american_odds, hr.ev_pct,
+                SELECT hr.event_id, hr.player_id, hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
+                       hr.sportsbook, hr.offered_american_odds, hr.offered_decimal_odds, hr.ev_pct,
                        hr.model_score, hr.scan_timestamp, hr.event_start_time,
                        hr.sport, hr.league, hr.fair_american_odds,
                        hr.confidence_score, hr.confidence_grade, hr.market_quality,
@@ -332,8 +516,8 @@ def load_customer_data(authorized: bool) -> dict:
         research = []
         if authorized:
             research = conn.execute("""
-                SELECT player_name, matchup, market_type, side, line, sportsbook,
-                       offered_american_odds, ev_pct, yn_implied_prob_adv,
+                SELECT event_id, player_id, player_name, matchup, market_type, side, line, sportsbook,
+                       offered_american_odds, offered_decimal_odds, ev_pct, yn_implied_prob_adv,
                        model_score, event_start_time, sport, league,
                        fair_american_odds, confidence_score, confidence_grade,
                        market_quality
@@ -366,11 +550,16 @@ def load_customer_data(authorized: bool) -> dict:
             ]
             graded_middles = get_graded_middle_opportunities(conn)
 
+        upcoming_dicts = [dict(r) for r in upcoming]
+        research_dicts = [dict(r) for r in research]
+        if authorized:
+            _attach_bet_links(conn, upcoming_dicts, research_dicts, active_arbitrage, active_middles)
+
         return {
             "settled": [dict(r) for r in settled],
             "locked": [dict(r) for r in locked],
-            "upcoming": [dict(r) for r in upcoming],
-            "research": [dict(r) for r in research],
+            "upcoming": upcoming_dicts,
+            "research": research_dicts,
             "active_arbitrage": active_arbitrage,
             "graded_arbitrage": graded_arbitrage,
             "active_middles": active_middles,
@@ -475,7 +664,7 @@ def performance_series(rows: list[dict], period: str = "ALL") -> pd.DataFrame:
     return frame.set_index("posted")[["expected_cumulative", "actual_cumulative"]]
 
 
-def _render_full_pick(pick: dict, settled: bool = False) -> None:
+def _render_full_pick(pick: dict, settled: bool = False, state: str | None = None, unit_usd: float | None = None) -> None:
     side_line = _side_line_label(pick)
     market = pick.get("market_type") or ""
     if market.endswith("_yn"):
@@ -513,6 +702,10 @@ def _render_full_pick(pick: dict, settled: bool = False) -> None:
                 else f"Closed {pick['closing_american']:+d}"
             closing_bits.append(close_txt)
     closing_line_html = f'<div class="pick-meta">{" · ".join(closing_bits)}</div>' if closing_bits else ""
+    bet_now_html = (
+        "" if settled else
+        _bet_now_html(pick.get("sportsbook", "").title(), pick.get("bet_link"), state, _suggested_stake_units(pick), unit_usd)
+    )
 
     st.markdown(f"""
     <div class="pick {'settled' if settled else ''} {result_class}">
@@ -522,6 +715,7 @@ def _render_full_pick(pick: dict, settled: bool = False) -> None:
       <div class="pick-meta">{detail_line}</div>
       {closing_line_html}
       <div class="unit-line">{stake} · Result: <span class="{result_style}">{result_label}{final}{units}</span></div>
+      {bet_now_html}
     </div>
     """, unsafe_allow_html=True)
 
@@ -570,7 +764,7 @@ def _cumulative_chart(rows: list[dict], label: str) -> None:
     st.altair_chart(chart, use_container_width=True)
 
 
-def _render_arbitrage_card(opp: dict) -> None:
+def _render_arbitrage_card(opp: dict, state: str | None = None) -> None:
     pick_label = f"{_market_label(opp['market_type'])}" + (
         f" {opp['line']}" if opp.get("line") is not None else ""
     )
@@ -578,6 +772,13 @@ def _render_arbitrage_card(opp: dict) -> None:
     game_time = format_event_start_local(opp.get("event_start_time"))
     status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"
     matchup_text = opp.get("matchup") or "Matchup unavailable"
+    # No dollar-stake suggestion here -- arbitrage's two legs are sized
+    # to a balanced *pct* of a notional total (side_a_stake_pct/
+    # side_b_stake_pct), not this platform's unit system, so there's no
+    # unit_usd-based amount to compute; the button still gets the
+    # customer straight to the right bet.
+    bet_now_a = _bet_now_html(f"{opp['side_a_sportsbook'].title()} ({opp['side_a']})", opp.get("bet_link_a"), state, None, None)
+    bet_now_b = _bet_now_html(f"{opp['side_b_sportsbook'].title()} ({opp['side_b']})", opp.get("bet_link_b"), state, None, None)
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
@@ -585,8 +786,10 @@ def _render_arbitrage_card(opp: dict) -> None:
       <div class="pick-meta">{status_label} · Game starts: {game_time}</div>
       <div class="pick-meta">{opp['side_a']} · {opp['side_a_sportsbook']} {opp['side_a_price']:+d}
         ({opp['side_a_stake_pct']:.0%} stake)</div>
+      {bet_now_a}
       <div class="pick-meta">{opp['side_b']} · {opp['side_b_sportsbook']} {opp['side_b_price']:+d}
         ({opp['side_b_stake_pct']:.0%} stake)</div>
+      {bet_now_b}
       <div class="unit-line">Guaranteed: <span class="result-win">+{opp['guaranteed_roi_pct']:.2f}%</span></div>
     </div>
     """, unsafe_allow_html=True)
@@ -599,7 +802,7 @@ _MIDDLE_VERDICT_BADGE = {
 }
 
 
-def _render_middle_card(opp: dict) -> None:
+def _render_middle_card(opp: dict, state: str | None = None, unit_usd: float | None = None) -> None:
     fresh = _freshness_label(opp.get("last_seen_at"))
     game_time = format_event_start_local(opp.get("event_start_time"))
     status_label = "🔴 LIVE" if is_event_live(opp.get("event_start_time")) else "PREGAME"
@@ -627,13 +830,23 @@ def _render_middle_card(opp: dict) -> None:
     else:
         stake_line = "Stake: — (not worth betting)"
     matchup_text = opp.get("matchup") or "Matchup unavailable"
+    # Split the recommended total stake across the two legs by their own
+    # sizing (over_stake_pct/under_stake_pct sum to 1, by construction --
+    # see src/middling.py -- the same split that makes a single-leg win
+    # pay the same amount regardless of which leg hits).
+    over_units = (stake * opp.get("over_stake_pct", 0.5)) if (verdict == "WORTH_IT" and stake) else None
+    under_units = (stake * opp.get("under_stake_pct", 0.5)) if (verdict == "WORTH_IT" and stake) else None
+    bet_now_over = _bet_now_html(f"{opp['over_sportsbook'].title()} (Over)", opp.get("bet_link_over"), state, over_units, unit_usd)
+    bet_now_under = _bet_now_html(f"{opp['under_sportsbook'].title()} (Under)", opp.get("bet_link_under"), state, under_units, unit_usd)
     st.markdown(f"""
     <div class="pick">
       <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp['market_type'])} {verdict_badge}</div>
       <div class="pick-meta">{_league_badge(opp)} · {matchup_text} · {_market_label(opp['market_type'])} · <span class="edge">{fresh}</span></div>
       <div class="pick-meta">{status_label} · Game starts: {game_time}</div>
       <div class="pick-meta">Over {opp['over_line']} · {opp['over_sportsbook']} {opp['over_price']:+d}</div>
+      {bet_now_over}
       <div class="pick-meta">Under {opp['under_line']} · {opp['under_sportsbook']} {opp['under_price']:+d}</div>
+      {bet_now_under}
       <div class="unit-line">{stake_line}</div>
       <div class="unit-line">Worst case: <span class="result-loss">{opp['worst_case_roi_pct']:+.2f}%</span>
         · Best case: <span class="result-win">+{opp['best_case_roi_pct']:.2f}%</span></div>
@@ -734,6 +947,7 @@ elif st.session_state.view_mode == "ev":
             st.success("No Top Picks Yet")
             st.caption("The model has not identified an opportunity meeting today's qualification standards.")
     else:
+        bet_now_state, bet_now_unit_usd = _render_bet_now_settings()
         st.subheader("Today's Top Picks — Upcoming")
         if data["upcoming"]:
             with st.expander("Filter upcoming picks", expanded=False):
@@ -741,7 +955,7 @@ elif st.session_state.view_mode == "ev":
             filtered_upcoming = _apply_filters(data["upcoming"], up_filters)
             if filtered_upcoming:
                 for pick in filtered_upcoming:
-                    _render_full_pick(pick)
+                    _render_full_pick(pick, state=bet_now_state, unit_usd=bet_now_unit_usd)
             else:
                 st.caption("No upcoming picks match the current filters.")
         else:
@@ -750,7 +964,7 @@ elif st.session_state.view_mode == "ev":
         if data["research"]:
             with st.expander("Full Board"):
                 for pick in data["research"]:
-                    _render_full_pick(pick)
+                    _render_full_pick(pick, state=bet_now_state, unit_usd=bet_now_unit_usd)
 
     st.divider()
     st.subheader("Verified Track Record — Past Picks")
@@ -868,6 +1082,7 @@ elif st.session_state.view_mode == "arbitrage":
     if not authorized:
         st.info("Subscriber access unlocks live arbitrage opportunities.")
     else:
+        arb_bet_now_state, _ = _render_bet_now_settings()
         if not data["active_arbitrage"]:
             st.success("No arbitrage opportunities right now.")
             st.caption("Rechecked every ~15 minutes as odds move.")
@@ -892,7 +1107,7 @@ elif st.session_state.view_mode == "arbitrage":
                     arb_cols = st.columns(2)
                     for i, opp in enumerate(arb_usable):
                         with arb_cols[i % 2]:
-                            _render_arbitrage_card(opp)
+                            _render_arbitrage_card(opp, state=arb_bet_now_state)
         st.divider()
         _cumulative_chart(data["graded_arbitrage"], "Arbitrage")
 
@@ -909,6 +1124,7 @@ elif st.session_state.view_mode == "middling":
     if not authorized:
         st.info("Subscriber access unlocks live middling opportunities.")
     else:
+        mid_bet_now_state, mid_bet_now_unit_usd = _render_bet_now_settings()
         if not data["active_middles"]:
             st.success("No middle opportunities right now.")
             st.caption("Rechecked every ~15 minutes as odds move.")
@@ -933,7 +1149,7 @@ elif st.session_state.view_mode == "middling":
                     mid_cols = st.columns(2)
                     for i, opp in enumerate(mid_usable):
                         with mid_cols[i % 2]:
-                            _render_middle_card(opp)
+                            _render_middle_card(opp, state=mid_bet_now_state, unit_usd=mid_bet_now_unit_usd)
         st.divider()
         _cumulative_chart(data["graded_middles"], "Middling")
 

@@ -101,9 +101,18 @@ def parse_player_props(
                         )
                     canonical_id, display_name, confidence, method = resolution_cache[cache_key]
 
+                    # Outcome-level link is the most specific (a direct
+                    # bet-slip deep link on supporting books); fall back
+                    # to market- then bookmaker-level per The Odds API's
+                    # own documented hierarchy for includeLinks=true --
+                    # confirmed live 2026-09-15 against real player-prop
+                    # responses (DraftKings/FanDuel/BetMGM/ESPN Bet/Hard
+                    # Rock Bet/BetRivers all returned outcome-level links).
+                    bet_link = outcome.get("link") or market.get("link") or bookmaker.get("link")
+
                     row = _build_prop_row(
                         event_id=event_id, book_name=book_name, book_last_update=book_last_update,
-                        market_type=market_type, outcome=outcome,
+                        market_type=market_type, outcome=outcome, bet_link=bet_link,
                         canonical_id=canonical_id, display_name=display_name or raw_name,
                         confidence=confidence, method=method,
                     )
@@ -158,7 +167,7 @@ def _resolve_and_cache(
 
 def _build_prop_row(
     *, event_id: str, book_name: str, book_last_update: str | None,
-    market_type: str, outcome: dict,
+    market_type: str, outcome: dict, bet_link: str | None = None,
     canonical_id: str | None, display_name: str, confidence: str, method: str,
 ) -> dict:
     captured_at = datetime.now(timezone.utc).isoformat()
@@ -233,4 +242,5 @@ def _build_prop_row(
         "validation_reason": "; ".join(issues) if issues else "OK",
         "captured_at": captured_at,
         "observation_time": observation_time,
+        "bet_link": bet_link,
     }

@@ -186,3 +186,28 @@ class TestRunLineDirectionDisagreement:
         run_line_rows = [r for r in result.odds_rows if r["market_type"] == "game_runline_ou"]
         group_keys = {r["market_group_key"] for r in run_line_rows}
         assert len(group_keys) == 1
+
+
+class TestBetLink:
+    """Real, live-confirmed 2026-09-15: The Odds API's includeLinks=true
+    returns a per-outcome bet-slip deep link; this shared parser (see
+    src/odds_api_game_parser.py) must capture it for game markets the
+    same way src/odds_api_props_parser.py does for player props."""
+
+    def test_outcome_level_link_captured(self):
+        game = _game()
+        game["bookmakers"][0]["markets"][0]["outcomes"][0]["link"] = "https://sportsbook.fanduel.com/addToBetslip?x=1"
+        result = parse_mlb_game_odds([game])
+        h2h_rows = [r for r in result.odds_rows if r["market_type"] == "game_moneyline" and r["sportsbook"] == "fanduel"]
+        assert any(r["bet_link"] == "https://sportsbook.fanduel.com/addToBetslip?x=1" for r in h2h_rows)
+
+    def test_falls_back_to_market_then_bookmaker_link(self):
+        game = _game()
+        game["bookmakers"][0]["markets"][0]["link"] = "https://sportsbook.fanduel.com/market"
+        result = parse_mlb_game_odds([game])
+        h2h_rows = [r for r in result.odds_rows if r["market_type"] == "game_moneyline" and r["sportsbook"] == "fanduel"]
+        assert all(r["bet_link"] == "https://sportsbook.fanduel.com/market" for r in h2h_rows)
+
+    def test_no_link_anywhere_is_none_not_a_crash(self):
+        result = parse_mlb_game_odds([_game()])
+        assert all(r["bet_link"] is None for r in result.odds_rows)

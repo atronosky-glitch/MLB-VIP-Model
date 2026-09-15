@@ -182,7 +182,8 @@ def db_conn():
             validation_reason   TEXT DEFAULT '',
             captured_at         TEXT,
             created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-            league              TEXT DEFAULT 'MLB'
+            league              TEXT DEFAULT 'MLB',
+            bet_link            TEXT
         );
         CREATE TABLE IF NOT EXISTS player_prop_mapping_audit (
             audit_id            INTEGER PRIMARY KEY AUTOINCREMENT,
