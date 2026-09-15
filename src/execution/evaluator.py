@@ -6,7 +6,8 @@ producing an ExecutionOpportunity or an explicit ExecutionRejection.
 No order placement anywhere in this pipeline.
 
 UNCONFIRMED simplifying assumption (flagged loudly, same posture as
-Kalshi's guessed title format and Polymarket's guessed book structure):
+Kalshi's guessed title format -- Polymarket's book structure was
+confirmed 2026-09-14, see normalize_orderbook's docstring):
 neither provider's parsed game event currently indicates which team
 corresponds to the market's YES side. This module assumes **YES = the
 away team, NO = the home team** -- matching the away-first convention
@@ -54,7 +55,6 @@ class RejectionReason(str, Enum):
     UNSUPPORTED_MARKET_TYPE = "UNSUPPORTED_MARKET_TYPE"
     MODEL_PROBABILITY_UNAVAILABLE = "MODEL_PROBABILITY_UNAVAILABLE"
     NO_PROVIDER_MARKET = "NO_PROVIDER_MARKET"
-    UNVERIFIED_PROVIDER_SIDE_SEMANTICS = "UNVERIFIED_PROVIDER_SIDE_SEMANTICS"
     MARKET_DATA_STALE = "MARKET_DATA_STALE"
     INSUFFICIENT_LIQUIDITY = "INSUFFICIENT_LIQUIDITY"
     SPREAD_TOO_WIDE = "SPREAD_TOO_WIDE"
@@ -70,6 +70,18 @@ class RejectionReason(str, Enum):
     # Reserved for a later stage (settlement-rule verification, live
     # market status/timing checks -- none of this stage's code path
     # currently produces these):
+    #
+    # UNVERIFIED_PROVIDER_SIDE_SEMANTICS was actively triggered here
+    # through Stage 4.1 (Polymarket US's NO-side book was an unproven
+    # 1-P synthesis) and is now reserved instead -- 2026-09-14
+    # verification against real, live, unauthenticated market/orderbook
+    # responses confirmed Polymarket US uses the same single-shared-book
+    # mechanism as Kalshi (see OpportunityEvaluator.evaluate's docstring
+    # comment and polymarket_us.py's normalize_orderbook). Kept in the
+    # enum for a future provider whose side semantics genuinely aren't
+    # provable yet, not removed outright, matching this enum's own
+    # "add once, never re-litigate serialization" convention.
+    UNVERIFIED_PROVIDER_SIDE_SEMANTICS = "UNVERIFIED_PROVIDER_SIDE_SEMANTICS"
     MARKET_MATCH_LOW_CONFIDENCE = "MARKET_MATCH_LOW_CONFIDENCE"
     MARKET_RULE_MISMATCH = "MARKET_RULE_MISMATCH"
     UNVERIFIED_SETTLEMENT_RULES = "UNVERIFIED_SETTLEMENT_RULES"
@@ -248,23 +260,22 @@ class OpportunityEvaluator:
 
         side = _provider_side_for_signal(signal)
 
-        # UNCONFIRMED whether Polymarket US models NO as genuinely
-        # separate, independently-tradeable liquidity or as a single
-        # binary book (NO = 1-YES) -- see PolymarketUSProvider.
-        # normalize_orderbook's docstring. Rather than price a NO-side
-        # opportunity against a synthesized book that might not
-        # reflect real tradeable liquidity, reject it outright until
-        # verified: better to reject a valid opportunity than price
-        # one incorrectly. YES-side is unaffected -- Polymarket's raw
-        # book already IS a normal bidirectional YES book, no
-        # synthesis involved there.
-        if match.provider == "polymarket_us" and side == "NO":
-            return self._reject(
-                signal, match.provider, event_label, RejectionReason.UNVERIFIED_PROVIDER_SIDE_SEMANTICS,
-                "Polymarket US's NO-side book is a synthesized (1-P) assumption, not confirmed "
-                "against real independently-tradeable liquidity -- rejected until verified via "
-                "inspect-markets --raw",
-            )
+        # Polymarket US's NO-side book (2026-09-14 verification): CONFIRMED
+        # via real, live, unauthenticated /v1/markets and /v1/markets/{slug}/book
+        # responses (paccc-usho-midterms-2026-11-03-{dem,rep},
+        # paccc-usse-midterms-2026-11-03-rep -- all currently-open binary
+        # markets) that Polymarket US uses the SAME single-shared-book
+        # mechanism as Kalshi: each market's two "marketSides" (Yes/No)
+        # share one identifier (the market slug, not two separate
+        # instruments), and stats.lastPriceSample.{longPx,shortPx} summed
+        # to exactly 1.000 on every market checked (e.g. 0.8530+0.1470,
+        # 0.4830+0.5170, 0.1650+0.8350) -- a resting bid at P on the YES
+        # side genuinely IS a resting ask at (1-P) on the NO side, not an
+        # assumption. The 1-P synthesis in normalize_orderbook() below is
+        # therefore no longer a guess for either provider -- the former
+        # UNVERIFIED_PROVIDER_SIDE_SEMANTICS hard-reject that lived here
+        # is removed. See src/execution/polymarket_us.py's
+        # normalize_orderbook docstring for the full citation.
 
         try:
             raw_book = provider.get_orderbook(match.provider_market_id)

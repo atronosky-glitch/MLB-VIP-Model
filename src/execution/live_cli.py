@@ -329,7 +329,10 @@ def live_readiness() -> int:
                     read_ok = False
             print(f"  Market/orderbook reads... {'PASS' if read_ok else ('PENDING' if read_ok is None else 'FAIL')}")
 
-            side_semantics_ok = provider_name == "kalshi"  # YES/NO confirmed by Kalshi's own docs; Polymarket NO-side still unverified
+            # Both providers' YES/NO book semantics are confirmed: Kalshi by its own
+            # docs, Polymarket US by real live-data verification 2026-09-14 (see
+            # src/execution/polymarket_us.py::normalize_orderbook's docstring).
+            side_semantics_ok = True
             print(f"  Side semantics........... {'PASS' if side_semantics_ok else 'BLOCKED (NO-side unverified)'}")
 
             schema_ok = _schema_verified(provider_name)

@@ -440,13 +440,19 @@ class TestLiveReadiness:
         assert "LIVE PROVIDER VERIFICATION PENDING" in out
         assert "LIVE_TRADING_ENABLED=" in out  # honestly reflects config, whatever its value
 
-    def test_reports_polymarket_side_semantics_still_blocked(self, capsys, db_conn):
+    def test_reports_polymarket_side_semantics_now_verified(self, capsys, db_conn):
+        """As of 2026-09-14, both providers' YES/NO book semantics are
+        confirmed (Kalshi by its own docs, Polymarket US by real live-data
+        verification -- see polymarket_us.py::normalize_orderbook's
+        docstring), so live-readiness must report PASS for both, not a
+        stale BLOCKED."""
         config = _FakeConfig()
         with mock.patch("src.execution.live_cli.load_config", return_value=config), \
              mock.patch("src.execution.live_cli.get_connection", return_value=_NonClosingConnProxy(db_conn)):
             main(["live-readiness"])
         out = capsys.readouterr().out
-        assert "BLOCKED (NO-side unverified)" in out
+        assert "BLOCKED (NO-side unverified)" not in out
+        assert out.count("Side semantics........... PASS") == 2
 
     def test_never_calls_place_or_cancel_order(self, capsys, db_conn):
         config = _FakeConfig()

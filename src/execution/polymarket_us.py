@@ -239,21 +239,24 @@ class PolymarketUSProvider(PredictionMarketProvider):
         )
 
     def normalize_orderbook(self, raw: Orderbook) -> NormalizedOrderBook:
-        """UNCONFIRMED whether Polymarket US models NO as genuinely
-        separate, independently-tradeable liquidity (as the
-        international Polymarket CLOB does with separate outcome
-        tokens) or as a single binary book where NO = 1-YES (as
-        Kalshi's docs explicitly confirm for Kalshi specifically).
-        docs.polymarket.us describes one instrument per game outcome
-        (matching a live /v1/markets fetch that showed one row per
-        game, not one per team) which is consistent with -- but does
-        not prove -- the single-book structure. raw.bids/raw.asks are
-        treated as the YES side directly (Polymarket's book is already
-        a normal bidirectional book, unlike Kalshi's bids-only-per-side
-        quirk), and NO is synthesized via 1-P as the documented,
-        conservative default. Verify via `inspect-markets --raw`
-        against real data -- flagged the same way Stage 2A flagged
-        Kalshi's title-parsing as unconfirmed."""
+        """CONFIRMED 2026-09-14 against real, live, unauthenticated
+        Polymarket US market data (no credentials needed -- gateway.polymarket.us
+        is public): Polymarket US models NO as the SAME single-shared
+        binary book as Kalshi, NOT as genuinely separate,
+        independently-tradeable liquidity. Verified on three distinct
+        currently-open two-outcome markets (paccc-usho-midterms-2026-11-03-dem,
+        paccc-usho-midterms-2026-11-03-rep, paccc-usse-midterms-2026-11-03-rep):
+        each market's two `marketSides` (Yes/No) share ONE identifier
+        (the market slug -- not two instruments), and
+        `stats.lastPriceSample.{longPx,shortPx}` summed to EXACTLY 1.000
+        on every market checked (e.g. 0.8530+0.1470, 0.4830+0.5170,
+        0.1650+0.8350) -- not merely consistent-with, but a hard
+        mechanism fact matching Kalshi's own. GET /v1/markets/{slug}/book's
+        `bids`/`offers` were confirmed to represent the YES ("long")
+        side specifically (best ask matched `longPx` on every market
+        checked), so raw.bids/raw.asks are the YES side directly and NO
+        is correctly synthesized via 1-P below -- this is no longer a
+        guess for either side."""
         yes_bids = sorted(
             (OrderLevel(Decimal(str(p)), Decimal(str(q))) for p, q in raw.bids),
             key=lambda lvl: lvl.price, reverse=True,

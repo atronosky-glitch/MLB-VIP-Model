@@ -121,6 +121,8 @@ def render_live_execution_tab(config: Any, db_path: str) -> None:
             st.error(f"Kill switch engaged: {kill_reason}. No new real orders will be submitted; open positions keep tracking.")
 
         st.divider()
+        _render_polymarket_status_card(config)
+        st.divider()
         st.markdown("**Providers**")
         provider_cols = st.columns(2)
         for col, name in zip(provider_cols, ("kalshi", "polymarket_us")):
@@ -153,6 +155,48 @@ def render_live_execution_tab(config: Any, db_path: str) -> None:
         _render_recent_activity(conn)
     finally:
         conn.close()
+
+
+def _render_polymarket_status_card(config: Any) -> None:
+    """Section 13 status card: everything a human needs to know about
+    Polymarket US readiness at a glance, without leaving this tab.
+    Never shows credential values -- only CONFIGURED/MISSING."""
+    st.markdown("**Polymarket US Status**")
+    creds_configured = bool(config.polymarket_us_api_key_id and config.polymarket_us_private_key_path)
+
+    auth_status, read_status = "NOT TESTED", "NOT TESTED"
+    if config.polymarket_us_enabled and creds_configured:
+        try:
+            provider = get_provider("polymarket_us", config)
+            health = provider.health_check()
+            auth_status = "PASS" if health.ok else "FAIL"
+        except Exception:
+            auth_status = "FAIL"
+        try:
+            provider.get_markets(limit=1)
+            read_status = "PASS"
+        except Exception:
+            read_status = "FAIL"
+
+    row1 = st.columns(4)
+    row1[0].metric("API Credentials", "CONFIGURED" if creds_configured else "MISSING")
+    row1[1].metric("Authentication", auth_status)
+    row1[2].metric("Read API", read_status)
+    row1[3].metric(
+        "Live Trading",
+        "ON" if config.polymarket_us_live_enabled and config.live_trading_enabled else "OFF",
+    )
+
+    row2 = st.columns(4)
+    row2[0].metric("Paper Trading", "READY" if config.polymarket_us_enabled else "NOT READY")
+    row2[1].metric("Live Execution Code", "READY")
+    # NO-side semantics: confirmed 2026-09-14 against real, live,
+    # unauthenticated Polymarket US market data -- see
+    # src/execution/polymarket_us.py::normalize_orderbook's docstring.
+    row2[2].metric("NO-side", "VERIFIED")
+    row2[3].metric("Reconciliation", "LIMITED")
+    if not creds_configured:
+        st.caption("Run `python -m src.execution.cli setup-polymarket` to configure credentials.")
 
 
 def _render_read_only_summary(db_path: str) -> None:

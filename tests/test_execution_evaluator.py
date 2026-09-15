@@ -245,18 +245,25 @@ class TestNetEvTooLow:
         assert result.reason == RejectionReason.NET_EV_TOO_LOW
 
 
-class TestPolymarketNoSideRejectedUntilVerified:
-    """Polymarket US's NO-side book is a synthesized (1-P) assumption,
-    not confirmed against real independently-tradeable liquidity --
-    reject rather than price it incorrectly."""
+class TestPolymarketNoSideNowVerified:
+    """Polymarket US's NO-side book was confirmed 2026-09-14 against
+    real, live, unauthenticated market/orderbook data to use the same
+    single-shared-book mechanism as Kalshi (marketSides share one
+    identifier; longPx+shortPx summed to exactly 1.000 on every market
+    checked) -- see PolymarketUSProvider.normalize_orderbook's
+    docstring for the full citation. The former hard rejection
+    (UNVERIFIED_PROVIDER_SIDE_SEMANTICS) is gone; NO-side opportunities
+    on Polymarket US now evaluate exactly like any other side/provider."""
 
-    def test_no_side_is_rejected_before_any_provider_call(self):
-        provider = mock.MagicMock(spec=PredictionMarketProvider)
+    def test_no_side_on_polymarket_reaches_the_provider_and_can_qualify(self):
+        """model_probability 0.70 (YES) -> NO win probability 0.30; a
+        0.25 NO ask is below that, a real edge -- mirrors the existing
+        Kalshi NO-side test exactly, now true for Polymarket too."""
+        provider = _FakeProvider(_book(no_asks=[(0.25, 1000)], no_bids=[(0.23, 1000)]), fee=Decimal("0.05"))
         evaluator = OpportunityEvaluator(_FakeConfig())
-        result = evaluator.evaluate(_signal(side="HOME"), _match("polymarket_us"), provider)
-        assert isinstance(result, ExecutionRejection)
-        assert result.reason == RejectionReason.UNVERIFIED_PROVIDER_SIDE_SEMANTICS
-        provider.get_orderbook.assert_not_called()
+        result = evaluator.evaluate(_signal(side="HOME", model_probability="0.70"), _match("polymarket_us"), provider)
+        assert isinstance(result, ExecutionOpportunity)
+        assert result.side == "NO"
 
     def test_yes_side_is_unaffected_on_polymarket(self):
         provider = _FakeProvider(_book(yes_asks=[(0.62, 1000)], yes_bids=[(0.60, 1000)]), fee=Decimal("0.05"))
@@ -265,15 +272,24 @@ class TestPolymarketNoSideRejectedUntilVerified:
         assert isinstance(result, ExecutionOpportunity)
 
     def test_no_side_is_unaffected_on_kalshi(self):
-        """The restriction is Polymarket-specific -- Kalshi's NO side
-        rests on a confirmed mechanism fact (see KalshiProvider.
-        normalize_orderbook's docstring), not a guess. model_probability
-        0.70 (YES) -> NO win probability 0.30; a 0.25 NO ask is below
-        that, a real edge."""
+        """Kalshi's NO side rests on its own, separately confirmed
+        mechanism fact (see KalshiProvider.normalize_orderbook's
+        docstring) -- unaffected by this change either way."""
         provider = _FakeProvider(_book(no_asks=[(0.25, 1000)], no_bids=[(0.23, 1000)]), fee=Decimal("0.05"))
         evaluator = OpportunityEvaluator(_FakeConfig())
         result = evaluator.evaluate(_signal(side="HOME", model_probability="0.70"), _match("kalshi"), provider)
         assert isinstance(result, ExecutionOpportunity)
+
+    def test_no_side_rejects_normally_on_a_losing_book_not_a_side_block(self):
+        """Confirms the NO-side path now goes through the SAME EV/
+        liquidity/spread checks as everything else -- a losing NO price
+        rejects for NET_EV_TOO_LOW (or similar), never
+        UNVERIFIED_PROVIDER_SIDE_SEMANTICS."""
+        provider = _FakeProvider(_book(no_asks=[(0.95, 1000)], no_bids=[(0.93, 1000)]), fee=Decimal("0.05"))
+        evaluator = OpportunityEvaluator(_FakeConfig())
+        result = evaluator.evaluate(_signal(side="HOME", model_probability="0.70"), _match("polymarket_us"), provider)
+        assert isinstance(result, ExecutionRejection)
+        assert result.reason != RejectionReason.UNVERIFIED_PROVIDER_SIDE_SEMANTICS
 
 
 class TestQualifiedOpportunity:

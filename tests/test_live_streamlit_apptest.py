@@ -25,6 +25,8 @@ class _FakeConfig:
     kalshi_live_enabled = False
     polymarket_us_live_enabled = False
     live_trading_enabled = False
+    polymarket_us_api_key_id = ""
+    polymarket_us_private_key_path = ""
 
 
 @pytest.fixture
@@ -139,6 +141,42 @@ class TestPubliclyExposedSession:
         error_text = " ".join(e.value for e in at.error)
         assert "BLOCKED" in error_text
         assert at.button == []
+
+
+class TestPolymarketStatusCard:
+    """Section 13: the Live Execution tab shows a Polymarket US status
+    card with CONFIGURED/MISSING credentials, never a secret value."""
+
+    def test_shows_missing_credentials_by_default(self, temp_db_path):
+        with _server_address_override(None), \
+             _clean_hosting_env():
+            at = _run_tab(temp_db_path)
+        markdown_text = " ".join(m.value for m in at.markdown)
+        assert "Polymarket US Status" in markdown_text
+        metric_values = {m.label: m.value for m in at.metric}
+        assert metric_values.get("API Credentials") == "MISSING"
+
+    def test_shows_configured_when_credentials_present(self, temp_db_path):
+        config = _FakeConfig()
+        config.polymarket_us_api_key_id = "some-key-id"
+        config.polymarket_us_private_key_path = "/tmp/does-not-matter.txt"
+        with _server_address_override(None), \
+             _clean_hosting_env():
+            at = _run_tab(temp_db_path, config=config)
+        metric_values = {m.label: m.value for m in at.metric}
+        assert metric_values.get("API Credentials") == "CONFIGURED"
+
+    def test_never_renders_the_credential_value_itself(self, temp_db_path):
+        config = _FakeConfig()
+        config.polymarket_us_api_key_id = "totally-secret-key-id-12345"
+        config.polymarket_us_private_key_path = "/tmp/does-not-matter.txt"
+        with _server_address_override(None), \
+             _clean_hosting_env():
+            at = _run_tab(temp_db_path, config=config)
+        full_text = " ".join(m.value for m in at.markdown) + " " + " ".join(
+            f"{m.label}{m.value}" for m in at.metric
+        )
+        assert "totally-secret-key-id-12345" not in full_text
 
 
 class TestRerunSafety:

@@ -5,6 +5,8 @@
     python -m src.execution.cli scan-opportunities [--verbose] [--limit N] [--league MLB]
         [--provider kalshi] [--provider polymarket_us] [--analysis-stake 10]
     python -m src.execution.cli inventory-report [--provider kalshi]
+    python -m src.execution.cli setup-polymarket
+    python -m src.execution.cli polymarket-setup-check
 
 All subcommands are read-only. None ever calls place_order/cancel_order/
 modify_order or any write endpoint. Never displays credentials,
@@ -488,6 +490,15 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("live-readiness", help="Read-only aggregate checklist across both providers; never enables anything")
 
+    subparsers.add_parser(
+        "setup-polymarket",
+        help="Guided, secret-free Polymarket US credential setup (never prints key contents)",
+    )
+    subparsers.add_parser(
+        "polymarket-setup-check",
+        help="One-shot read-only Polymarket US readiness check (config/auth/balance/markets/orderbook/parsing)",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "check-connectivity":
         return _check_connectivity()
@@ -530,6 +541,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "live-readiness":
         from src.execution import live_cli
         return live_cli.live_readiness()
+    if args.command == "setup-polymarket":
+        from src.execution import setup_cli
+        return setup_cli.setup_polymarket()
+    if args.command == "polymarket-setup-check":
+        from src.execution import setup_cli
+        return setup_cli.polymarket_setup_check()
     return 1
 
 

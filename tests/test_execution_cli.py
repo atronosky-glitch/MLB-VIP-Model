@@ -366,6 +366,24 @@ class TestScanOpportunities:
         assert "order placed" not in out
         assert "filled at" not in out
 
+    def test_kalshi_disabled_polymarket_only_scans_cleanly(self, capsys):
+        """Kalshi treated as unavailable, Polymarket US the sole enabled
+        provider -- mirrors this repo's real .env. Must complete with no
+        Kalshi-related error or warning text anywhere in the output."""
+        config = _FakeConfig()
+        config.kalshi_enabled = False
+        config.polymarket_us_enabled = True
+        fake_provider = mock.Mock()
+        fake_provider.get_markets.return_value = []
+        with mock.patch("src.execution.cli.load_config", return_value=config), \
+             mock.patch("src.execution.cli.get_provider", return_value=fake_provider), \
+             mock.patch("src.execution.cli.get_connection", return_value=_mock_db_connection()), \
+             mock.patch("src.execution.cli._load_actionable_rows", return_value=[]):
+            exit_code = main(["scan-opportunities", "--verbose"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "kalshi" not in out.lower()
+
     def test_verbose_prints_a_reason_for_every_non_qualified_provider(self, capsys):
         from src.execution.base import Market, RawGameEvent
 

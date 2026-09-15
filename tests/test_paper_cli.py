@@ -316,3 +316,56 @@ class TestSafetyRegression:
             pass
         else:
             raise AssertionError("cancel_order should have raised NotImplementedError")
+
+
+class TestKalshiDisabledPolymarketOnly:
+    """Kalshi treated as unavailable (KALSHI_ENABLED=false), Polymarket
+    US the only active provider -- every paper CLI command must run
+    cleanly through to completion with zero Kalshi-related errors or
+    warnings, exactly mirroring the real .env this repo ships with."""
+
+    def _config(self):
+        config = _FakeConfig()
+        config.kalshi_enabled = False
+        config.polymarket_us_enabled = True
+        return config
+
+    def test_paper_scan_completes_with_only_polymarket_enabled(self, capsys, db_conn):
+        config = self._config()
+        provider = _FakeProvider()
+        with mock.patch("src.execution.paper_cli.load_config", return_value=config), \
+             mock.patch("src.execution.paper_cli.get_provider", return_value=provider), \
+             mock.patch("src.execution.paper_cli.get_connection", return_value=_NonClosingConnProxy(db_conn)), \
+             mock.patch("src.execution.paper_cli._load_actionable_rows", return_value=[_row()]):
+            exit_code = main(["paper-scan", "--verbose"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "kalshi" not in out.lower()
+        assert "STATUS: FILLED" in out
+
+    def test_paper_portfolio_completes_with_only_polymarket_enabled(self, capsys, db_conn):
+        config = self._config()
+        with mock.patch("src.execution.paper_cli.load_config", return_value=config), \
+             mock.patch("src.execution.paper_cli.get_connection", return_value=_NonClosingConnProxy(db_conn)):
+            exit_code = main(["paper-portfolio"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "kalshi" not in out.lower()
+
+    def test_paper_stats_completes_with_only_polymarket_enabled(self, capsys, db_conn):
+        config = self._config()
+        with mock.patch("src.execution.paper_cli.load_config", return_value=config), \
+             mock.patch("src.execution.paper_cli.get_connection", return_value=_NonClosingConnProxy(db_conn)):
+            exit_code = main(["paper-stats", "--today"])
+        assert exit_code == 0
+
+    def test_settle_paper_completes_with_only_polymarket_enabled(self, capsys, db_conn):
+        config = self._config()
+        provider = _FakeProvider()
+        with mock.patch("src.execution.paper_cli.load_config", return_value=config), \
+             mock.patch("src.execution.paper_cli.get_provider", return_value=provider), \
+             mock.patch("src.execution.paper_cli.get_connection", return_value=_NonClosingConnProxy(db_conn)):
+            exit_code = main(["settle-paper"])
+        out = capsys.readouterr().out
+        assert exit_code == 0
+        assert "kalshi" not in out.lower()
