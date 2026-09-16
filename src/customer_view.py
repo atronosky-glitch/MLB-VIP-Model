@@ -131,9 +131,17 @@ p,div,span,button { font-family:'Inter',sans-serif; }
    near-white text on top of it -- unreadable once this page's own
    light theme is layered on top of the rest of the DOM around it. */
 [data-testid="stTextInputRootElement"] {
-  background-color:#ffffff !important; border-color:var(--line) !important;
+  background-color:#ffffff !important; border-color:var(--ink) !important;
 }
 [data-testid="stTextInputRootElement"] input { color:var(--ink) !important; }
+/* Operator request 2026-09-16: the "Email"/"Password" labels and the
+   input box outlines were readable but low-contrast (--line/--muted,
+   deliberately subtle everywhere else on this site) -- too faint on
+   the account form specifically, where they're the first thing a new
+   visitor has to read. Darkened to --ink (near-black) for every
+   widget label site-wide (a strict readability improvement, not just
+   this form) and the text-input border above. */
+[data-testid="stWidgetLabel"] p { color:var(--ink) !important; }
 /* Same bug, the Log In / Sign Up tab selector: found live 2026-09-16
    (operator screenshot) -- the active tab's label text AND its
    underline indicator were both the shared theme's raw lime

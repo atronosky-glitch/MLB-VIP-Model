@@ -169,6 +169,17 @@ class TestAuthFormThemeOverrides:
         assert '[data-testid="stBaseButton-primaryFormSubmit"]' in source
         assert 'background-color:var(--accent) !important' in source
 
+    def test_widget_labels_and_input_borders_are_high_contrast_black(self):
+        """Operator request 2026-09-16: after the readability fix above,
+        the "Email"/"Password" labels and the input box outlines were
+        readable but still low-contrast (--line/--muted, deliberately
+        subtle everywhere else on the site) -- too faint on the account
+        form specifically, the first thing a new visitor has to read.
+        Darkened to --ink (near-black), confirmed live."""
+        source = self._source()
+        assert '[data-testid="stWidgetLabel"] p { color:var(--ink) !important; }' in source
+        assert '[data-testid="stTextInputRootElement"] {\n  background-color:#ffffff !important; border-color:var(--ink) !important;\n}' in source
+
     def test_text_inputs_have_light_background_and_dark_text(self):
         """stTextInputRootElement carries the shared theme's
         secondaryBackgroundColor directly (confirmed live: rgb(16,22,33)
