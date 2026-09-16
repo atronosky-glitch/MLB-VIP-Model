@@ -144,6 +144,75 @@ def test_policy_pages_are_marked_as_drafts_pending_legal_review():
     assert "not yet reviewed by a lawyer" in source.lower()
 
 
+class TestAuthFormThemeOverrides:
+    """Real bugs found live 2026-09-16 (operator screenshots): this
+    page shares a dark, bright-lime Streamlit theme with the admin
+    dashboard (.streamlit/config.toml) and has to explicitly override
+    every native widget to its own light theme -- an existing,
+    documented pattern in this file (see the "Real bug, found live
+    2026-09-10" comments already here). The new account-login form
+    introduced three native widget types this page had never used
+    before (form-submit buttons, text inputs, checkboxes), none of
+    which were covered by the existing overrides -- confirmed live via
+    the browser's own computed styles, not guessed."""
+
+    def _source(self):
+        return (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+
+    def test_form_submit_buttons_use_the_site_accent_not_the_shared_theme_lime(self):
+        """stFormSubmitButton renders as stBaseButton-primaryFormSubmit
+        -- a DIFFERENT testid than plain st.button's
+        stBaseButton-primary, which was already overridden but didn't
+        cover this one. Confirmed live: Log In/Sign Up were still the
+        raw lime (rgb(185,255,69)) before this fix."""
+        source = self._source()
+        assert '[data-testid="stBaseButton-primaryFormSubmit"]' in source
+        assert 'background-color:var(--accent) !important' in source
+
+    def test_text_inputs_have_light_background_and_dark_text(self):
+        """stTextInputRootElement carries the shared theme's
+        secondaryBackgroundColor directly (confirmed live: rgb(16,22,33)
+        background under near-white rgb(246,248,252) text) -- unreadable
+        without an explicit override."""
+        source = self._source()
+        assert '[data-testid="stTextInputRootElement"]' in source
+        assert '[data-testid="stTextInputRootElement"] input { color:var(--ink) !important; }' in source
+
+    def test_active_tab_uses_accent_color_not_lime(self):
+        """The selected Log In/Sign Up tab's label text and underline
+        indicator were both confirmed live at the raw theme lime
+        (rgb(185,255,69))."""
+        source = self._source()
+        assert '[data-testid="stTab"][data-selected="true"] p' in source
+        assert '.react-aria-SelectionIndicator' in source
+
+    def test_consent_checkbox_unchecked_box_is_light_not_a_dark_blob(self):
+        """The most important of these fixes: the marketing-consent
+        checkbox's unchecked box carried the shared theme's near-black
+        background (confirmed live: rgb(13,17,28)), rendering as an
+        unreadable dark blob rather than a legible unchecked control --
+        worth getting right specifically since a consent checkbox must
+        be unambiguously readable as unchecked."""
+        source = self._source()
+        assert '[data-testid="stCheckbox"] label > div:not([data-testid])' in source
+        assert 'background-color:#ffffff !important; border-color:var(--line) !important;' in source
+
+    def test_consent_checkbox_checked_state_selector_is_has_based_not_a_dead_sibling_combinator(self):
+        """A first attempt at this rule used `input:checked ~ div`,
+        which never matches here -- confirmed live (forcing
+        checked=true directly left the box color unchanged) -- because
+        the <input> is nested inside a <span> wrapper, not a direct
+        sibling of the visual box. :has() on the shared <label>
+        ancestor is what actually reaches it; confirmed via the
+        browser's own .matches() that this selector is structurally
+        correct, even though a real checked-state click couldn't be
+        reproduced through this automated test harness to visually
+        re-confirm the render."""
+        source = self._source()
+        assert 'label:has(input:checked) > div:not([data-testid])' in source
+        assert 'input:checked ~ div:not([data-testid])' not in source  # the dead selector must not remain
+
+
 def test_cookie_manager_is_not_cache_resource():
     """Real bug found live 2026-09-15: @st.cache_resource on the
     CookieManager constructor raised CachedWidgetWarning in this

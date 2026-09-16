@@ -109,6 +109,60 @@ p,div,span,button { font-family:'Inter',sans-serif; }
 [data-testid="stBaseButton-primary"]:hover {
   background-color:var(--accent-soft) !important; border-color:var(--accent-soft) !important; color:#fff !important;
 }
+/* Real bug, found live 2026-09-16 (operator screenshot: the Log In/Sign
+   Up buttons on the new account-login form were still the shared dark
+   theme's bright lime): a button inside st.form_submit_button carries
+   its OWN separate testid (stBaseButton-primaryFormSubmit), not the
+   plain stBaseButton-primary already overridden above -- same bug
+   class as every other one on this page, one more native-widget
+   variant the guessed selector never covered. Verified live via the
+   browser's own computed styles. */
+[data-testid="stBaseButton-primaryFormSubmit"] {
+  background-color:var(--accent) !important; border-color:var(--accent) !important; color:#fff !important;
+}
+[data-testid="stBaseButton-primaryFormSubmit"]:hover {
+  background-color:var(--accent-soft) !important; border-color:var(--accent-soft) !important; color:#fff !important;
+}
+/* Same bug, the account form's text inputs (email/phone/password):
+   found live 2026-09-16 (operator screenshot: couldn't read anything
+   typed into the Log In/Sign Up fields) -- stTextInputRootElement
+   itself carries the shared dark theme's secondaryBackgroundColor
+   directly (confirmed live via computed styles: rgb(16,22,33)), with
+   near-white text on top of it -- unreadable once this page's own
+   light theme is layered on top of the rest of the DOM around it. */
+[data-testid="stTextInputRootElement"] {
+  background-color:#ffffff !important; border-color:var(--line) !important;
+}
+[data-testid="stTextInputRootElement"] input { color:var(--ink) !important; }
+/* Same bug, the Log In / Sign Up tab selector: found live 2026-09-16
+   (operator screenshot) -- the active tab's label text AND its
+   underline indicator were both the shared theme's raw lime
+   (confirmed live via computed styles: rgb(185,255,69) on both). */
+[data-testid="stTab"][data-selected="true"] p { color:var(--accent) !important; }
+[data-testid="stTab"] .react-aria-SelectionIndicator {
+  background-color:var(--accent) !important; border-color:var(--accent) !important;
+}
+/* Same bug, the marketing-consent checkbox on the Sign Up form: found
+   live 2026-09-16 -- the unchecked box itself carried the shared dark
+   theme's near-black background (confirmed live: rgb(13,17,28), a
+   barely-visible dark-on-white blob, not a legible unchecked checkbox
+   outline -- worth getting right specifically since this is a consent
+   control). The visual box has no stable testid of its own (an
+   unlabeled div inside the checkbox's <label>); :not([data-testid])
+   excludes its sibling stWidgetLabel div, verified live to match only
+   the checkbox box itself. */
+[data-testid="stCheckbox"] label > div:not([data-testid]) {
+  background-color:#ffffff !important; border-color:var(--line) !important;
+}
+/* input:checked ~ div doesn't match here -- the <input> is nested
+   inside a <span> wrapper, not a direct sibling of the visual box, so
+   a plain sibling combinator can't reach it (verified live: forcing
+   checked=true directly left the box unchanged). :has() reaches from
+   the shared <label> ancestor instead -- confirmed live this actually
+   flips the box color once the input is checked. */
+[data-testid="stCheckbox"] label:has(input:checked) > div:not([data-testid]) {
+  background-color:var(--accent) !important; border-color:var(--accent) !important;
+}
 /* Real bug, found live 2026-09-10 (operator screenshot: "← All Options"
    unreadable on the Middling page): secondary buttons inherit this
    page's dark ink color for their text (from .stApp's own color rule)
