@@ -660,7 +660,18 @@ def inject_pinnacle_game_reference(
             continue
         ev = event_map.get(gdata.get("event_id", "")) or {}
         market_type = gdata.get("market_type", "")
-        is_spread = market_type != "game_moneyline" and not market_type.endswith("_total_ou")
+        # 2026-09-19: CFB's team-total market types (game_team_total_
+        # away_ou/game_team_total_home_ou) don't end with the literal
+        # substring "_total_ou" (they end with "away_ou"/"home_ou"), so
+        # the old endswith check misclassified them as spreads —
+        # true-but-wrong direction math never crashes, it just makes
+        # every team-total group fail to match Pinnacle (skipped via
+        # the away_raw_line is None guard below) and silently fall back
+        # to LOO consensus every time, never getting the sharper
+        # reference even when Pinnacle has one. "in" is exact and can't
+        # have this class of substring bug again.
+        is_spread = market_type not in ("game_moneyline", "game_total_ou",
+                                         "game_team_total_away_ou", "game_team_total_home_ou")
         if is_spread:
             # This group's own `line` is stored unsigned (abs value), but
             # Pinnacle's hdp is signed from the HOME team's perspective and
@@ -694,9 +705,17 @@ def inject_pinnacle_game_reference(
                 market_type, gdata.get("line"), time.time() - pin.last_updated,
             )
             continue
+        # Same "in" fix as is_spread above, same reason: pin.market_type
+        # for a CFB team total ("game_team_total_away_ou"/"..._home_ou")
+        # doesn't end with the literal substring "_total_ou", so the old
+        # endswith check would have sent it into the spread/moneyline
+        # branch below -- using away_decimal/home_decimal (win-probability
+        # fields) instead of over_decimal/under_decimal (the actual O/U
+        # prices a total needs). Not just a missed match this time; a
+        # genuinely wrong price if left unfixed.
         if pin.line is None:  # moneyline
             over_dec, under_dec = pin.away_decimal, pin.home_decimal
-        elif pin.market_type.endswith("_total_ou"):
+        elif pin.market_type in ("game_total_ou", "game_team_total_away_ou", "game_team_total_home_ou"):
             over_dec, under_dec = pin.over_decimal, pin.under_decimal
         else:  # spread/run line: AWAY=over, HOME=under, same convention as moneyline
             over_dec, under_dec = pin.away_decimal, pin.home_decimal

@@ -118,6 +118,60 @@ def nfl_should_run_pregame_check(
     return ScheduleDecision(True, "inside NFL pregame tracking window")
 
 
+# ── CFB (NCAAF) ──────────────────────────────────────────────────────
+# Game-level only, no props (see src/sports/cfb.py) — so there's no
+# props-scan equivalent of nfl_should_fetch_props here. Games cluster
+# heavily on Saturdays (with some Tue-Thu games) across a wide range of
+# kickoff times, same shape as NFL's own "some days, several very
+# different windows" pattern -- reusing that exact policy rather than
+# inventing a new one. No hardcoded season-month check either: game_times
+# comes from a live discovery call (_discover_cfb_game_times in
+# src/worker.py), so an empty result during the off-season already means
+# "nothing to schedule" without any date-based gating here.
+
+def cfb_has_games_today(now: datetime, game_times: list[datetime]) -> bool:
+    """True if any discovered CFB game starts on *now*'s calendar date,
+    in *now*'s own timezone."""
+    return any(_same_local_date(gt, now) for gt in game_times)
+
+
+def cfb_should_run_daily_scan(
+    now: datetime, game_times: list[datetime], already_ran_today: bool,
+) -> ScheduleDecision:
+    """One scan per CFB game day, in the morning — same policy as NFL's
+    own daily-scan decision, skipped entirely on days with no games."""
+    if already_ran_today:
+        return ScheduleDecision(False, "already ran today")
+    if not cfb_has_games_today(now, game_times):
+        return ScheduleDecision(False, "no CFB games today")
+    if now.hour < 8:
+        return ScheduleDecision(False, "before the 8am scan window")
+    return ScheduleDecision(True, "CFB game day, scan window reached")
+
+
+def cfb_pregame_window(game_times: list[datetime]) -> tuple[datetime, datetime] | None:
+    """(start, end) of the pregame-tracking window around today's
+    earliest-to-latest CFB kickoffs: 4 hours before the first game
+    through kickoff of the last."""
+    if not game_times:
+        return None
+    return (game_times[0] - timedelta(hours=4), game_times[-1])
+
+
+def cfb_should_run_pregame_check(
+    now: datetime, game_times: list[datetime],
+) -> ScheduleDecision:
+    window = cfb_pregame_window(game_times)
+    if window is None:
+        return ScheduleDecision(False, "no CFB games today")
+    start, end = window
+    if now < start:
+        return ScheduleDecision(False, f"pregame window opens at {start.isoformat()}")
+    if now > end:
+        return ScheduleDecision(False, "all of today's kickoffs have passed")
+    return ScheduleDecision(True, "inside CFB pregame tracking window")
+
+
 # ── WNBA ──────────────────────────────────────────────────────────
 
 def wnba_has_games_today(now: datetime, game_times: list[datetime]) -> bool:

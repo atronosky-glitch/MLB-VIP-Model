@@ -35,6 +35,16 @@ GAME_MARKET_TYPES = frozenset({
     # live 2026-08-23 while auditing why zero Official picks were being
     # produced).
     "game_runline_ou",
+    # 2026-09-19 (CFB): a team total is an Over/Under against ONE team's
+    # own score, not the combined away+home total — away and home are
+    # kept as two distinct market_types (see src/sports/cfb.py's
+    # GAME_TEAM_TOTAL_AWAY/GAME_TEAM_TOTAL_HOME) rather than one type
+    # disambiguated by side, so they never collide with each other or
+    # with game_total_ou's own O/U grouping. Only CFB registers these
+    # MarketConfigs today; adding them here is purely additive for every
+    # other league (they'll simply never appear in another league's
+    # recommendations).
+    "game_team_total_away_ou", "game_team_total_home_ou",
 })
 
 # Status strings recognized as "the game will never produce a final score."
@@ -98,6 +108,15 @@ def grade_total(side: str, away_score: int | None, home_score: int | None, line:
     return grade_ou(float(away_score + home_score), line, side)
 
 
+def grade_team_total(side: str, team_score: int | None, line: float | None) -> str:
+    """Grade a team total (Over/Under ONE team's own score) pick. Same
+    shape as grade_total, just against a single team's own final score
+    instead of the combined away+home total."""
+    if team_score is None:
+        return SETTLEMENT_UNRESOLVED
+    return grade_ou(float(team_score), line, side)
+
+
 def classify_event_status(final_status: str | None) -> str:
     """Return "final", "void", or "pending" for a raw event_results.final_status.
 
@@ -158,5 +177,9 @@ def grade_game_recommendation(rec: dict, event_result: dict | None) -> tuple[str
         return grade_spread(side, side_score, opponent_score, rec.get("raw_line")), detail
     if market_type == "game_total_ou":
         return grade_total(side, away_score, home_score, rec.get("line")), detail
+    if market_type == "game_team_total_away_ou":
+        return grade_team_total(side, away_score, rec.get("line")), detail
+    if market_type == "game_team_total_home_ou":
+        return grade_team_total(side, home_score, rec.get("line")), detail
 
     return SETTLEMENT_UNRESOLVED, {"reason": "unhandled_market_type"}

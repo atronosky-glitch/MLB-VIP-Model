@@ -58,6 +58,13 @@ AUTO_SETTLEABLE_MARKET_TYPES = frozenset({
     # single game-market recommendation from Official status regardless
     # of EV, book count, or Pinnacle approval (caught live 2026-08-23).
     "game_moneyline", "game_spread_ou", "game_runline_ou", "game_total_ou",
+    # CFB team totals (2026-09-19, src/sports/cfb.py) — same class of gap
+    # as the game-market/WNBA-prop ones above; adding these here BEFORE
+    # they'd otherwise be caught live is the whole point of writing this
+    # comment pattern down each time. Settled generically by
+    # src/game_settlement.py::grade_team_total, same as the other game
+    # markets above.
+    "game_team_total_away_ou", "game_team_total_home_ou",
     # WNBA player props — the exact same class of oversight as the
     # game-market gap above, found live 2026-08-26 investigating "zero
     # WNBA recommendations saved for 6 straight days": src/wnba_results.py

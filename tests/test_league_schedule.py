@@ -19,6 +19,10 @@ from src.league_schedule import (
     nfl_should_run_pregame_check,
     nfl_should_fetch_props,
     mlb_should_fetch_props,
+    cfb_has_games_today,
+    cfb_should_run_daily_scan,
+    cfb_pregame_window,
+    cfb_should_run_pregame_check,
     wnba_has_games_today,
     wnba_should_check_schedule,
     wnba_should_fetch_game_odds,
@@ -143,6 +147,94 @@ class TestNFLPregameWindow:
     def test_no_games_today_never_runs(self):
         now = datetime(2026, 9, 9, 12, 0, tzinfo=UTC)
         d = nfl_should_run_pregame_check(now, [])
+        assert d.should_run is False
+
+
+class TestCFBGameDayDiscovery:
+    def test_no_games_no_scan(self):
+        now = datetime(2026, 9, 16, 9, 0, tzinfo=UTC)  # a Wednesday
+        assert cfb_has_games_today(now, []) is False
+
+    def test_saturday_slate_detected(self):
+        now = datetime(2026, 9, 19, 9, 0, tzinfo=UTC)  # Saturday morning
+        kickoff = datetime(2026, 9, 19, 17, 0, tzinfo=UTC)  # noon ET kickoff
+        assert cfb_has_games_today(now, [kickoff]) is True
+
+    def test_game_on_different_date_not_counted(self):
+        now = datetime(2026, 9, 19, 9, 0, tzinfo=UTC)
+        other_day = datetime(2026, 9, 26, 17, 0, tzinfo=UTC)
+        assert cfb_has_games_today(now, [other_day]) is False
+
+    def test_wide_range_of_kickoff_windows_all_seen(self):
+        """Noon, afternoon, and night kickoffs all on the same Saturday --
+        CFB's own version of NFL's several-very-different-windows shape."""
+        now = datetime(2026, 9, 19, 9, 0, tzinfo=UTC)
+        noon = datetime(2026, 9, 19, 16, 0, tzinfo=UTC)
+        night = datetime(2026, 9, 20, 2, 30, tzinfo=UTC)
+        assert cfb_has_games_today(now, [noon]) is True
+        assert cfb_has_games_today(now, [night]) is False  # crosses into the next UTC date
+
+
+class TestCFBDailyScan:
+    def test_no_games_never_runs(self):
+        now = datetime(2026, 9, 16, 9, 0, tzinfo=UTC)
+        d = cfb_should_run_daily_scan(now, [], already_ran_today=False)
+        assert d.should_run is False
+        assert "no CFB games" in d.reason
+
+    def test_runs_once_on_game_day_after_8am(self):
+        now = datetime(2026, 9, 19, 9, 0, tzinfo=UTC)
+        kickoff = datetime(2026, 9, 19, 17, 0, tzinfo=UTC)
+        d = cfb_should_run_daily_scan(now, [kickoff], already_ran_today=False)
+        assert d.should_run is True
+
+    def test_does_not_run_before_8am(self):
+        now = datetime(2026, 9, 19, 6, 0, tzinfo=UTC)
+        kickoff = datetime(2026, 9, 19, 17, 0, tzinfo=UTC)
+        d = cfb_should_run_daily_scan(now, [kickoff], already_ran_today=False)
+        assert d.should_run is False
+
+    def test_does_not_run_twice(self):
+        now = datetime(2026, 9, 19, 9, 0, tzinfo=UTC)
+        kickoff = datetime(2026, 9, 19, 17, 0, tzinfo=UTC)
+        d = cfb_should_run_daily_scan(now, [kickoff], already_ran_today=True)
+        assert d.should_run is False
+        assert "already ran" in d.reason
+
+
+class TestCFBPregameWindow:
+    def test_no_games_no_window(self):
+        assert cfb_pregame_window([]) is None
+
+    def test_window_spans_first_minus_4h_to_last_kickoff(self):
+        noon = datetime(2026, 9, 19, 16, 0, tzinfo=UTC)
+        afternoon = datetime(2026, 9, 19, 19, 30, tzinfo=UTC)
+        night = datetime(2026, 9, 20, 2, 30, tzinfo=UTC)
+        start, end = cfb_pregame_window([noon, afternoon, night])
+        assert start == noon - timedelta(hours=4)
+        assert end == night
+
+    def test_should_run_inside_window(self):
+        kickoff = datetime(2026, 9, 19, 16, 0, tzinfo=UTC)
+        now = datetime(2026, 9, 19, 13, 0, tzinfo=UTC)  # 3h before kickoff
+        d = cfb_should_run_pregame_check(now, [kickoff])
+        assert d.should_run is True
+
+    def test_should_not_run_before_window(self):
+        kickoff = datetime(2026, 9, 19, 16, 0, tzinfo=UTC)
+        now = datetime(2026, 9, 19, 7, 0, tzinfo=UTC)  # 9h before
+        d = cfb_should_run_pregame_check(now, [kickoff])
+        assert d.should_run is False
+
+    def test_should_not_run_after_last_kickoff(self):
+        kickoff = datetime(2026, 9, 19, 16, 0, tzinfo=UTC)
+        now = datetime(2026, 9, 19, 17, 0, tzinfo=UTC)  # after kickoff
+        d = cfb_should_run_pregame_check(now, [kickoff])
+        assert d.should_run is False
+
+    def test_no_games_today_never_runs(self):
+        now = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
+        d = cfb_should_run_pregame_check(now, [])
         assert d.should_run is False
 
 

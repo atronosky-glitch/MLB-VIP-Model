@@ -1,4 +1,4 @@
-"""Read-only customer-facing VIP product view (MLB, NFL, WNBA).
+"""Read-only customer-facing VIP product view (MLB, NFL, WNBA, NCAAF).
 
 Public requests never query protected upcoming recommendation fields. The
 temporary entitlement adapter uses a server-side staging token so a future
@@ -349,7 +349,7 @@ def _market_label(value: str) -> str:
     return (value or "").replace("_ou", "").replace("_yn", "").replace("_", " ").title()
 
 
-_LEAGUE_EMOJI = {"MLB": "⚾", "NFL": "🏈", "WNBA": "🏀"}
+_LEAGUE_EMOJI = {"MLB": "⚾", "NFL": "🏈", "WNBA": "🏀", "NCAAF": "🏈"}
 
 
 def _league_badge(pick: dict) -> str:
@@ -1374,7 +1374,7 @@ st.markdown(f"""
   </div>
 </div>
 <div class="hero">
-  <div class="eyebrow">MLB · NFL · WNBA</div>
+  <div class="eyebrow">MLB · NFL · WNBA · NCAAF</div>
   <h1>Multi-book odds analysis</h1>
   <p>Every price is screened against fair value and market quality before it's shown. Every result — win or loss — is tracked and published in full.</p>
   <span class="pill">{today} · {'FULL ACCESS' if authorized else 'PUBLIC VIEW'}</span>
@@ -1690,7 +1690,7 @@ _books_line = " &nbsp;·&nbsp; ".join(_books_seen) if _books_seen else "Books po
 st.markdown(f"""
 <div class="footer-band">
   <div class="footer-label">Leagues Covered &middot; Books Scanned &middot; Updated Automatically</div>
-  <div class="footer-books">MLB &nbsp;·&nbsp; NFL &nbsp;·&nbsp; WNBA &nbsp;&mdash;&nbsp; {_books_line}</div>
+  <div class="footer-books">MLB &nbsp;·&nbsp; NFL &nbsp;·&nbsp; WNBA &nbsp;·&nbsp; NCAAF &nbsp;&mdash;&nbsp; {_books_line}</div>
 </div>
 """, unsafe_allow_html=True)
 

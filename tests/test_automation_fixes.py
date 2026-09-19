@@ -474,6 +474,55 @@ class TestNFLWNBASchedulingChecks:
         ).fetchone()["c"]
         assert count == 1
 
+    def test_no_cfb_games_creates_no_jobs(self, db_conn):
+        with patch.object(worker, "_discover_cfb_game_times", return_value=[]):
+            worker._check_and_schedule_cfb(db_conn)
+        count = db_conn.execute("SELECT COUNT(*) AS c FROM scheduled_jobs").fetchone()["c"]
+        assert count == 0
+
+    def test_cfb_game_day_creates_daily_scan_job(self, db_conn):
+        now = worker._now_local()
+        kickoff = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        with patch.object(worker, "_discover_cfb_game_times", return_value=[kickoff]), \
+             patch.object(worker, "_now_local", return_value=now.replace(hour=9)):
+            worker._check_and_schedule_cfb(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'morning-run-cfb'"
+        ).fetchone()
+        assert row is not None
+
+    def test_cfb_scheduling_does_not_duplicate_queued_job(self, db_conn):
+        now = worker._now_local().replace(hour=9)
+        kickoff = now.replace(hour=16)
+        with patch.object(worker, "_discover_cfb_game_times", return_value=[kickoff]), \
+             patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_cfb(db_conn)
+            worker._check_and_schedule_cfb(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'morning-run-cfb'"
+        ).fetchone()["c"]
+        assert count == 1
+
+    def test_cfb_pregame_check_scheduled_inside_window(self, db_conn):
+        now = worker._now_local().replace(hour=9)
+        kickoff = now.replace(hour=16)
+        with patch.object(worker, "_discover_cfb_game_times", return_value=[kickoff]), \
+             patch.object(worker, "_now_local", return_value=kickoff - timedelta(hours=2)):
+            worker._check_and_schedule_cfb(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'pregame-check-cfb'"
+        ).fetchone()
+        assert row is not None
+
+    def test_cfb_job_types_registered_in_dispatch(self):
+        """morning-run-cfb/pregame-check-cfb must actually be wired into
+        _execute_job's dispatch table, or _check_and_schedule_cfb would
+        queue jobs that silently do nothing when picked up."""
+        import inspect
+        source = inspect.getsource(worker._execute_job)
+        assert '"morning-run-cfb"' in source
+        assert '"pregame-check-cfb"' in source
+
     def test_no_wnba_key_or_games_creates_no_jobs(self, db_conn):
         with patch.object(worker, "_discover_wnba_game_times", return_value=[]):
             worker._check_and_schedule_wnba(db_conn)

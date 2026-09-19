@@ -38,6 +38,7 @@ _LEAGUE_MODULE_NAMES = {
     "MLB": "mlb",
     "NFL": "nfl",
     "WNBA": "wnba",
+    "NCAAF": "cfb",
 }
 _LEAGUE_CACHE: dict[str, object] = {}
 

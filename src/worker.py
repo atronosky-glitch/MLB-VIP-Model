@@ -61,6 +61,7 @@ PREGAME_CHECK_INTERVAL_MINUTES = 10
 # discovery calls (NFL: rate-limited API; WNBA: free but still a network
 # call) from firing every worker tick.
 NFL_SCHEDULE_CHECK_INTERVAL_MINUTES = 30
+CFB_SCHEDULE_CHECK_INTERVAL_MINUTES = 30
 WNBA_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
 # MLB's supplemental props check (added 2026-08-22) reads the local
 # games table rather than calling a live API, so this interval only
@@ -763,6 +764,8 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "pregame-check": lambda: _run_pregame_scan(conn, config, event_id),
         "morning-run-nfl": lambda: _run_morning_scan(config, league="NFL"),
         "pregame-check-nfl": lambda: _run_pregame_scan(conn, config, event_id, league="NFL"),
+        "morning-run-cfb": lambda: _run_morning_scan(config, league="NCAAF"),
+        "pregame-check-cfb": lambda: _run_pregame_scan(conn, config, event_id, league="NCAAF"),
         "wnba-odds-scan": lambda: _run_wnba_odds_scan(config),
         "wnba-props-scan": lambda: _run_wnba_props_scan(config),
         "mlb-props-scan": lambda: _run_mlb_props_scan(config),
@@ -918,6 +921,50 @@ def _discover_nfl_game_times() -> list:
         return []
 
 
+def _discover_cfb_game_times() -> list:
+    """Discover today's/upcoming CFB kickoff times — identical shape to
+    _discover_nfl_game_times (same SportsGameOdds client/cache, same
+    429-to-Odds-API fallback pattern), just leagueID="NCAAF" and an
+    8-day-ahead window wide enough to always see the current CFB week's
+    Tuesday-through-Saturday slate regardless of which day this runs."""
+    import requests
+    from src.api_client import SportsGameOddsClient
+    from src.league_schedule import extract_game_start_times
+    now = _now_local().astimezone(timezone.utc)
+    try:
+        client = SportsGameOddsClient(max_cache_age=900.0)
+        data, _from_cache = client.get_events(
+            league="NCAAF", odds_available=False,
+            starts_after=(now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            starts_before=(now + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        events = data.get("data", data.get("events", [])) or []
+        return extract_game_start_times(events)
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status != 429:
+            logger.warning("[CFB] Could not discover game schedule", exc_info=True)
+            return []
+        logger.warning(
+            "[CFB] SportsGameOdds returned 429 (quota/rate-limit) — "
+            "falling back to The Odds API for schedule discovery"
+        )
+        try:
+            from src.odds_api_client import OddsAPIClient, OddsAPIKeyError, EVENTS_CACHE_TTL_SECONDS
+            from src.sports.cfb import ODDS_API_SPORT_KEY
+            fb_client = OddsAPIClient(max_cache_age=EVENTS_CACHE_TTL_SECONDS)
+            fb_events, _from_cache = fb_client.get_events(sport_key=ODDS_API_SPORT_KEY)
+            return extract_game_start_times(fb_events)
+        except OddsAPIKeyError:
+            return []  # no Odds API key configured — silently unavailable, not an error
+        except Exception:
+            logger.warning("[CFB] Odds API fallback also failed", exc_info=True)
+            return []
+    except Exception:
+        logger.warning("[CFB] Could not discover game schedule", exc_info=True)
+        return []
+
+
 def _discover_wnba_game_times() -> list:
     """Discover today's/upcoming WNBA game times via the FREE /events
     endpoint (0 credits, confirmed live — see src/odds_api_client.py) —
@@ -1025,6 +1072,34 @@ def _check_and_schedule_nfl(conn: DB) -> None:
         job_id = _create_job_if_not_queued(conn, "nfl-props-scan")
         if job_id:
             logger.info("[NFL] Scheduled props scan: %s (%s)", job_id[:8], props_decision.reason)
+
+
+def _check_and_schedule_cfb(conn: DB) -> None:
+    """CFB: daily scan + pregame tracking, same policy as NFL's own
+    scheduling — but no props branch at all, since CFB has no player
+    props (see src/sports/cfb.py's module docstring)."""
+    from src.league_schedule import cfb_should_run_daily_scan, cfb_should_run_pregame_check
+
+    now = _now_local()
+    game_times = _discover_cfb_game_times()
+    if not game_times:
+        return
+
+    last_scan = _get_last_completed_job_at(conn, "morning-run-cfb")
+    already_ran_today = bool(
+        last_scan and last_scan.astimezone(now.tzinfo).date() == now.date()
+    )
+    scan_decision = cfb_should_run_daily_scan(now, game_times, already_ran_today)
+    if scan_decision.should_run:
+        job_id = _create_job_if_not_queued(conn, "morning-run-cfb")
+        if job_id:
+            logger.info("[CFB] Scheduled daily scan: %s (%s)", job_id[:8], scan_decision.reason)
+
+    pregame_decision = cfb_should_run_pregame_check(now, game_times)
+    if pregame_decision.should_run:
+        job_id = _create_job_if_not_queued(conn, "pregame-check-cfb")
+        if job_id:
+            logger.info("[CFB] Scheduled pregame check: %s (%s)", job_id[:8], pregame_decision.reason)
 
 
 def _mlb_game_times_from_db(conn: DB) -> list:
@@ -1248,6 +1323,7 @@ def run_worker_persistent(config) -> None:
     last_grading_check = 0
     last_morning_check = 0
     last_nfl_check = 0
+    last_cfb_check = 0
     last_wnba_check = 0
     last_mlb_props_check = 0
     last_arb_middle_check = 0
@@ -1303,6 +1379,15 @@ def run_worker_persistent(config) -> None:
                 except Exception:
                     logger.exception("[NFL] Scheduling check failed")
                 last_nfl_check = now
+
+            # CFB: daily scan + pregame tracking, only on real game days
+            # (see src/league_schedule.py) — isolated the same way.
+            if now - last_cfb_check >= CFB_SCHEDULE_CHECK_INTERVAL_MINUTES * 60:
+                try:
+                    _check_and_schedule_cfb(conn)
+                except Exception:
+                    logger.exception("[CFB] Scheduling check failed")
+                last_cfb_check = now
 
             # WNBA: schedule/odds/props, credit-aware (see
             # src/odds_api_credits.py) — isolated the same way.

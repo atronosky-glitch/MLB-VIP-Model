@@ -12,6 +12,7 @@ from src.game_settlement import (
     grade_moneyline,
     grade_spread,
     grade_total,
+    grade_team_total,
 )
 from src.prop_config import is_auto_settleable_market
 from src.grading import (
@@ -84,6 +85,26 @@ class TestGradeTotal:
         assert grade_total("OVER", None, 80, 168.5) == SETTLEMENT_UNRESOLVED
 
 
+class TestGradeTeamTotal:
+    """2026-09-19 (CFB): Over/Under ONE team's own score, not the
+    combined away+home total."""
+
+    def test_over_wins_against_that_teams_own_score_only(self):
+        # Away team scored 17 -- combined would be 17+31=48, but the
+        # team total line (20.5) must grade against 17 alone.
+        assert grade_team_total("UNDER", 17, 20.5) == SETTLEMENT_WIN
+        assert grade_team_total("OVER", 17, 20.5) == SETTLEMENT_LOSS
+
+    def test_over_wins(self):
+        assert grade_team_total("OVER", 31, 27.5) == SETTLEMENT_WIN
+
+    def test_push_on_whole_line(self):
+        assert grade_team_total("OVER", 28, 28.0) == SETTLEMENT_PUSH
+
+    def test_missing_score_unresolved(self):
+        assert grade_team_total("OVER", None, 27.5) == SETTLEMENT_UNRESOLVED
+
+
 class TestClassifyEventStatus:
     def test_final_statuses(self):
         assert classify_event_status("FINAL") == "final"
@@ -136,6 +157,23 @@ class TestGradeGameRecommendation:
         event_result = {"final_status": "FINAL", "away_score": 70, "home_score": 78}
         status, _ = grade_game_recommendation(rec, event_result)
         assert status == SETTLEMENT_WIN  # 148 > 140.5
+
+    def test_away_team_total_end_to_end(self):
+        """Away scored 17 (of a 17-31 final) -- team total line 20.5
+        Under must win, even though the combined total (48) would have
+        graded the OVER side of a normal game_total_ou."""
+        rec = {"market_type": "game_team_total_away_ou", "side": "UNDER", "line": 20.5,
+               "raw_line": 20.5, "event_id": "evt-1"}
+        event_result = {"final_status": "FINAL", "away_score": 17, "home_score": 31}
+        status, _ = grade_game_recommendation(rec, event_result)
+        assert status == SETTLEMENT_WIN
+
+    def test_home_team_total_end_to_end(self):
+        rec = {"market_type": "game_team_total_home_ou", "side": "OVER", "line": 27.5,
+               "raw_line": 27.5, "event_id": "evt-1"}
+        event_result = {"final_status": "FINAL", "away_score": 17, "home_score": 31}
+        status, _ = grade_game_recommendation(rec, event_result)
+        assert status == SETTLEMENT_WIN  # home scored 31 > 27.5
 
     def test_no_event_result_yet_is_unresolved(self):
         rec = {"market_type": "game_moneyline", "side": "HOME", "event_id": "evt-1"}
@@ -309,6 +347,15 @@ class TestGameMarketsAreAutoSettleable:
     def test_all_four_game_market_types_are_settleable(self):
         for market_type in ("game_moneyline", "game_spread_ou",
                              "game_runline_ou", "game_total_ou"):
+            assert is_auto_settleable_market(market_type) is True, market_type
+
+    def test_cfb_team_total_market_types_are_settleable(self):
+        """Same bug class as the docstring above describes, caught here
+        BEFORE it shipped rather than after (2026-09-19, adding CFB): a
+        new game-level market_type is worthless if it's not also added
+        to AUTO_SETTLEABLE_MARKET_TYPES, regardless of how correct its
+        grading function is."""
+        for market_type in ("game_team_total_away_ou", "game_team_total_home_ou"):
             assert is_auto_settleable_market(market_type) is True, market_type
 
 

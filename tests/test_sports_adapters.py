@@ -29,12 +29,15 @@ from src.sports.base import MarketConfig, match_ou_market, match_yn_market, buil
 class TestSportsRegistry:
     def test_supported_leagues(self):
         from src.sports import supported_leagues
-        assert supported_leagues() == ["MLB", "NFL", "WNBA"]
+        assert supported_leagues() == ["MLB", "NCAAF", "NFL", "WNBA"]
 
-    def test_available_leagues_includes_all_three(self):
-        """WNBA became available 2026-08-19 via The Odds API (game markets only)."""
+    def test_available_leagues_includes_all_four(self):
+        """WNBA became available 2026-08-19 via The Odds API (game markets
+        only). NCAAF (CFB) became available 2026-09-19 via SportsGameOdds
+        (game markets only -- moneyline/spread/total/team-total, no
+        player props -- see src/sports/cfb.py)."""
         from src.sports import available_leagues
-        assert set(available_leagues()) == {"MLB", "NFL", "WNBA"}
+        assert set(available_leagues()) == {"MLB", "NFL", "WNBA", "NCAAF"}
 
     def test_get_league_case_insensitive(self):
         from src.sports import get_league
@@ -73,13 +76,18 @@ class TestSportsRegistry:
     def test_market_capability_report_structure(self):
         from src.sports import market_capability_report
         report = market_capability_report()
-        assert set(report.keys()) == {"MLB", "NFL", "WNBA"}
+        assert set(report.keys()) == {"MLB", "NFL", "WNBA", "NCAAF"}
         assert report["MLB"]["available"] is True
         assert report["NFL"]["available"] is True
         assert report["WNBA"]["available"] is True
+        assert report["NCAAF"]["available"] is True
         assert report["WNBA"]["n_markets"] == 11
         assert report["MLB"]["n_markets"] > 0
         assert report["NFL"]["n_markets"] > 0
+        # game-level only, no player props (see src/sports/cfb.py) --
+        # moneyline/spread/total/away-team-total/home-team-total.
+        assert report["NCAAF"]["n_markets"] == 5
+        assert all(m["game_level"] for m in report["NCAAF"]["markets"])
         for entry in report["NFL"]["markets"]:
             assert {"cli_name", "display_name", "supports_ou", "supports_yn", "game_level"} <= entry.keys()
 

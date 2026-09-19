@@ -619,6 +619,41 @@ def test_inject_pinnacle_game_reference_total():
     assert groups["k1"]["under"]["pinnacle"]["decimal_odds"] == 1.909
 
 
+def test_inject_pinnacle_game_reference_team_total():
+    """2026-09-19 (CFB): real bug found while adding team totals --
+    market_type "game_team_total_away_ou" doesn't end with the literal
+    substring "_total_ou" (it ends with "away_ou"), so BOTH the is_spread
+    classification and the over/under-vs-moneyline-field selection used
+    a fragile .endswith("_total_ou") check that silently misrouted team
+    totals: first into the signed-spread lookup path (which would just
+    never match, since a team total has no side_raw_line), and even if a
+    match somehow were found, into using away_decimal/home_decimal
+    (moneyline win-probability fields) instead of the correct
+    over_decimal/under_decimal (real O/U prices) -- a wrong price, not
+    just a missed one. Both are fixed to use explicit "in" membership.
+    This lookup entry is built by hand (not via _game_period_payload,
+    which only produces moneyline/spread/total the way Pinnacle's real
+    feed does) specifically to prove the team-total group is correctly
+    routed through the SAME branch game_total_ou uses."""
+    teams = frozenset({normalize_team_name("Miami Marlins"), normalize_team_name("Washington Nationals")})
+    pin = PinnacleGameOdds(
+        home_name="Miami Marlins", away_name="Washington Nationals",
+        market_type="game_team_total_away_ou", line=4.5,
+        home_decimal=None, away_decimal=None,
+        over_decimal=1.85, under_decimal=1.95,
+        last_updated=None,
+    )
+    lookup = {(teams, "game_team_total_away_ou", 4.5): pin}
+    groups = {"k1": _make_game_group(market_type="game_team_total_away_ou", line=4.5)}
+    n, _ = inject_pinnacle_game_reference(groups, _make_game_event_map(), lookup)
+    assert n == 1
+    # Correct O/U fields used -- NOT away_decimal/home_decimal (both None
+    # here, which would have raised or produced garbage if the old
+    # misrouted branch had been taken).
+    assert groups["k1"]["over"]["pinnacle"]["decimal_odds"] == 1.85
+    assert groups["k1"]["under"]["pinnacle"]["decimal_odds"] == 1.95
+
+
 def test_inject_pinnacle_game_reference_spread_away_favorite():
     """away_raw_line=-1.5 (away favored, laying 1.5) must match Pinnacle's
     hdp=+1.5 entry (home=1.869 receiving, away=1.943 laying) — NOT the
