@@ -411,14 +411,51 @@ def _run_arb_middle_scan(conn: DB, config) -> dict:
             logger.exception("[%s] Arbitrage/middle scan failed", league)
             results[league] = {"error": True}
 
-    if config is not None and (
-        getattr(config, "discord_webhook_urls", "")
-        or getattr(config, "discord_webhook_urls_arb_middle", "")
-        or getattr(config, "discord_webhook_urls_middle", "")
-    ):
-        _deliver_new_opportunity_alerts(conn, config, results)
+    if config is not None:
+        # run_scan (above) claims every newly-ACTIVE arbitrage/middle
+        # opportunity unconditionally, regardless of whether any Discord
+        # webhook is configured (see sync_arbitrage_opportunities/
+        # sync_middle_opportunities -- the claim is folded into "is this
+        # new" for race-safety). If a channel has no webhook configured,
+        # that claim must be released again right here, or the
+        # opportunity would be permanently stuck looking "already sent"
+        # even though nothing was ever delivered -- so it would never
+        # alert even after the operator configures that webhook later.
+        _release_undeliverable_claims(conn, config, results)
+
+        if (
+            getattr(config, "discord_webhook_urls", "")
+            or getattr(config, "discord_webhook_urls_arb_middle", "")
+            or getattr(config, "discord_webhook_urls_middle", "")
+        ):
+            _deliver_new_opportunity_alerts(conn, config, results)
 
     return {"status": "success", "results": results}
+
+
+def _release_undeliverable_claims(conn: DB, config, results: dict[str, dict]) -> None:
+    """Release the claim run_scan already made (see _run_arb_middle_scan's
+    docstring above) for any channel that has no webhook configured --
+    for that channel specifically, nothing was or will be attempted, so
+    the opportunity must stay reclaimable rather than being silently
+    burned. A channel that DOES have a webhook configured is left alone
+    here; _deliver_new_opportunity_alerts handles its claim (releasing
+    it only if the actual send fails)."""
+    from database.db_manager import release_arbitrage_discord_claim, release_middle_discord_claim
+
+    arb_urls = [
+        u.strip() for u in getattr(config, "discord_webhook_urls_arb_middle", "").split(",") if u.strip()
+    ]
+    middle_urls = [
+        u.strip() for u in getattr(config, "discord_webhook_urls_middle", "").split(",") if u.strip()
+    ]
+    for result in results.values():
+        if not arb_urls:
+            ids = [o["opportunity_id"] for o in (result.get("new_arbitrage") or []) if o.get("opportunity_id")]
+            release_arbitrage_discord_claim(conn, ids)
+        if not middle_urls:
+            ids = [o["opportunity_id"] for o in (result.get("new_middles") or []) if o.get("opportunity_id")]
+            release_middle_discord_claim(conn, ids)
 
 
 def _deliver_new_opportunity_alerts(conn: DB, config, results: dict[str, dict]) -> None:
@@ -429,7 +466,20 @@ def _deliver_new_opportunity_alerts(conn: DB, config, results: dict[str, dict]) 
     means the next 15-minute pass catches up (EV picks are dedup'd so
     they simply retry; arbitrage/middles are dedup'd by their own
     still-ACTIVE status, so a missed one is silent unless it re-expires
-    before the retry)."""
+    before the retry).
+
+    2026-09-18: result["new_arbitrage"]/["new_middles"] are now already
+    the ATOMICALLY CLAIMED set, not just a freshness diff -- see
+    database.db_manager.sync_arbitrage_opportunities/sync_middle_
+    opportunities, which claim (discord_sent 0->1, checked via rowcount)
+    each newly-ACTIVE opportunity as the very same DB operation that
+    decides it's new, closing the race window a separate read-then-claim
+    step would leave open. This function's only added responsibility is
+    releasing that claim (discord_sent back to 0) when the send actually
+    fails, so the opportunity is retried next scan instead of stuck
+    forever looking "already sent"."""
+    from database.db_manager import release_arbitrage_discord_claim, release_middle_discord_claim
+
     ev_urls = [u.strip() for u in config.discord_webhook_urls.split(",") if u.strip()]
     arb_urls = [
         u.strip() for u in getattr(config, "discord_webhook_urls_arb_middle", "").split(",") if u.strip()
@@ -437,26 +487,67 @@ def _deliver_new_opportunity_alerts(conn: DB, config, results: dict[str, dict]) 
     middle_urls = [
         u.strip() for u in getattr(config, "discord_webhook_urls_middle", "").split(",") if u.strip()
     ]
+    logger.info("[DISCORD] EV webhook configured: %s", "yes" if ev_urls else "no")
+    logger.info("[DISCORD] Arbitrage webhook configured: %s", "yes" if arb_urls else "no")
+    logger.info("[DISCORD] Middle webhook configured: %s", "yes" if middle_urls else "no")
 
     if arb_urls or middle_urls:
         from src.discord_delivery import deliver_arbitrage_alerts, deliver_middle_alerts
 
         for league, result in results.items():
-            try:
-                new_arbs = result.get("new_arbitrage") or []
-                if new_arbs and arb_urls:
-                    deliver_arbitrage_alerts(new_arbs, arb_urls)
-                # Only alert middles the model actually judges worth
-                # betting (verdict="WORTH_IT", see src/middling.py) --
-                # a NOT_WORTH_IT/UNKNOWN middle is still detected and
-                # persisted (so it shows in the dashboard), but pushing
-                # it to Discord as if it were an actionable alert would
-                # defeat the entire point of estimating true EV.
-                new_mids = [m for m in (result.get("new_middles") or []) if m.get("verdict") == "WORTH_IT"]
-                if new_mids and middle_urls:
-                    deliver_middle_alerts(new_mids, middle_urls)
-            except Exception:
-                logger.exception("[%s] Discord opportunity alert delivery failed", league)
+            new_arbs = result.get("new_arbitrage") or []
+            arb_detected = (result.get("arbitrage") or {}).get("detected", 0)
+            arb_skipped = arb_detected - len(new_arbs)
+            if arb_skipped > 0 and arb_urls:
+                logger.info(
+                    "[DISCORD] Duplicate skipped: %d [%s] arbitrage opportunit(y/ies) already active",
+                    arb_skipped, league,
+                )
+            if new_arbs and arb_urls:
+                arb_ids = [o["opportunity_id"] for o in new_arbs if o.get("opportunity_id")]
+                try:
+                    for opp_id in arb_ids:
+                        logger.info("[DISCORD] Sending arbitrage recommendation id=%s", opp_id)
+                    arb_result = deliver_arbitrage_alerts(new_arbs, arb_urls)
+                    if arb_result.get("errors", 0) == 0:
+                        for opp_id in arb_ids:
+                            logger.info("[DISCORD] Arbitrage recommendation id=%s delivered successfully", opp_id)
+                    else:
+                        logger.error("[DISCORD] Delivery failed for arbitrage recommendation id(s)=%s", arb_ids)
+                        release_arbitrage_discord_claim(conn, arb_ids)
+                except Exception:
+                    logger.exception("[%s] Discord arbitrage alert delivery failed", league)
+                    release_arbitrage_discord_claim(conn, arb_ids)
+
+            # Only alert middles the model actually judges worth betting
+            # (verdict="WORTH_IT", see src/middling.py) -- a
+            # NOT_WORTH_IT/UNKNOWN middle is still detected and
+            # persisted (so it shows in the dashboard), but pushing it
+            # to Discord as if it were an actionable alert would defeat
+            # the entire point of estimating true EV.
+            new_mids = [m for m in (result.get("new_middles") or []) if m.get("verdict") == "WORTH_IT"]
+            mid_detected = (result.get("middles") or {}).get("detected", 0)
+            mid_skipped = mid_detected - len(result.get("new_middles") or [])
+            if mid_skipped > 0 and middle_urls:
+                logger.info(
+                    "[DISCORD] Duplicate skipped: %d [%s] middle opportunit(y/ies) already active",
+                    mid_skipped, league,
+                )
+            if new_mids and middle_urls:
+                mid_ids = [o["opportunity_id"] for o in new_mids if o.get("opportunity_id")]
+                try:
+                    for opp_id in mid_ids:
+                        logger.info("[DISCORD] Sending middle recommendation id=%s", opp_id)
+                    mid_result = deliver_middle_alerts(new_mids, middle_urls)
+                    if mid_result.get("errors", 0) == 0:
+                        for opp_id in mid_ids:
+                            logger.info("[DISCORD] Middle recommendation id=%s delivered successfully", opp_id)
+                    else:
+                        logger.error("[DISCORD] Delivery failed for middle recommendation id(s)=%s", mid_ids)
+                        release_middle_discord_claim(conn, mid_ids)
+                except Exception:
+                    logger.exception("[%s] Discord middle alert delivery failed", league)
+                    release_middle_discord_claim(conn, mid_ids)
 
     if ev_urls:
         from src.discord_delivery import deliver_new_recommendation_alerts

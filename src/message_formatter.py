@@ -31,21 +31,33 @@ def format_recommendation(rec: dict[str, Any]) -> str:
     Parameters
     ----------
     rec:
-        Recommendation dict with keys from the DB schema:
-        player_name, event_name, market_type, sportsbook, line,
-        offered_american_odds, status, ev_pct (optional),
-        price_advantage_pct (optional), confidence_score (optional),
-        rec_status, recommendation_fingerprint, etc.
+        Recommendation dict with keys from the DB schema (see
+        database/db_manager.py's historical_recommendations table):
+        player_name, matchup, sport/league, market_type, sportsbook,
+        line, offered_american_odds, offered_implied_prob, fair_prob,
+        n_consensus_books, status, ev_pct (optional), price_advantage_pct
+        (optional), confidence_score (optional), rec_status,
+        recommendation_fingerprint, etc.
     """
     lines = []
 
     # Header
     player = rec.get("player_name", "Unknown")
-    event = rec.get("event_name", "")
+    # 2026-09-18: was rec.get("event_name") -- historical_recommendations
+    # has no such column (it's "matchup"), so the event/game line never
+    # rendered for a single real Discord message despite the data being
+    # right there on every row. Confirmed via database/db_manager.py's
+    # historical_recommendations schema and src/customer_view.py, which
+    # reads the same column as "matchup" everywhere else in this codebase.
+    event = rec.get("matchup", "")
     market = rec.get("market_type", "unknown")
     lines.append(f"**{player}** — {market.replace('_', ' ').title()}")
     if event:
         lines.append(f"_{event}_")
+
+    sport_league = rec.get("league") or rec.get("sport")
+    if sport_league:
+        lines.append(f"Sport: {sport_league}")
 
     # Core details
     book = rec.get("sportsbook", "Unknown")
@@ -71,6 +83,23 @@ def format_recommendation(rec: dict[str, Any]) -> str:
     pa = rec.get("yn_implied_prob_adv") or rec.get("price_advantage_pct")
     if pa is not None:
         lines.append(f"Price Advantage: {pa:+.2f} pp")
+
+    # Fair vs. implied probability -- both already computed at
+    # recommendation time (see src/player_prop_analysis.py), just not
+    # previously surfaced in the Discord message.
+    fair_prob = rec.get("fair_prob")
+    implied_prob = rec.get("offered_implied_prob")
+    if fair_prob is not None or implied_prob is not None:
+        parts = []
+        if fair_prob is not None:
+            parts.append(f"Fair {fair_prob * 100:.1f}%")
+        if implied_prob is not None:
+            parts.append(f"Implied {implied_prob * 100:.1f}%")
+        lines.append("Probability: " + " vs. ".join(parts))
+
+    n_books = rec.get("n_consensus_books")
+    if n_books is not None:
+        lines.append(f"Consensus books: {n_books}")
 
     # Confidence
     conf = rec.get("confidence_score")
@@ -248,13 +277,22 @@ def _american(price: Any) -> str:
     return f"+{price}" if price > 0 else str(price)
 
 
+def _league_prefix(o: dict[str, Any]) -> str:
+    """"[MLB] " style prefix from whichever of league/sport is present,
+    or "" when neither is -- both arbitrage_opportunities and
+    middle_opportunities carry a league column, sport as a secondary
+    fallback (see database/db_manager.py)."""
+    league = o.get("league") or o.get("sport")
+    return f"[{league}] " if league else ""
+
+
 def _arbitrage_line(o: dict[str, Any]) -> str:
     player = o.get("player_name") or "?"
     market = (o.get("market_type") or "?").replace("_", " ").title()
     matchup = o.get("matchup")
     roi = o.get("guaranteed_roi_pct")
     roi_str = f"{roi:+.2f}%" if roi is not None else "?"
-    header = f"**{player}** — {market}" + (f" ({matchup})" if matchup else "")
+    header = f"**{_league_prefix(o)}{player}** — {market}" + (f" ({matchup})" if matchup else "")
     return (
         f"{header}\n"
         f"  {o.get('side_a', '?')} {_american(o.get('side_a_price'))} @ **{o.get('side_a_sportsbook', '?')}**"
@@ -279,7 +317,7 @@ def _middle_line(o: dict[str, Any]) -> str:
     best_str = f"{best:+.2f}%" if best is not None else "?"
     worst_str = f"{worst:+.2f}%" if worst is not None else "?"
     verdict_label = _VERDICT_LABELS.get(o.get("verdict"), _VERDICT_LABELS["UNKNOWN"])
-    header = f"**[{verdict_label}]** {player} — {market}" + (f" ({matchup})" if matchup else "")
+    header = f"**[{verdict_label}]** {_league_prefix(o)}{player} — {market}" + (f" ({matchup})" if matchup else "")
     lines = [
         header,
         f"  Over {o.get('over_line', '?')} @ **{o.get('over_sportsbook', '?')}** ({_american(o.get('over_price'))})"

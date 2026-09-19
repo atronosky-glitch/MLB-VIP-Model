@@ -116,7 +116,8 @@ class TestMessageFormatting:
         from src.message_formatter import format_recommendation
         rec = {
             "player_name": "Aaron Judge",
-            "event_name": "NYY vs BOS",
+            "matchup": "NYY vs BOS",
+            "league": "MLB",
             "market_type": "strikeouts",
             "sportsbook": "DraftKings",
             "offered_american_odds": -110,
@@ -124,23 +125,44 @@ class TestMessageFormatting:
             "side": "Over",
             "period": "game",
             "ev_pct": 3.5,
+            "fair_prob": 0.55,
+            "offered_implied_prob": 0.524,
+            "n_consensus_books": 6,
             "confidence_score": 72,
             "rec_status": "BET",
             "recommendation_fingerprint": "abcdef1234567890",
         }
         msg = format_recommendation(rec)
         assert "Aaron Judge" in msg
+        assert "NYY vs BOS" in msg
+        assert "MLB" in msg
         assert "DraftKings" in msg
         assert "-110" in msg
         assert "3.5" in msg
+        assert "55.0" in msg  # fair_prob
+        assert "52.4" in msg  # offered_implied_prob
+        assert "6" in msg  # n_consensus_books
         assert "72" in msg
         assert "BET" in msg
+
+    def test_format_recommendation_matchup_is_the_real_db_column(self):
+        """2026-09-18: this used to read rec["event_name"], a column that
+        does not exist anywhere in historical_recommendations (the real
+        column is "matchup" -- see database/db_manager.py's schema and
+        src/customer_view.py, which reads the same column everywhere
+        else in this codebase) -- so the event/game line silently never
+        rendered in a real Discord message despite the data being right
+        there on every row. Regression test for that fix."""
+        from src.message_formatter import format_recommendation
+        rec = {"player_name": "Test Player", "matchup": "Away @ Home", "ev_pct": 5.0}
+        msg = format_recommendation(rec)
+        assert "Away @ Home" in msg
 
     def test_format_recommendation_yn(self):
         from src.message_formatter import format_recommendation
         rec = {
             "player_name": "Shohei Ohtani",
-            "event_name": "LAD vs SF",
+            "matchup": "LAD vs SF",
             "market_type": "batting_homeRuns",
             "sportsbook": "FanDuel",
             "offered_american_odds": 350,
@@ -149,10 +171,14 @@ class TestMessageFormatting:
         }
         msg = format_recommendation(rec)
         assert "Ohtani" in msg
+        assert "LAD vs SF" in msg
         assert "350" in msg
         assert "6.2" in msg
 
     def test_format_recommendation_minimal(self):
+        """No sport/fair_prob/implied_prob/consensus-books data must
+        never raise -- those fields are all optional context, added on
+        top of the fields that already existed."""
         from src.message_formatter import format_recommendation
         rec = {"player_name": "Test Player"}
         msg = format_recommendation(rec)

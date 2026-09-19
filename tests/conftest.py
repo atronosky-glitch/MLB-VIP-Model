@@ -420,7 +420,9 @@ def db_conn():
             status TEXT NOT NULL DEFAULT 'ACTIVE',
             outcome TEXT,
             profit_units REAL,
-            graded_at TEXT
+            graded_at TEXT,
+            discord_sent INTEGER NOT NULL DEFAULT 0,
+            discord_sent_at TEXT
         );
         CREATE TABLE IF NOT EXISTS middle_opportunities (
             opportunity_id TEXT PRIMARY KEY,
@@ -455,7 +457,9 @@ def db_conn():
             status TEXT NOT NULL DEFAULT 'ACTIVE',
             outcome TEXT,
             profit_units REAL,
-            graded_at TEXT
+            graded_at TEXT,
+            discord_sent INTEGER NOT NULL DEFAULT 0,
+            discord_sent_at TEXT
         );
         CREATE TABLE IF NOT EXISTS discord_alerts_sent (
             alert_key  TEXT NOT NULL,

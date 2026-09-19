@@ -1091,6 +1091,30 @@ def init_db(db_path: str | None = None) -> None:
         ("recommended_stake_units", "REAL"),
     ])
 
+    # Discord delivery claim (2026-09-18): "is this new" for an
+    # arbitrage/middle opportunity is already answered by the ACTIVE/
+    # EXPIRED transition (see new_ids in sync_arbitrage_opportunities/
+    # sync_middle_opportunities below) -- that alone is enough for the
+    # single-worker production deployment this runs under. These two
+    # columns add a second, database-level guarantee on top: an atomic
+    # claim_arbitrage_for_discord()/claim_middle_for_discord() UPDATE
+    # (discord_sent 0->1, checked via rowcount) right before the actual
+    # Discord POST, so two processes racing to alert the very same
+    # opportunity_id can never both win and post a duplicate. The
+    # ON CONFLICT DO UPDATE clause below resets discord_sent back to 0
+    # exactly when a row transitions from non-ACTIVE to ACTIVE again --
+    # the same "expired and reappeared" case new_ids already treats as
+    # genuinely new -- so a real re-alert is never suppressed by a stale
+    # claim from a previous, now-expired, active streak.
+    _add_columns_if_missing(conn, "arbitrage_opportunities", [
+        ("discord_sent", "INTEGER NOT NULL DEFAULT 0"),
+        ("discord_sent_at", "TEXT"),
+    ])
+    _add_columns_if_missing(conn, "middle_opportunities", [
+        ("discord_sent", "INTEGER NOT NULL DEFAULT 0"),
+        ("discord_sent_at", "TEXT"),
+    ])
+
     # Discord alert dedup (2026-09-10). historical_recommendations rows are
     # frozen at creation (never re-evaluated), so "have I already alerted
     # this one" needs an explicit record here. Arbitrage/middle
@@ -1098,7 +1122,9 @@ def init_db(db_path: str | None = None) -> None:
     # ACTIVE/EXPIRED status already answers "is this new" (see the
     # new_ids return value of sync_arbitrage_opportunities/
     # sync_middle_opportunities), which also correctly re-alerts an
-    # opportunity that expired and later reappeared.
+    # opportunity that expired and later reappeared. They use their own
+    # discord_sent/discord_sent_at columns instead (added above) for the
+    # same claim-before-send race protection this table gives EV picks.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS discord_alerts_sent (
             alert_key  TEXT NOT NULL,
@@ -2900,13 +2926,18 @@ def sync_arbitrage_opportunities(
     reappeared. Also stamps opp["opportunity_id"] onto each passed-in
     dict so a caller (src/arb_middle_scan.py) can filter its own opps
     list down to just the new ones without re-deriving the ID format.
+
+    2026-09-18: "new_ids" is now computed by claim_arbitrage_for_discord
+    (an atomic discord_sent 0->1 UPDATE per id, checked via rowcount)
+    rather than a plain read-then-diff against a "previously active"
+    snapshot taken at the top of this function -- the old approach left
+    a real window between that read and this function's own commit where
+    two concurrent syncs could both compute the same "new" set and both
+    go on to alert Discord. Folding the claim in here means "is this
+    new" and "have we claimed it for delivery" are the same atomic
+    operation, so a caller (src/worker.py) never needs its own separate
+    claim step and can't race with another one doing this same sync.
     """
-    previously_active = {
-        r["opportunity_id"] for r in conn.execute(
-            "SELECT opportunity_id FROM arbitrage_opportunities WHERE league = ? AND status = 'ACTIVE'",
-            (league,),
-        ).fetchall()
-    }
     now = datetime.now(timezone.utc).isoformat()
     current_ids: list[str] = []
     for opp in opportunities:
@@ -2932,7 +2963,11 @@ def sync_arbitrage_opportunities(
                 side_b_stake_pct = excluded.side_b_stake_pct,
                 guaranteed_roi_pct = excluded.guaranteed_roi_pct,
                 last_seen_at = excluded.last_seen_at,
-                status = 'ACTIVE'
+                status = 'ACTIVE',
+                discord_sent = CASE WHEN arbitrage_opportunities.status != 'ACTIVE'
+                                     THEN 0 ELSE arbitrage_opportunities.discord_sent END,
+                discord_sent_at = CASE WHEN arbitrage_opportunities.status != 'ACTIVE'
+                                        THEN NULL ELSE arbitrage_opportunities.discord_sent_at END
         """, (
             opp_id, league, opp.get("sport", "baseball"), opp.get("event_id"),
             opp.get("matchup"), opp.get("event_start_time"),
@@ -2954,7 +2989,7 @@ def sync_arbitrage_opportunities(
             (league,),
         )
     conn.commit()
-    new_ids = [i for i in current_ids if i not in previously_active]
+    new_ids = claim_arbitrage_for_discord(conn, current_ids)
     return {"active": len(current_ids), "new_ids": new_ids}
 
 
@@ -2962,13 +2997,9 @@ def sync_middle_opportunities(
     conn: DB, league: str, opportunities: list[dict], scan_run_id: str | None = None,
 ) -> dict:
     """Same sync pattern as sync_arbitrage_opportunities, for middles --
-    see its docstring for what "new_ids" means and why."""
-    previously_active = {
-        r["opportunity_id"] for r in conn.execute(
-            "SELECT opportunity_id FROM middle_opportunities WHERE league = ? AND status = 'ACTIVE'",
-            (league,),
-        ).fetchall()
-    }
+    see its docstring for what "new_ids" means and why, including the
+    2026-09-18 change to how it's computed (claim_middle_for_discord,
+    not a read-then-diff)."""
     now = datetime.now(timezone.utc).isoformat()
     current_ids: list[str] = []
     for opp in opportunities:
@@ -3005,7 +3036,11 @@ def sync_middle_opportunities(
                 verdict = excluded.verdict,
                 recommended_stake_units = excluded.recommended_stake_units,
                 last_seen_at = excluded.last_seen_at,
-                status = 'ACTIVE'
+                status = 'ACTIVE',
+                discord_sent = CASE WHEN middle_opportunities.status != 'ACTIVE'
+                                     THEN 0 ELSE middle_opportunities.discord_sent END,
+                discord_sent_at = CASE WHEN middle_opportunities.status != 'ACTIVE'
+                                        THEN NULL ELSE middle_opportunities.discord_sent_at END
         """, (
             opp_id, league, opp.get("sport", "baseball"), opp.get("event_id"),
             opp.get("matchup"), opp.get("event_start_time"),
@@ -3029,7 +3064,7 @@ def sync_middle_opportunities(
             (league,),
         )
     conn.commit()
-    new_ids = [i for i in current_ids if i not in previously_active]
+    new_ids = claim_middle_for_discord(conn, current_ids)
     return {"active": len(current_ids), "new_ids": new_ids}
 
 
@@ -3052,7 +3087,11 @@ def get_unalerted_recommendation_ids(conn: DB, recommendation_ids: list[str]) ->
 
 def mark_recommendations_alerted(conn: DB, recommendation_ids: list[str]) -> None:
     """Record that these recommendation_ids have been pushed to Discord,
-    so a later scan's deliver_new_recommendation_alerts call skips them."""
+    so a later scan's deliver_new_recommendation_alerts call skips them.
+    Kept as a standalone, idempotent "mark sent" primitive (also used by
+    tests); deliver_new_recommendation_alerts itself now goes through
+    claim_recommendations_for_alert below instead, so the INSERT happens
+    BEFORE the Discord POST (an atomic claim), not after it."""
     if not recommendation_ids:
         return
     now = datetime.now(timezone.utc).isoformat()
@@ -3064,6 +3103,113 @@ def mark_recommendations_alerted(conn: DB, recommendation_ids: list[str]) -> Non
             (rid, now),
         )
     conn.commit()
+
+
+def claim_recommendations_for_alert(conn: DB, recommendation_ids: list[str]) -> list[str]:
+    """Atomically claim these recommendation_ids for Discord delivery,
+    BEFORE sending -- an INSERT that only succeeds (rowcount 1) for an
+    id with no existing discord_alerts_sent row, so two processes racing
+    to alert the very same pick can never both win and both post it.
+    Returns just the subset this call actually claimed, input order
+    preserved. A caller whose subsequent Discord POST fails must call
+    release_recommendation_alerts on exactly this returned list so the
+    pick is eligible to be claimed (and retried) again next scan."""
+    if not recommendation_ids:
+        return []
+    now = datetime.now(timezone.utc).isoformat()
+    claimed: list[str] = []
+    for rid in recommendation_ids:
+        result = conn.execute(
+            """INSERT INTO discord_alerts_sent (alert_key, alert_type, sent_at)
+               VALUES (?, 'ev_pick', ?)
+               ON CONFLICT (alert_type, alert_key) DO NOTHING""",
+            (rid, now),
+        )
+        if result.rowcount:
+            claimed.append(rid)
+    conn.commit()
+    return claimed
+
+
+def release_recommendation_alerts(conn: DB, recommendation_ids: list[str]) -> None:
+    """Undo a claim from claim_recommendations_for_alert after a failed
+    (or dry-run) Discord send, so the recommendation is NOT left
+    permanently marked "already alerted" and can be claimed again."""
+    if not recommendation_ids:
+        return
+    placeholders = ",".join("?" * len(recommendation_ids))
+    conn.execute(
+        f"""DELETE FROM discord_alerts_sent
+            WHERE alert_type = 'ev_pick' AND alert_key IN ({placeholders})""",
+        tuple(recommendation_ids),
+    )
+    conn.commit()
+
+
+_DISCORD_CLAIMABLE_OPPORTUNITY_TABLES = frozenset({"arbitrage_opportunities", "middle_opportunities"})
+
+
+def _claim_opportunity_for_discord(conn: DB, table: str, opportunity_ids: list[str]) -> list[str]:
+    """Shared implementation behind claim_arbitrage_for_discord/
+    claim_middle_for_discord -- see either for the full explanation.
+    *table* is never caller/user-supplied (only the two thin wrappers
+    below call this, each with its own literal table name)."""
+    if table not in _DISCORD_CLAIMABLE_OPPORTUNITY_TABLES:
+        raise ValueError(f"not a Discord-claimable opportunity table: {table!r}")
+    if not opportunity_ids:
+        return []
+    now = datetime.now(timezone.utc).isoformat()
+    claimed: list[str] = []
+    for opp_id in opportunity_ids:
+        result = conn.execute(
+            f"""UPDATE {table} SET discord_sent = 1, discord_sent_at = ?
+                WHERE opportunity_id = ? AND discord_sent = 0""",
+            (now, opp_id),
+        )
+        if result.rowcount:
+            claimed.append(opp_id)
+    conn.commit()
+    return claimed
+
+
+def _release_opportunity_discord_claim(conn: DB, table: str, opportunity_ids: list[str]) -> None:
+    if table not in _DISCORD_CLAIMABLE_OPPORTUNITY_TABLES:
+        raise ValueError(f"not a Discord-claimable opportunity table: {table!r}")
+    if not opportunity_ids:
+        return
+    placeholders = ",".join("?" * len(opportunity_ids))
+    conn.execute(
+        f"""UPDATE {table} SET discord_sent = 0, discord_sent_at = NULL
+            WHERE opportunity_id IN ({placeholders})""",
+        tuple(opportunity_ids),
+    )
+    conn.commit()
+
+
+def claim_arbitrage_for_discord(conn: DB, opportunity_ids: list[str]) -> list[str]:
+    """Atomically claim these arbitrage opportunity_ids for Discord
+    delivery, BEFORE sending -- see claim_recommendations_for_alert for
+    the same pattern applied to EV picks. discord_sent resets to 0
+    whenever sync_arbitrage_opportunities transitions a row from
+    non-ACTIVE back to ACTIVE, so a genuinely-reappeared opportunity can
+    still be claimed and re-alerted."""
+    return _claim_opportunity_for_discord(conn, "arbitrage_opportunities", opportunity_ids)
+
+
+def release_arbitrage_discord_claim(conn: DB, opportunity_ids: list[str]) -> None:
+    """Undo a claim from claim_arbitrage_for_discord after a failed send."""
+    _release_opportunity_discord_claim(conn, "arbitrage_opportunities", opportunity_ids)
+
+
+def claim_middle_for_discord(conn: DB, opportunity_ids: list[str]) -> list[str]:
+    """Atomically claim these middle opportunity_ids for Discord
+    delivery, BEFORE sending -- see claim_arbitrage_for_discord above."""
+    return _claim_opportunity_for_discord(conn, "middle_opportunities", opportunity_ids)
+
+
+def release_middle_discord_claim(conn: DB, opportunity_ids: list[str]) -> None:
+    """Undo a claim from claim_middle_for_discord after a failed send."""
+    _release_opportunity_discord_claim(conn, "middle_opportunities", opportunity_ids)
 
 
 def get_active_arbitrage_opportunities(conn: DB, league: str | None = None) -> list[dict]:
