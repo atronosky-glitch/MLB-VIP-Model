@@ -108,7 +108,9 @@ class TestMlbDiscordConnection:
         config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1"
         with mock.patch("src.discord_delivery.send_webhook_message", return_value=True) as mocked:
             result = run_mlb_discord_test(config=config)
-        assert result == {"configured": True, "urls_tested": 1, "passed": 1, "failed": 0}
+        assert result == {
+            "configured": True, "urls_tested": 1, "passed": 1, "failed": 0, "response_statuses": [],
+        }
         mocked.assert_called_once_with("https://discord.com/api/webhooks/ev1", "MLB Discord connection test")
 
     def test_multiple_urls_mixed_results(self):
@@ -116,7 +118,26 @@ class TestMlbDiscordConnection:
         config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1,https://discord.com/api/webhooks/ev2"
         with mock.patch("src.discord_delivery.send_webhook_message", side_effect=[True, False]):
             result = run_mlb_discord_test(config=config)
-        assert result == {"configured": True, "urls_tested": 2, "passed": 1, "failed": 1}
+        assert result == {
+            "configured": True, "urls_tested": 2, "passed": 1, "failed": 1, "response_statuses": [],
+        }
+
+    def test_captures_the_real_http_status_code_from_discord(self):
+        """The whole point of this field: a 401/404 from Discord (bad or
+        revoked webhook) must be visible to whatever reads the job result,
+        not just logged where only Render's own log viewer could see it."""
+        config = _FakeConfig()
+        config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1"
+
+        def fake_send(url, content):
+            from src.discord_delivery import _last_response_statuses
+            _last_response_statuses.append(401)
+            return False
+
+        with mock.patch("src.discord_delivery.send_webhook_message", side_effect=fake_send):
+            result = run_mlb_discord_test(config=config)
+        assert result["response_statuses"] == [401]
+        assert result["failed"] == 1
 
     def test_never_returns_or_logs_the_webhook_url(self, caplog):
         config = _FakeConfig()

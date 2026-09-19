@@ -677,10 +677,12 @@ def test_mlb_discord_connection(config: Any = None) -> dict[str, Any]:
         return {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "response_statuses": []}
 
     passed = failed = 0
+    all_statuses: list[int] = []
     for i, url in enumerate(urls):
         _last_response_statuses.clear()
         ok = send_webhook_message(url, "MLB Discord connection test")
         status = list(_last_response_statuses)
+        all_statuses.extend(status)
         logger.info(
             "[DISCORD] MLB_DISCORD_WEBHOOKS test send %d/%d: %s (response status(es)=%s)",
             i + 1, len(urls), "delivered successfully" if ok else "failed", status,
@@ -691,6 +693,12 @@ def test_mlb_discord_connection(config: Any = None) -> dict[str, Any]:
             failed += 1
     return {
         "configured": True, "urls_tested": len(urls), "passed": passed, "failed": failed,
+        # HTTP status codes only (e.g. 401/404 from Discord) -- never the
+        # exception message itself, since a malformed-URL error could
+        # theoretically embed the URL/token in its text. An empty list
+        # despite a failure means the error was below the HTTP layer
+        # (DNS/timeout/connection-refused), not a Discord-side rejection.
+        "response_statuses": all_statuses,
     }
 
 
