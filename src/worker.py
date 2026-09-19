@@ -688,6 +688,21 @@ def _run_health_check(config) -> dict:
     return {"status": report.overall_status, "report": report.to_dict()}
 
 
+def _run_test_mlb_discord(config) -> dict:
+    """2026-09-19 (operator request): a real, triggerable production
+    connectivity test for MLB_DISCORD_WEBHOOKS specifically -- queue a
+    'test-mlb-discord' job and this runs on the actual worker process,
+    reading the actual production config, so it answers "is this env
+    var really working right now" directly rather than via inference
+    from job/DB history. See src/discord_delivery.py::
+    test_mlb_discord_connection for what it actually does (sends the
+    literal text "MLB Discord connection test", never touches dedup
+    state, never logs the webhook URL)."""
+    from src.discord_delivery import test_mlb_discord_connection
+    result = test_mlb_discord_connection(config)
+    return {"status": "success", **result}
+
+
 # ── API quota alerts ──────────────────────────────────────────────
 
 
@@ -776,6 +791,7 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "adaptive-learning": lambda: _run_adaptive_learning(conn, config),
         "health-check": lambda: _run_health_check(config),
         "schedule-refresh": lambda: _run_pregame_checks(conn, config),
+        "test-mlb-discord": lambda: _run_test_mlb_discord(config),
     }
     handler = dispatch.get(job_type)
     if not handler:

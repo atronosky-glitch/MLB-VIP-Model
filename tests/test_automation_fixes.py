@@ -832,3 +832,42 @@ class TestAutomationStatusNextMorning:
         create_job(db_conn, "morning-run", scheduled_at=scheduled)
         status = get_automation_status(db_conn)
         assert status["next_morning_run"] == scheduled
+
+
+class TestMlbDiscordConnectionJob:
+    """2026-09-19 (operator request): a live-triggerable 'test-mlb-discord'
+    job so the real production env's MLB_DISCORD_WEBHOOKS can be checked
+    directly, without inferring from job/DB history. See
+    src/discord_delivery.py::test_mlb_discord_connection."""
+
+    def test_job_type_registered_in_dispatch(self):
+        """Mirrors test_cfb_job_types_registered_in_dispatch -- a job type
+        that isn't wired into _execute_job's dispatch table would be
+        queued and silently do nothing when picked up."""
+        import inspect
+        source = inspect.getsource(worker._execute_job)
+        assert '"test-mlb-discord"' in source
+
+    def test_run_test_mlb_discord_delegates_to_discord_delivery(self):
+        config = MagicMock()
+        fake_result = {"configured": True, "urls_tested": 1, "passed": 1, "failed": 0}
+        with patch("src.discord_delivery.test_mlb_discord_connection", return_value=fake_result) as mocked:
+            result = worker._run_test_mlb_discord(config)
+        mocked.assert_called_once_with(config)
+        assert result == {"status": "success", **fake_result}
+
+    def test_run_test_mlb_discord_never_logs_or_returns_a_webhook_url(self, caplog):
+        config = MagicMock()
+        config.discord_webhook_urls = "https://discord.com/api/webhooks/real/secrettoken"
+        with patch("src.discord_delivery.send_webhook_message", return_value=True):
+            result = worker._run_test_mlb_discord(config)
+        assert "secrettoken" not in str(result)
+        for record in caplog.records:
+            assert "secrettoken" not in record.getMessage()
+
+    def test_execute_job_dispatches_test_mlb_discord(self, db_conn):
+        config = MagicMock()
+        fake_result = {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "response_statuses": []}
+        with patch("src.discord_delivery.test_mlb_discord_connection", return_value=fake_result):
+            result = worker._execute_job("test-mlb-discord", db_conn, config)
+        assert result == {"status": "success", **fake_result}

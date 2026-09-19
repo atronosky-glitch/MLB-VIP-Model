@@ -653,6 +653,47 @@ def test_webhooks(config: Any = None) -> dict[str, Any]:
     return {"any_configured": any_configured, "channels": results}
 
 
+def test_mlb_discord_connection(config: Any = None) -> dict[str, Any]:
+    """Production-safe connectivity test for MLB_DISCORD_WEBHOOKS
+    specifically (2026-09-19 operator request) -- separate from
+    test_webhooks() above (which tests all three channels with a
+    channel-labeled message) because this one exists to answer one
+    narrow, urgent question with no ambiguity: is THIS EXACT env var,
+    read the SAME way production reads it, actually reachable right now.
+    Sends the literal text "MLB Discord connection test" -- nothing
+    else -- to every URL in MLB_DISCORD_WEBHOOKS. Never touches dedup
+    state (discord_alerts_sent), never logs or returns the webhook URL
+    itself, only whether it was detected and whether each send
+    succeeded."""
+    if config is None:
+        from src.production_config import load_config
+        config = load_config()
+
+    raw = getattr(config, "discord_webhook_urls", "") or ""
+    urls = [u.strip() for u in raw.split(",") if u.strip()]
+    configured = bool(urls)
+    logger.info("[DISCORD] MLB_DISCORD_WEBHOOKS detected: %s", "yes" if configured else "no")
+    if not configured:
+        return {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "response_statuses": []}
+
+    passed = failed = 0
+    for i, url in enumerate(urls):
+        _last_response_statuses.clear()
+        ok = send_webhook_message(url, "MLB Discord connection test")
+        status = list(_last_response_statuses)
+        logger.info(
+            "[DISCORD] MLB_DISCORD_WEBHOOKS test send %d/%d: %s (response status(es)=%s)",
+            i + 1, len(urls), "delivered successfully" if ok else "failed", status,
+        )
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+    return {
+        "configured": True, "urls_tested": len(urls), "passed": passed, "failed": failed,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog="python -m src.discord_delivery")
@@ -660,6 +701,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser(
         "test-webhooks",
         help="Send a safe, clearly-labeled test message to every configured Discord webhook",
+    )
+    subparsers.add_parser(
+        "test-mlb",
+        help='Send the literal message "MLB Discord connection test" to MLB_DISCORD_WEBHOOKS specifically',
     )
     simulate_p = subparsers.add_parser(
         "simulate",
@@ -702,6 +747,15 @@ def main(argv: list[str] | None = None) -> int:
         dedup_ok = (not run2["ev_sent_this_attempt"]) and (not run2["middle_claimed_as_new_this_attempt"])
         print(f"Duplicate prevention on second run: {'PASS' if dedup_ok else 'FAIL'}")
         return 0
+
+    if args.command == "test-mlb":
+        result = test_mlb_discord_connection()
+        if not result["configured"]:
+            print("MLB_DISCORD_WEBHOOKS is not set (empty) in this environment.")
+            return 1
+        status = "PASS" if result["failed"] == 0 else "FAIL"
+        print(f"MLB_DISCORD_WEBHOOKS: {status} ({result['passed']}/{result['urls_tested']} webhook(s) succeeded)")
+        return 0 if result["failed"] == 0 else 1
 
     if args.command == "test-webhooks":
         result = test_webhooks()
