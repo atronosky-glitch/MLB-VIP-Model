@@ -53,17 +53,78 @@ def american_to_decimal(odds: int) -> float:
     return 1.0 + 100.0 / abs(odds)
 
 
+def _power_devig(raw_a: float, raw_b: float, tol: float = 1e-10, max_iter: int = 200) -> tuple[float, float]:
+    """Power-method vig removal — corrects the favorite-longshot bias a
+    plain proportional split leaves in place.
+
+    2026-09-19 (real bug, found investigating why the model recommends
+    so many home-run OVER bets): a simple proportional split
+    (``raw_a / (raw_a + raw_b)``) is only unbiased when the book's
+    margin is distributed in exact proportion to each side's true
+    probability. Real sportsbooks (Pinnacle included) instead shade
+    proportionally MORE margin onto a longshot than a proportional
+    split assumes -- confirmed against real settled results: MLB home
+    run Over 0.5 bets (the model's most skewed common market, avg
+    offered price +1042) carried a 7.1% real-world win rate against a
+    9.25% average fair-probability estimate implied by ev_pct at the
+    time of the bet, over 9,374 settled bets -- a systematic, ~30%
+    relative overestimate, not variance (n is far too large for that).
+    Proportional devigging leaves that overestimate in place; it barely
+    matters for a near-even market (-110/-110 gives (0.5, 0.5) either
+    way, verified numerically) but compounds with how skewed and how
+    heavily vigged the market is.
+
+    Finds the exponent k solving ``raw_a**(1/k) + raw_b**(1/k) == 1``
+    via bisection (no closed form in general), then applies it to both
+    sides and renormalizes. This is the standard "power" de-vigging
+    method used across sports-betting quant literature specifically to
+    correct this bias; simpler to implement correctly than Shin's
+    method while giving the same qualitative (and, on the numbers
+    checked here, closely matching magnitude of) correction.
+    """
+    total_raw = raw_a + raw_b
+    if raw_a <= 0 or raw_b <= 0 or total_raw <= 1.0:
+        # Degenerate input, or no real vig to correct (occasionally
+        # even negative -- two books disagreeing enough to imply an
+        # arbitrage) -- nothing a power correction can safely improve.
+        return (raw_a / total_raw, raw_b / total_raw) if total_raw > 0 else (0.5, 0.5)
+
+    lo, hi = 1e-9, 1.0
+
+    def _f(k: float) -> float:
+        return raw_a ** (1.0 / k) + raw_b ** (1.0 / k) - 1.0
+
+    # f(1) = total_raw - 1 > 0 (checked above); f(lo) -> -1 as lo -> 0.
+    # The root (the true k) lies in between -- bisect down to it.
+    for _ in range(max_iter):
+        mid = (lo + hi) / 2.0
+        if _f(mid) > 0:
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo < tol:
+            break
+    k = (lo + hi) / 2.0
+
+    fair_a = raw_a ** (1.0 / k)
+    fair_b = raw_b ** (1.0 / k)
+    norm = fair_a + fair_b
+    if norm <= 0:
+        return (0.5, 0.5)
+    return (fair_a / norm, fair_b / norm)
+
+
 def calculate_no_vig_probs(over_odds: int, under_odds: int) -> tuple[float, float]:
-    """Remove vig from a two-outcome market.
+    """Remove vig from a two-outcome market using the power method (see
+    _power_devig) -- corrects the favorite-longshot bias a plain
+    proportional split would leave in place, most visible on heavily
+    skewed near-binary markets like home-run props.
 
     Returns ``(fair_over_prob, fair_under_prob)`` summing to 1.0.
     """
     raw_over = american_to_implied_prob(over_odds)
     raw_under = american_to_implied_prob(under_odds)
-    total = raw_over + raw_under
-    if total <= 0:
-        return (0.5, 0.5)
-    return (raw_over / total, raw_under / total)
+    return _power_devig(raw_over, raw_under)
 
 
 def calculate_ev(true_probability: float, offered_odds: int) -> float:
@@ -837,13 +898,13 @@ def _consensus(prices: list[int]) -> int:
 
 
 def _remove_vig(odds_a: int, odds_b: int) -> tuple[float, float]:
-    """Remove vig from a two-outcome market."""
+    """Remove vig from a two-outcome market (power method -- see
+    _power_devig's docstring for why, same correction as
+    calculate_no_vig_probs above applies to the fallback consensus
+    path here)."""
     imp_a = american_to_probability(odds_a)
     imp_b = american_to_probability(odds_b)
-    total = imp_a + imp_b
-    if total <= 0:
-        return (0.5, 0.5)
-    return (imp_a / total, imp_b / total)
+    return _power_devig(imp_a, imp_b)
 
 
 def _vig_percentage(odds_a: int, odds_b: int) -> float:

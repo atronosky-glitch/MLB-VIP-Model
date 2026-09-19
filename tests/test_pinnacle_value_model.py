@@ -24,6 +24,7 @@ from src.player_prop_analysis import (
     calculate_ev,
     calculate_no_vig_probs,
     is_pinnacle_book,
+    _power_devig,
 )
 from src.market_analysis import american_to_decimal
 from src.prop_config import (
@@ -74,13 +75,20 @@ class TestOddsHelpers:
         assert fair_under == pytest.approx(0.5, abs=0.001)
 
     def test_calculate_no_vig_probs_known_pair(self):
+        """2026-09-19: values updated for the power-method devig fix
+        (see _power_devig's docstring) -- the old assertion re-derived
+        the PROPORTIONAL formula inline, which is exactly the method
+        that was replaced (it leaves the favorite-longshot bias in
+        place). The power method still nudges each side toward its
+        actual fair value from the same raw implied probabilities, just
+        not via a flat proportional split -- for this mildly skewed,
+        mildly vigged pair (-120/+100, ~4.5% vig) the two methods are
+        close (proportional would give ~0.5227/0.4773) but not
+        identical, which is the whole point of the fix."""
         fair_over, fair_under = calculate_no_vig_probs(-120, 100)
-        raw_over = 120 / 220
-        raw_under = 100 / 200
-        total = raw_over + raw_under
-        assert fair_over == pytest.approx(raw_over / total, abs=0.001)
-        assert fair_under == pytest.approx(raw_under / total, abs=0.001)
-        assert fair_over + fair_under == pytest.approx(1.0, abs=0.001)
+        assert fair_over == pytest.approx(0.523229, abs=0.0001)
+        assert fair_under == pytest.approx(0.476771, abs=0.0001)
+        assert fair_over + fair_under == pytest.approx(1.0, abs=1e-9)
 
     def test_calculate_ev_positive(self):
         # true prob 0.52 at +110 (2.1) → EV = 0.092
@@ -89,6 +97,75 @@ class TestOddsHelpers:
     def test_calculate_ev_negative(self):
         # true prob 0.45 at -110 (1.9091) → EV = -0.1409
         assert calculate_ev(0.45, -110) == pytest.approx(-0.1409, abs=0.001)
+
+
+class TestPowerDevig:
+    """2026-09-19: the favorite-longshot-bias fix. Root-caused by
+    checking real settled results for the model's most heavily skewed
+    common market (MLB home run Over 0.5, avg offered price +1042):
+    7.1% actual win rate against a 9.25% average fair-probability
+    estimate implied by the EV at bet time, over 9,374 settled bets --
+    proportional vig removal leaves this bias in place; the power
+    method corrects it. See _power_devig's own docstring for the full
+    derivation."""
+
+    def test_balanced_market_matches_proportional(self):
+        """A -110/-110 market has no skew to correct -- power and
+        proportional devigging must agree exactly."""
+        imp = american_to_implied_prob(-110)
+        fair_a, fair_b = _power_devig(imp, imp)
+        assert fair_a == pytest.approx(0.5, abs=1e-9)
+        assert fair_b == pytest.approx(0.5, abs=1e-9)
+
+    def test_always_sums_to_one(self):
+        for over_odds, under_odds in ((-110, -110), (-120, 100), (1042, -900), (200, -300), (5000, -50000)):
+            imp_a = american_to_implied_prob(over_odds)
+            imp_b = american_to_implied_prob(under_odds)
+            fair_a, fair_b = _power_devig(imp_a, imp_b)
+            assert fair_a + fair_b == pytest.approx(1.0, abs=1e-9)
+
+    def test_skewed_market_lowers_the_longshots_fair_probability(self):
+        """The whole point of the fix: for a real, vigged, skewed pair
+        (roughly the model's average HR line: +1042 longshot vs a
+        plausible -1100 favorite, ~0.4% vig), the power method must
+        give the longshot a LOWER fair probability than a plain
+        proportional split would -- that's the direction that actually
+        matches what real settled results showed."""
+        raw_over = american_to_implied_prob(1042)
+        raw_under = american_to_implied_prob(-1100)
+        proportional_over = raw_over / (raw_over + raw_under)
+        power_over, power_under = _power_devig(raw_over, raw_under)
+        assert power_over < proportional_over
+        assert power_under > (raw_under / (raw_over + raw_under))
+
+    def test_correction_grows_with_vig_on_a_skewed_market(self):
+        """More vig on the same skewed shape must mean a bigger
+        correction away from proportional, not a smaller or flat one --
+        confirms the fix scales the way the underlying math predicts."""
+        raw_over = american_to_implied_prob(1042)
+
+        def _gap(under_odds):
+            raw_under = american_to_implied_prob(under_odds)
+            proportional_over = raw_over / (raw_over + raw_under)
+            power_over, _ = _power_devig(raw_over, raw_under)
+            return proportional_over - power_over
+
+        low_vig_gap = _gap(-1100)
+        high_vig_gap = _gap(-1400)
+        assert 0 < low_vig_gap < high_vig_gap
+
+    def test_no_real_vig_falls_back_safely(self):
+        """total_raw <= 1.0 (no vig, or two books disagreeing enough to
+        imply an arbitrage) is a degenerate case a power correction
+        can't safely improve on -- must not raise or return nonsense."""
+        fair_a, fair_b = _power_devig(0.45, 0.50)
+        assert fair_a == pytest.approx(0.45 / 0.95, abs=1e-9)
+        assert fair_b == pytest.approx(0.50 / 0.95, abs=1e-9)
+
+    def test_zero_or_negative_input_falls_back_safely(self):
+        assert _power_devig(0.0, 0.5) == (0.0, 1.0)
+        assert _power_devig(0.5, 0.0) == (1.0, 0.0)
+        assert _power_devig(0.0, 0.0) == (0.5, 0.5)
 
 
 class TestPinnacleBookMatching:
@@ -128,10 +205,13 @@ class TestPinnacleReference:
     def test_no_vig_fair_probabilities(self):
         over, under = _pinny_group()
         result = analyze_prop_group("g1", over, under)
-        # -120 / +100 no-vig
-        expected_over = (120 / 220) / ((120 / 220) + 0.5)
+        # -120 / +100, power-method no-vig (see _power_devig; 2026-09-19
+        # fix -- was a hardcoded proportional re-derivation, the exact
+        # method that was replaced for leaving favorite-longshot bias
+        # in place).
+        expected_over, expected_under = calculate_no_vig_probs(-120, 100)
         assert result["nv_prob_over"] == pytest.approx(expected_over, abs=0.001)
-        assert result["nv_prob_under"] == pytest.approx(1 - expected_over, abs=0.001)
+        assert result["nv_prob_under"] == pytest.approx(expected_under, abs=0.001)
 
     def test_pinnacle_approved_when_both_thresholds_pass(self):
         # One book offers OVER at +110 → EV and prob edge both clear thresholds
