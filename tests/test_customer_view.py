@@ -37,9 +37,13 @@ def test_arbitrage_and_middle_cards_show_league_and_never_the_literal_none():
     a real, reliably-populated column on both tables. Both are fixed to
     use _league_badge(opp) and a real fallback string instead."""
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
-    assert source.count('matchup_text = opp.get("matchup") or "Matchup unavailable"') == 2
+    # 2026-09-19: grew from 2 to 4 -- the new settled-history card
+    # renderers (_render_graded_arbitrage_card/_render_graded_middle_card)
+    # correctly reuse this same safe pattern rather than reintroducing
+    # the literal-"None" bug this test guards against.
+    assert source.count('matchup_text = opp.get("matchup") or "Matchup unavailable"') == 4
     assert "opp.get('matchup', '')" not in source
-    assert source.count("_league_badge(opp)") >= 2
+    assert source.count("_league_badge(opp)") >= 4
 
 
 def test_customer_facing_middles_are_filtered_to_confirmed_positive_ev_only():
@@ -477,3 +481,56 @@ def test_radio_and_slider_use_verified_not_guessed_selectors():
     assert 'div[data-baseweb="slider"] div[role="slider"]' not in source
     assert '[data-testid="stRadioOption"][data-selected="true"]' in source
     assert '[data-testid="stSlider"] [role="group"] > div > div' in source
+
+
+def test_arbitrage_section_shows_settled_history():
+    """2026-09-19 (user request): "click on EV bets it shows u all the
+    previous placed bets at the bottom" -- EV Picks already had this
+    (the "View all N settled picks" expander); Arbitrage and Middling
+    only had the cumulative chart, no itemized list of past
+    opportunities with their actual result. Added a matching expander
+    to both."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert "def _render_graded_arbitrage_card(opp: dict) -> None:" in source
+    assert 'f"View all {len(graded_arb_sorted)} settled arbitrage opportunities"' in source
+    assert "_cumulative_chart(data[\"graded_arbitrage\"], \"Arbitrage\")" in source
+    # The itemized list appears after (not instead of) the chart.
+    chart_idx = source.index('_cumulative_chart(data["graded_arbitrage"], "Arbitrage")')
+    list_idx = source.index("_render_graded_arbitrage_card(opp)")
+    assert chart_idx < list_idx
+
+
+def test_middling_section_shows_settled_history_worth_it_only():
+    """Same as the arbitrage case, but the itemized list must only ever
+    include verdict='WORTH_IT' rows -- a NOT_WORTH_IT/UNKNOWN middle was
+    never actually a recommended bet, so listing it as a "previous
+    placed bet" would misrepresent what happened. The cumulative chart
+    above it deliberately stays unfiltered (a pre-existing, separate
+    transparency decision) -- this test only constrains the new
+    itemized list, not the chart."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert "def _render_graded_middle_card(opp: dict) -> None:" in source
+    assert 'graded_worth_it = [m for m in data["graded_middles"] if m.get("verdict") == "WORTH_IT"]' in source
+    assert 'f"View all {len(graded_mid_sorted)} settled middle opportunities"' in source
+    chart_idx = source.index('_cumulative_chart(data["graded_middles"], "Middling")')
+    list_idx = source.index("_render_graded_middle_card(opp)")
+    assert chart_idx < list_idx
+
+
+def test_graded_history_lists_are_sorted_newest_first():
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert (
+        'sorted(\n                data["graded_arbitrage"], key=lambda o: o.get("graded_at") or "", reverse=True\n            )'
+        in source
+    )
+    assert 'sorted(graded_worth_it, key=lambda o: o.get("graded_at") or "", reverse=True)' in source
+
+
+def test_graded_cards_show_win_or_loss_result():
+    """The literal ask: "if they won or not" -- both new card renderers
+    must derive a clear WIN/LOSS-style label from profit_units, not just
+    display a raw number."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'result_label = "PROFIT" if won else "LOSS"' in source
+    assert source.count('result_label = "PROFIT" if won else "LOSS"') == 2
+    assert 'result_class = "result-win" if won else "result-loss"' in source

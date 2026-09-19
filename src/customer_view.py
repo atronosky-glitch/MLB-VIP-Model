@@ -1185,6 +1185,62 @@ def _render_middle_card(opp: dict, state: str | None = None, unit_usd: float | N
     """, unsafe_allow_html=True)
 
 
+def _render_graded_arbitrage_card(opp: dict) -> None:
+    """One settled arbitrage opportunity -- same card shape as the live
+    version (_render_arbitrage_card) but with the actual result instead
+    of a bet-now button, matching how EV Picks' own "View all N settled
+    picks" expander shows history."""
+    pick_label = f"{_market_label(opp.get('market_type', ''))}" + (
+        f" {opp['line']}" if opp.get("line") is not None else ""
+    )
+    matchup_text = opp.get("matchup") or "Matchup unavailable"
+    profit = opp.get("profit_units")
+    won = profit is not None and profit > 0
+    result_class = "result-win" if won else "result-loss"
+    result_label = "PROFIT" if won else "LOSS"
+    outcome = opp.get("outcome") or "—"
+    graded_label = (opp.get("graded_at") or "")[:10]
+    profit_text = f"{profit:+.2f}u" if profit is not None else "—"
+    st.markdown(f"""
+    <div class="pick settled">
+      <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or pick_label}</div>
+      <div class="pick-meta">{_league_badge(opp)} · {matchup_text} · {pick_label}</div>
+      <div class="pick-meta">{opp.get('side_a', '')} · {opp.get('side_a_sportsbook', '')} {opp.get('side_a_price', 0):+d}
+        &nbsp;vs&nbsp; {opp.get('side_b', '')} · {opp.get('side_b_sportsbook', '')} {opp.get('side_b_price', 0):+d}</div>
+      <div class="pick-meta">Outcome: {outcome} · Graded: {graded_label}</div>
+      <div class="unit-line">Result: <span class="{result_class}">{result_label} {profit_text}</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _render_graded_middle_card(opp: dict) -> None:
+    """One settled middle opportunity -- same shape as the live version
+    (_render_middle_card) but with the actual result. Only ever called
+    for verdict='WORTH_IT' rows (see the "middling" section below) --
+    a NOT_WORTH_IT/UNKNOWN middle was never actually a recommended bet,
+    so it doesn't belong in a "previous placed bets" list even though
+    the cumulative track-record chart above it deliberately stays
+    unfiltered (a transparency device, not a pick list)."""
+    matchup_text = opp.get("matchup") or "Matchup unavailable"
+    profit = opp.get("profit_units")
+    won = profit is not None and profit > 0
+    result_class = "result-win" if won else "result-loss"
+    result_label = "PROFIT" if won else "LOSS"
+    outcome = opp.get("outcome") or "—"
+    graded_label = (opp.get("graded_at") or "")[:10]
+    profit_text = f"{profit:+.2f}u" if profit is not None else "—"
+    st.markdown(f"""
+    <div class="pick settled">
+      <div class="pick-title">{opp.get('player_name') or opp.get('matchup') or _market_label(opp.get('market_type', ''))}</div>
+      <div class="pick-meta">{_league_badge(opp)} · {matchup_text} · {_market_label(opp.get('market_type', ''))}</div>
+      <div class="pick-meta">Over {opp.get('over_line', '')} · {opp.get('over_sportsbook', '')} {opp.get('over_price', 0):+d}
+        &nbsp;vs&nbsp; Under {opp.get('under_line', '')} · {opp.get('under_sportsbook', '')} {opp.get('under_price', 0):+d}</div>
+      <div class="pick-meta">Outcome: {outcome} · Graded: {graded_label}</div>
+      <div class="unit-line">Result: <span class="{result_class}">{result_label} {profit_text}</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 if _render_policy_page(st.query_params.get("page", "")):
     st.stop()
 
@@ -1469,6 +1525,13 @@ elif st.session_state.view_mode == "arbitrage":
                             _render_arbitrage_card(opp, state=arb_bet_now_state)
         st.divider()
         _cumulative_chart(data["graded_arbitrage"], "Arbitrage")
+        if data["graded_arbitrage"]:
+            graded_arb_sorted = sorted(
+                data["graded_arbitrage"], key=lambda o: o.get("graded_at") or "", reverse=True
+            )
+            with st.expander(f"View all {len(graded_arb_sorted)} settled arbitrage opportunities", expanded=False):
+                for opp in graded_arb_sorted:
+                    _render_graded_arbitrage_card(opp)
 
 # ==================================================================
 # Middling
@@ -1511,6 +1574,12 @@ elif st.session_state.view_mode == "middling":
                             _render_middle_card(opp, state=mid_bet_now_state, unit_usd=mid_bet_now_unit_usd)
         st.divider()
         _cumulative_chart(data["graded_middles"], "Middling")
+        graded_worth_it = [m for m in data["graded_middles"] if m.get("verdict") == "WORTH_IT"]
+        if graded_worth_it:
+            graded_mid_sorted = sorted(graded_worth_it, key=lambda o: o.get("graded_at") or "", reverse=True)
+            with st.expander(f"View all {len(graded_mid_sorted)} settled middle opportunities", expanded=False):
+                for opp in graded_mid_sorted:
+                    _render_graded_middle_card(opp)
 
 st.divider()
 features = st.columns(4)
