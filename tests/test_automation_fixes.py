@@ -871,3 +871,23 @@ class TestMlbDiscordConnectionJob:
         with patch("src.discord_delivery.test_mlb_discord_connection", return_value=fake_result):
             result = worker._execute_job("test-mlb-discord", db_conn, config)
         assert result == {"status": "success", **fake_result}
+
+    def test_completed_job_result_persisted_to_metadata_for_inspection(self, db_conn):
+        """A 'success' job_type result (e.g. configured=False for
+        MLB_DISCORD_WEBHOOKS) is a real, meaningful outcome that a status
+        of 'completed' alone can't distinguish -- without this, the only
+        way to see WHY a test-mlb-discord job succeeded with zero webhooks
+        actually reachable would be to grep production logs. This mirrors
+        the pre-existing failed-job convention of persisting str(result)
+        into error_message, just on the success path, as JSON."""
+        import json
+        job_id = create_job(db_conn, "test-mlb-discord")
+        fake_result = {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "response_statuses": []}
+        with patch("src.discord_delivery.test_mlb_discord_connection", return_value=fake_result):
+            executed = worker._process_pending_jobs(db_conn, MagicMock())
+        assert executed == 1
+        row = db_conn.execute(
+            "SELECT status, metadata FROM scheduled_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        assert row["status"] == "completed"
+        assert json.loads(row["metadata"]) == {"status": "success", **fake_result}

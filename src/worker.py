@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import signal
@@ -842,9 +843,13 @@ def _process_pending_jobs(conn: DB, config) -> int:
 
             ts = datetime.now(timezone.utc).isoformat()
             if result.get("status") == "success":
+                try:
+                    metadata_json = json.dumps(result, default=str)
+                except (TypeError, ValueError):
+                    metadata_json = None
                 conn.execute(
-                    "UPDATE scheduled_jobs SET status = 'completed', completed_at = ? WHERE job_id = ?",
-                    (ts, job_id),
+                    "UPDATE scheduled_jobs SET status = 'completed', completed_at = ?, metadata = ? WHERE job_id = ?",
+                    (ts, metadata_json, job_id),
                 )
                 conn.commit()
             else:
