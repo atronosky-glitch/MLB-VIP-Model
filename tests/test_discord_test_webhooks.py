@@ -189,10 +189,11 @@ class TestMlbDiscordConnection:
 
 class TestSendWebhookDiagnostic:
     """Tests for _send_webhook_diagnostic() -- the raw, single-attempt,
-    no-retry POST helper backing test_mlb_discord_connection(). Separate
-    from send_webhook_message()/_send_webhook_raw() (unchanged, used by
-    every real delivery path) so this diagnostic-only path never affects
-    normal retry/rate-limit behavior."""
+    no-retry POST helper backing test_mlb_discord_connection(). Its
+    retry/rate-limit BEHAVIOR is independent from
+    send_webhook_message()/_send_webhook_raw() (used by every real
+    delivery path) -- but both share the same DISCORD_REQUEST_HEADERS,
+    including the User-Agent fix below."""
 
     def test_204_is_success(self):
         from src.discord_delivery import _send_webhook_diagnostic
@@ -292,6 +293,62 @@ class TestSendWebhookDiagnostic:
             result = _send_webhook_diagnostic(leaky_url, "hi")
         assert "secrettoken" not in result["response_body"]
         assert "[REDACTED_WEBHOOK_URL]" in result["response_body"]
+
+    def test_sends_a_browser_like_user_agent_not_the_urllib_default(self):
+        """Root cause of every EV-pick alert failing to ever deliver
+        (found via live production testing 2026-09-19): Cloudflare's edge
+        (in front of Discord's webhook endpoint) returns HTTP 403 with
+        body "error code: 1010" for Python's default
+        "Python-urllib/3.x" User-Agent -- a known Cloudflare bot
+        signature. A browser-like User-Agent must be sent instead."""
+        from src.discord_delivery import _send_webhook_diagnostic
+
+        class _FakeResp:
+            def getcode(self):
+                return 204
+            def read(self):
+                return b""
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResp()) as mocked:
+            _send_webhook_diagnostic("https://discord.com/api/webhooks/x", "hi")
+        sent_request = mocked.call_args[0][0]
+        user_agent = sent_request.get_header("User-agent")
+        assert user_agent is not None
+        assert "python-urllib" not in user_agent.lower()
+        assert "mozilla" in user_agent.lower()
+
+
+class TestSendWebhookRawUserAgent:
+    """_send_webhook_raw() (the real delivery path, via
+    send_webhook_message()) must carry the same fix -- the diagnostic
+    path alone clearing Cloudflare wouldn't mean anything for actual
+    EV-pick delivery, which goes through this function instead."""
+
+    def test_send_webhook_message_sends_a_browser_like_user_agent(self):
+        from src.discord_delivery import send_webhook_message
+
+        class _FakeResp:
+            def getcode(self):
+                return 204
+            def read(self):
+                return b""
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResp()) as mocked:
+            ok = send_webhook_message("https://discord.com/api/webhooks/x", "hi")
+        assert ok is True
+        sent_request = mocked.call_args[0][0]
+        user_agent = sent_request.get_header("User-agent")
+        assert user_agent is not None
+        assert "python-urllib" not in user_agent.lower()
+        assert "mozilla" in user_agent.lower()
 
 
 class TestMlbDiscordConnectionCliDispatch:

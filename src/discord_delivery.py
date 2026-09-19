@@ -34,6 +34,23 @@ MIN_REQUEST_INTERVAL = 1.0  # seconds between webhook calls
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2.0  # exponential backoff base
 
+# Live production testing (2026-09-19) found every real send failing
+# with HTTP 403 and a body of "error code: 1010" -- a Cloudflare edge
+# block (Cloudflare error 1010: client signature blocked), not a
+# Discord API rejection. Python's urllib defaults to a
+# "Python-urllib/3.x" User-Agent, which Cloudflare's WAF commonly
+# flags as a bot signature and blocks before the request ever reaches
+# Discord. A browser-like User-Agent clears it. This is almost
+# certainly why zero EV-pick alerts had ever been delivered, despite
+# MLB_DISCORD_WEBHOOKS being correctly configured the whole time.
+DISCORD_REQUEST_HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+}
+
 # Diagnostic-only: the last real HTTP response status(es) observed by
 # _send_webhook_raw, for the "simulate" CLI command below to report
 # back to an operator (e.g. "Discord actually returned 204"). Never
@@ -317,7 +334,7 @@ def _send_webhook_raw(webhook_url: str, payload: dict[str, Any]) -> bool:
             req = urllib.request.Request(
                 webhook_url,
                 data=data,
-                headers={"Content-Type": "application/json"},
+                headers=DISCORD_REQUEST_HEADERS,
                 method="POST",
             )
 
@@ -414,7 +431,7 @@ def _send_webhook_diagnostic(webhook_url: str, content: str, *, timeout: float =
     payload = {"content": content}
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        webhook_url, data=data, headers={"Content-Type": "application/json"}, method="POST",
+        webhook_url, data=data, headers=DISCORD_REQUEST_HEADERS, method="POST",
     )
 
     try:
