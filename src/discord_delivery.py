@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -379,6 +380,79 @@ def _send_webhook_raw(webhook_url: str, payload: dict[str, Any]) -> bool:
     return False
 
 
+# Matches a Discord webhook URL (any of discord.com/discordapp.com,
+# with or without a leading "www.") so it can never end up in a
+# returned/logged diagnostic string even if it somehow appears inside
+# a response body or exception message.
+_WEBHOOK_URL_RE = re.compile(
+    r"https://(?:www\.)?discord(?:app)?\.com/api/webhooks/\S+", re.IGNORECASE,
+)
+
+
+def _redact_webhook_urls(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return _WEBHOOK_URL_RE.sub("[REDACTED_WEBHOOK_URL]", text)
+
+
+def _send_webhook_diagnostic(webhook_url: str, content: str, *, timeout: float = 10.0) -> dict[str, Any]:
+    """Single-attempt (no retry, no rate-limit sleep) diagnostic POST to a
+    Discord webhook -- returns full diagnostic detail for
+    test_mlb_discord_connection() to report back, instead of the plain
+    bool send_webhook_message()/_send_webhook_raw() return (those two
+    stay unchanged; this is a separate, test-only code path so normal
+    delivery's retry/rate-limit behavior is never affected by this).
+
+    Discord's real webhook success response is 204 No Content (200
+    accepted too, in case that ever changes) -- same check
+    _send_webhook_raw() already uses.
+
+    Never includes the webhook URL itself anywhere in the return value;
+    the response body and any exception message are passed through
+    _redact_webhook_urls() defensively even though neither is expected
+    to contain it."""
+    payload = {"content": content}
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url, data=data, headers={"Content-Type": "application/json"}, method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = resp.getcode()
+            body_text = _redact_webhook_urls(resp.read().decode("utf-8", errors="replace"))
+        return {
+            "success": status in (200, 204),
+            "http_status": status,
+            "response_body": body_text,
+            "exception_type": None,
+            "exception_message": None,
+            "timeout": timeout,
+        }
+    except urllib.error.HTTPError as exc:
+        try:
+            body_text = _redact_webhook_urls(exc.read().decode("utf-8", errors="replace"))
+        except Exception:
+            body_text = None
+        return {
+            "success": False,
+            "http_status": exc.code,
+            "response_body": body_text,
+            "exception_type": type(exc).__name__,
+            "exception_message": _redact_webhook_urls(str(exc)),
+            "timeout": timeout,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "http_status": None,
+            "response_body": None,
+            "exception_type": type(exc).__name__,
+            "exception_message": _redact_webhook_urls(str(exc)),
+            "timeout": timeout,
+        }
+
+
 def _load_actionable_recommendations(
     db_path: str | Path,
     *,
@@ -653,6 +727,9 @@ def test_webhooks(config: Any = None) -> dict[str, Any]:
     return {"any_configured": any_configured, "channels": results}
 
 
+DISCORD_TEST_TIMEOUT_SECONDS = 10.0
+
+
 def test_mlb_discord_connection(config: Any = None) -> dict[str, Any]:
     """Production-safe connectivity test for MLB_DISCORD_WEBHOOKS
     specifically (2026-09-19 operator request) -- separate from
@@ -661,10 +738,16 @@ def test_mlb_discord_connection(config: Any = None) -> dict[str, Any]:
     narrow, urgent question with no ambiguity: is THIS EXACT env var,
     read the SAME way production reads it, actually reachable right now.
     Sends the literal text "MLB Discord connection test" -- nothing
-    else -- to every URL in MLB_DISCORD_WEBHOOKS. Never touches dedup
-    state (discord_alerts_sent), never logs or returns the webhook URL
-    itself, only whether it was detected and whether each send
-    succeeded."""
+    else -- to every URL in MLB_DISCORD_WEBHOOKS, via
+    _send_webhook_diagnostic() (single attempt, no retry -- a
+    diagnostic test needs the RAW first-attempt result, not one
+    smoothed over by send_webhook_message()'s own retry loop). Never
+    touches dedup state (discord_alerts_sent), never logs or returns
+    the webhook URL itself -- only whether it was detected, and for
+    each URL: success, HTTP status, response body, exception
+    type/message, timeout, and a 1-based webhook index. The response
+    body and any exception message are redacted defensively even
+    though neither is expected to contain the URL/token."""
     if config is None:
         from src.production_config import load_config
         config = load_config()
@@ -674,31 +757,26 @@ def test_mlb_discord_connection(config: Any = None) -> dict[str, Any]:
     configured = bool(urls)
     logger.info("[DISCORD] MLB_DISCORD_WEBHOOKS detected: %s", "yes" if configured else "no")
     if not configured:
-        return {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "response_statuses": []}
+        return {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "attempts": []}
 
     passed = failed = 0
-    all_statuses: list[int] = []
-    for i, url in enumerate(urls):
-        _last_response_statuses.clear()
-        ok = send_webhook_message(url, "MLB Discord connection test")
-        status = list(_last_response_statuses)
-        all_statuses.extend(status)
+    attempts: list[dict[str, Any]] = []
+    for i, url in enumerate(urls, start=1):
+        diag = _send_webhook_diagnostic(url, "MLB Discord connection test", timeout=DISCORD_TEST_TIMEOUT_SECONDS)
         logger.info(
-            "[DISCORD] MLB_DISCORD_WEBHOOKS test send %d/%d: %s (response status(es)=%s)",
-            i + 1, len(urls), "delivered successfully" if ok else "failed", status,
+            "[DISCORD] MLB_DISCORD_WEBHOOKS test send %d/%d: success=%s http_status=%s "
+            "exception_type=%s exception_message=%s response_body=%s",
+            i, len(urls), diag["success"], diag["http_status"],
+            diag["exception_type"], diag["exception_message"], diag["response_body"],
         )
-        if ok:
+        attempts.append({"webhook_index": i, **diag})
+        if diag["success"]:
             passed += 1
         else:
             failed += 1
     return {
         "configured": True, "urls_tested": len(urls), "passed": passed, "failed": failed,
-        # HTTP status codes only (e.g. 401/404 from Discord) -- never the
-        # exception message itself, since a malformed-URL error could
-        # theoretically embed the URL/token in its text. An empty list
-        # despite a failure means the error was below the HTTP layer
-        # (DNS/timeout/connection-refused), not a Discord-side rejection.
-        "response_statuses": all_statuses,
+        "attempts": attempts,
     }
 
 
@@ -763,6 +841,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         status = "PASS" if result["failed"] == 0 else "FAIL"
         print(f"MLB_DISCORD_WEBHOOKS: {status} ({result['passed']}/{result['urls_tested']} webhook(s) succeeded)")
+        for attempt in result["attempts"]:
+            print(
+                f"  webhook #{attempt['webhook_index']}: success={attempt['success']} "
+                f"http_status={attempt['http_status']} exception_type={attempt['exception_type']} "
+                f"exception_message={attempt['exception_message']} timeout={attempt['timeout']}"
+            )
+            print(f"    response_body={attempt['response_body']!r}")
         return 0 if result["failed"] == 0 else 1
 
     if args.command == "test-webhooks":

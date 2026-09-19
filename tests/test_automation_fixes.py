@@ -859,7 +859,11 @@ class TestMlbDiscordConnectionJob:
     def test_run_test_mlb_discord_never_logs_or_returns_a_webhook_url(self, caplog):
         config = MagicMock()
         config.discord_webhook_urls = "https://discord.com/api/webhooks/real/secrettoken"
-        with patch("src.discord_delivery.send_webhook_message", return_value=True):
+        diag = {
+            "success": True, "http_status": 204, "response_body": "",
+            "exception_type": None, "exception_message": None, "timeout": 10.0,
+        }
+        with patch("src.discord_delivery._send_webhook_diagnostic", return_value=diag):
             result = worker._run_test_mlb_discord(config)
         assert "secrettoken" not in str(result)
         for record in caplog.records:
@@ -867,7 +871,7 @@ class TestMlbDiscordConnectionJob:
 
     def test_execute_job_dispatches_test_mlb_discord(self, db_conn):
         config = MagicMock()
-        fake_result = {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "response_statuses": []}
+        fake_result = {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "attempts": []}
         with patch("src.discord_delivery.test_mlb_discord_connection", return_value=fake_result):
             result = worker._execute_job("test-mlb-discord", db_conn, config)
         assert result == {"status": "success", **fake_result}
@@ -882,7 +886,7 @@ class TestMlbDiscordConnectionJob:
         into error_message, just on the success path, as JSON."""
         import json
         job_id = create_job(db_conn, "test-mlb-discord")
-        fake_result = {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "response_statuses": []}
+        fake_result = {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "attempts": []}
         with patch("src.discord_delivery.test_mlb_discord_connection", return_value=fake_result):
             executed = worker._process_pending_jobs(db_conn, MagicMock())
         assert executed == 1

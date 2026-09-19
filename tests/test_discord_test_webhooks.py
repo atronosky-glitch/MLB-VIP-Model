@@ -2,6 +2,7 @@
 CLI command (2026-09-15) -- verifies each configured Discord webhook is
 reachable without touching dedup state or sending real alert content."""
 
+import urllib.error
 from unittest import mock
 
 from src.discord_delivery import main
@@ -92,6 +93,14 @@ class TestCliDispatch:
         assert "FAIL" in out
 
 
+def _fake_diag(success, http_status=None, response_body=None, exception_type=None,
+                exception_message=None, timeout=10.0):
+    return {
+        "success": success, "http_status": http_status, "response_body": response_body,
+        "exception_type": exception_type, "exception_message": exception_message, "timeout": timeout,
+    }
+
+
 class TestMlbDiscordConnection:
     """Tests for src.discord_delivery.test_mlb_discord_connection() -- the 2026-09-19 operator
     request for a connectivity check against MLB_DISCORD_WEBHOOKS
@@ -99,50 +108,62 @@ class TestMlbDiscordConnection:
 
     def test_not_configured_reports_zero_urls(self):
         result = run_mlb_discord_test(config=_FakeConfig())
-        assert result == {
-            "configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "response_statuses": [],
-        }
+        assert result == {"configured": False, "urls_tested": 0, "passed": 0, "failed": 0, "attempts": []}
 
     def test_single_url_success(self):
         config = _FakeConfig()
         config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1"
-        with mock.patch("src.discord_delivery.send_webhook_message", return_value=True) as mocked:
+        diag = _fake_diag(True, http_status=204)
+        with mock.patch("src.discord_delivery._send_webhook_diagnostic", return_value=diag) as mocked:
             result = run_mlb_discord_test(config=config)
-        assert result == {
-            "configured": True, "urls_tested": 1, "passed": 1, "failed": 0, "response_statuses": [],
-        }
-        mocked.assert_called_once_with("https://discord.com/api/webhooks/ev1", "MLB Discord connection test")
+        assert result["configured"] is True
+        assert result["passed"] == 1 and result["failed"] == 0
+        assert result["attempts"] == [{"webhook_index": 1, **diag}]
+        mocked.assert_called_once_with(
+            "https://discord.com/api/webhooks/ev1", "MLB Discord connection test", timeout=10.0,
+        )
 
-    def test_multiple_urls_mixed_results(self):
+    def test_multiple_urls_mixed_results_indexed_from_one(self):
         config = _FakeConfig()
         config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1,https://discord.com/api/webhooks/ev2"
-        with mock.patch("src.discord_delivery.send_webhook_message", side_effect=[True, False]):
+        diag_ok = _fake_diag(True, http_status=204)
+        diag_fail = _fake_diag(False, http_status=403, response_body='{"message": "Forbidden"}')
+        with mock.patch("src.discord_delivery._send_webhook_diagnostic", side_effect=[diag_ok, diag_fail]):
             result = run_mlb_discord_test(config=config)
-        assert result == {
-            "configured": True, "urls_tested": 2, "passed": 1, "failed": 1, "response_statuses": [],
-        }
+        assert result["passed"] == 1 and result["failed"] == 1
+        assert [a["webhook_index"] for a in result["attempts"]] == [1, 2]
+        assert result["attempts"][1]["http_status"] == 403
 
-    def test_captures_the_real_http_status_code_from_discord(self):
-        """The whole point of this field: a 401/404 from Discord (bad or
-        revoked webhook) must be visible to whatever reads the job result,
-        not just logged where only Render's own log viewer could see it."""
+    def test_captures_full_diagnostic_detail_on_failure(self):
+        """The whole point of this: an HTTP status, response body, and
+        exception type/message must all be visible in the job result, not
+        just logged where only Render's own log viewer could see it."""
         config = _FakeConfig()
         config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1"
-
-        def fake_send(url, content):
-            from src.discord_delivery import _last_response_statuses
-            _last_response_statuses.append(401)
-            return False
-
-        with mock.patch("src.discord_delivery.send_webhook_message", side_effect=fake_send):
+        diag = _fake_diag(False, http_status=401, response_body='{"message": "401: Unauthorized"}')
+        with mock.patch("src.discord_delivery._send_webhook_diagnostic", return_value=diag):
             result = run_mlb_discord_test(config=config)
-        assert result["response_statuses"] == [401]
+        attempt = result["attempts"][0]
+        assert attempt["http_status"] == 401
+        assert attempt["response_body"] == '{"message": "401: Unauthorized"}'
         assert result["failed"] == 1
+
+    def test_captures_exception_detail_when_no_http_response(self):
+        config = _FakeConfig()
+        config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1"
+        diag = _fake_diag(False, exception_type="URLError", exception_message="<urlopen error timed out>")
+        with mock.patch("src.discord_delivery._send_webhook_diagnostic", return_value=diag):
+            result = run_mlb_discord_test(config=config)
+        attempt = result["attempts"][0]
+        assert attempt["http_status"] is None
+        assert attempt["exception_type"] == "URLError"
+        assert attempt["exception_message"] == "<urlopen error timed out>"
 
     def test_never_returns_or_logs_the_webhook_url(self, caplog):
         config = _FakeConfig()
         config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1/secrettoken"
-        with mock.patch("src.discord_delivery.send_webhook_message", return_value=True):
+        diag = _fake_diag(True, http_status=204)
+        with mock.patch("src.discord_delivery._send_webhook_diagnostic", return_value=diag):
             result = run_mlb_discord_test(config=config)
         assert "secrettoken" not in str(result)
         for record in caplog.records:
@@ -166,6 +187,113 @@ class TestMlbDiscordConnection:
         assert result["configured"] is False
 
 
+class TestSendWebhookDiagnostic:
+    """Tests for _send_webhook_diagnostic() -- the raw, single-attempt,
+    no-retry POST helper backing test_mlb_discord_connection(). Separate
+    from send_webhook_message()/_send_webhook_raw() (unchanged, used by
+    every real delivery path) so this diagnostic-only path never affects
+    normal retry/rate-limit behavior."""
+
+    def test_204_is_success(self):
+        from src.discord_delivery import _send_webhook_diagnostic
+
+        class _FakeResp:
+            def getcode(self):
+                return 204
+            def read(self):
+                return b""
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResp()):
+            result = _send_webhook_diagnostic("https://discord.com/api/webhooks/x", "hi")
+        assert result["success"] is True
+        assert result["http_status"] == 204
+
+    def test_200_is_success(self):
+        from src.discord_delivery import _send_webhook_diagnostic
+
+        class _FakeResp:
+            def getcode(self):
+                return 200
+            def read(self):
+                return b'{"ok": true}'
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResp()):
+            result = _send_webhook_diagnostic("https://discord.com/api/webhooks/x", "hi")
+        assert result["success"] is True
+        assert result["http_status"] == 200
+
+    def test_http_error_captures_status_and_body(self):
+        import io
+        from src.discord_delivery import _send_webhook_diagnostic
+
+        exc = urllib.error.HTTPError(
+            "https://discord.com/api/webhooks/x", 403, "Forbidden",
+            {}, io.BytesIO(b'{"message": "403: Forbidden", "code": 0}'),
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=exc):
+            result = _send_webhook_diagnostic("https://discord.com/api/webhooks/x", "hi")
+        assert result["success"] is False
+        assert result["http_status"] == 403
+        assert "403: Forbidden" in result["response_body"]
+        assert result["exception_type"] == "HTTPError"
+
+    def test_network_error_captures_exception_no_http_status(self):
+        from src.discord_delivery import _send_webhook_diagnostic
+
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timed out")):
+            result = _send_webhook_diagnostic("https://discord.com/api/webhooks/x", "hi")
+        assert result["success"] is False
+        assert result["http_status"] is None
+        assert result["exception_type"] == "URLError"
+        assert "timed out" in result["exception_message"]
+
+    def test_passes_through_the_given_timeout(self):
+        from src.discord_delivery import _send_webhook_diagnostic
+
+        class _FakeResp:
+            def getcode(self):
+                return 204
+            def read(self):
+                return b""
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResp()) as mocked:
+            result = _send_webhook_diagnostic("https://discord.com/api/webhooks/x", "hi", timeout=3.5)
+        assert result["timeout"] == 3.5
+        assert mocked.call_args.kwargs["timeout"] == 3.5
+
+    def test_redacts_webhook_url_from_response_body_and_exception_message(self):
+        from src.discord_delivery import _send_webhook_diagnostic
+
+        leaky_url = "https://discord.com/api/webhooks/1234/secrettoken"
+
+        class _FakeResp:
+            def getcode(self):
+                return 400
+            def read(self):
+                return f'{{"error": "bad url {leaky_url}"}}'.encode()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResp()):
+            result = _send_webhook_diagnostic(leaky_url, "hi")
+        assert "secrettoken" not in result["response_body"]
+        assert "[REDACTED_WEBHOOK_URL]" in result["response_body"]
+
+
 class TestMlbDiscordConnectionCliDispatch:
     def test_not_configured_prints_clear_message_and_exits_nonzero(self, capsys):
         with mock.patch("src.production_config.load_config", return_value=_FakeConfig()):
@@ -177,20 +305,25 @@ class TestMlbDiscordConnectionCliDispatch:
     def test_all_pass_prints_pass_and_exits_zero(self, capsys):
         config = _FakeConfig()
         config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1"
+        diag = _fake_diag(True, http_status=204, response_body="")
         with mock.patch("src.production_config.load_config", return_value=config), \
-             mock.patch("src.discord_delivery.send_webhook_message", return_value=True):
+             mock.patch("src.discord_delivery._send_webhook_diagnostic", return_value=diag):
             exit_code = main(["test-mlb"])
         out = capsys.readouterr().out
         assert exit_code == 0
         assert "PASS" in out
         assert "1/1" in out
+        assert "http_status=204" in out
 
     def test_a_failure_prints_fail_and_exits_nonzero(self, capsys):
         config = _FakeConfig()
         config.discord_webhook_urls = "https://discord.com/api/webhooks/ev1"
+        diag = _fake_diag(False, http_status=403, response_body='{"message": "403: Forbidden"}')
         with mock.patch("src.production_config.load_config", return_value=config), \
-             mock.patch("src.discord_delivery.send_webhook_message", return_value=False):
+             mock.patch("src.discord_delivery._send_webhook_diagnostic", return_value=diag):
             exit_code = main(["test-mlb"])
         out = capsys.readouterr().out
         assert exit_code == 1
         assert "FAIL" in out
+        assert "http_status=403" in out
+        assert "403: Forbidden" in out
