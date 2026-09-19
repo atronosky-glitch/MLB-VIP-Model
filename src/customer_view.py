@@ -30,6 +30,7 @@ from src.customer_accounts import (
     MARKETING_CONSENT_TEXT,
 )
 from src.grading import performance_summary, breakdown_by_field, assign_bucket, EV_BUCKETS
+from src.market_analysis import american_to_decimal
 from src.sportsbook_picker import render_sportsbook_picker
 from src.odds_api_client import TRACKED_BOOKMAKERS
 from src.tracker import compute_variable_stake
@@ -400,6 +401,93 @@ def _suggested_stake_units(pick: dict) -> float | None:
     if pick.get("risk_units") is not None:
         return pick["risk_units"]
     return compute_variable_stake(pick.get("ev_pct"), pick.get("offered_decimal_odds"), pick.get("model_score"))
+
+
+def _odds_override_key(pick: dict) -> str:
+    """Stable per-pick Streamlit widget key for the "I got a different
+    price" input. None of upcoming/research's rows carry a bare
+    recommendation_id column (only the join key on historical_recommendations
+    itself), so reuse the same identity tuple already used to look up
+    bet_link (see database/db_manager.py::get_bet_links)."""
+    parts = (
+        pick.get("event_id"), pick.get("player_id"), pick.get("market_type"),
+        pick.get("line"), pick.get("side"), pick.get("sportsbook"), pick.get("scan_timestamp"),
+    )
+    return "odds_override_" + "|".join(str(p) for p in parts)
+
+
+def _recompute_stake_for_odds(pick: dict, new_american_odds: int) -> dict | None:
+    """Re-derive EV% and suggested stake at a DIFFERENT price the customer
+    was actually quoted elsewhere (e.g. a better number on Novig) -- no new
+    scan needed. Backs out the model's own fair/true win probability from
+    the pick's existing ev_pct + offered_decimal_odds (the inverse of
+    src/player_prop_analysis.py::calculate_ev's ev = true_prob * decimal_odds
+    - 1), then reapplies that same true probability at the new price.
+
+    Returns None when the pick doesn't carry enough data to do this --
+    YN markets have no ev_pct at all (they use yn_implied_prob_adv
+    instead), so there's no true-probability figure to back out."""
+    ev_pct = pick.get("ev_pct")
+    old_decimal = pick.get("offered_decimal_odds")
+    if ev_pct is None or not old_decimal or old_decimal <= 1.0:
+        return None
+    true_probability = (ev_pct / 100.0 + 1.0) / old_decimal
+    try:
+        new_decimal = american_to_decimal(new_american_odds)
+    except (TypeError, ZeroDivisionError):
+        return None
+    if new_decimal <= 1.0:
+        return None
+    new_ev_pct = (true_probability * new_decimal - 1.0) * 100.0
+    new_stake_units = compute_variable_stake(new_ev_pct, new_decimal, pick.get("model_score"))
+    return {"ev_pct": new_ev_pct, "decimal_odds": new_decimal, "stake_units": new_stake_units}
+
+
+def _parse_american_odds(text: str) -> int | None:
+    """Parse a user-typed American odds string ("+150", "-120", "150").
+    None for anything unparseable or outside the real American-odds range
+    (genuine prices are never inside (-100, 100))."""
+    text = (text or "").strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    if -99 <= value <= 99:
+        return None
+    return value
+
+
+def _render_odds_override(pick: dict, unit_usd: float | None) -> None:
+    """"Got a different price?" input -- lets a customer plug in the exact
+    number they were quoted at another book and see EV%/suggested stake
+    recomputed for that price, live, without a new scan. Skipped for YN
+    markets (see _recompute_stake_for_odds) and for settled picks (the
+    caller only invokes this for open ones)."""
+    if pick.get("ev_pct") is None or not pick.get("offered_decimal_odds"):
+        return
+    col, _ = st.columns([1, 2])
+    with col:
+        entered = st.text_input(
+            "Got a different price? Enter odds + Enter",
+            value="", key=_odds_override_key(pick),
+            placeholder=f"e.g. {pick.get('offered_american_odds', '+150')}",
+        )
+    if not entered.strip():
+        return
+    parsed = _parse_american_odds(entered)
+    if parsed is None:
+        st.caption("Enter American odds like +150 or -120.")
+        return
+    result = _recompute_stake_for_odds(pick, parsed)
+    if result is None:
+        st.caption("Can't recompute a stake for this pick.")
+        return
+    stake_line = f"At {parsed:+d}: {result['ev_pct']:+.2f}% EV · Suggested stake: {result['stake_units']:.2f}u"
+    if unit_usd:
+        stake_line += f" (${result['stake_units'] * unit_usd:.2f})"
+    st.caption(stake_line)
 
 
 def _resolve_bet_link(raw_link: str | None, state: str | None, stake_usd: float | None) -> tuple[str | None, str | None]:
@@ -1048,6 +1136,8 @@ def _render_full_pick(pick: dict, settled: bool = False, state: str | None = Non
       {bet_now_html}
     </div>
     """, unsafe_allow_html=True)
+    if not settled:
+        _render_odds_override(pick, unit_usd)
 
 
 def _render_locked_pick(lock: dict) -> None:
