@@ -116,13 +116,49 @@ class TestSyncMiddleOpportunities:
         assert get_active_middle_opportunities(db_conn, "MLB") == []
 
     def test_first_sync_reports_it_as_new(self, db_conn):
-        result = sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
+        opp = _mid_opp()
+        opp["verdict"] = "WORTH_IT"
+        result = sync_middle_opportunities(db_conn, "MLB", [opp])
         assert result["new_ids"] == ["E1|P1|batting_totalBases_ou|1.5|2.5"]
 
     def test_resync_of_a_still_active_opportunity_is_not_new(self, db_conn):
-        sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
-        result = sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
+        opp = _mid_opp()
+        opp["verdict"] = "WORTH_IT"
+        sync_middle_opportunities(db_conn, "MLB", [opp])
+        result = sync_middle_opportunities(db_conn, "MLB", [opp])
         assert result["new_ids"] == []
+
+    def test_not_worth_it_middle_is_never_claimed_for_discord(self, db_conn):
+        """Real bug found via live production verification (2026-09-19):
+        sync_middle_opportunities used to claim EVERY newly-active
+        middle for Discord delivery regardless of verdict, even though
+        src/worker.py::_deliver_new_opportunity_alerts only ever attempts
+        delivery for verdict='WORTH_IT' ones. A NOT_WORTH_IT middle got
+        its claim (discord_sent) permanently burned at sync time despite
+        never being attempted -- see the fix's docstring."""
+        opp = _mid_opp()
+        opp["verdict"] = "NOT_WORTH_IT"
+        result = sync_middle_opportunities(db_conn, "MLB", [opp])
+        assert result["new_ids"] == []
+        row = db_conn.execute(
+            "SELECT discord_sent FROM middle_opportunities WHERE opportunity_id = ?",
+            ("E1|P1|batting_totalBases_ou|1.5|2.5",),
+        ).fetchone()
+        assert row["discord_sent"] == 0
+
+    def test_middle_that_flips_to_worth_it_while_still_active_can_still_be_claimed(self, db_conn):
+        """The core fix: a still-ACTIVE opportunity whose verdict starts
+        NOT_WORTH_IT and later flips to WORTH_IT (true EV recalculated
+        as odds move) must still be claimable -- its claim was never
+        burned by the earlier non-qualifying verdict."""
+        opp = _mid_opp()
+        opp["verdict"] = "NOT_WORTH_IT"
+        first = sync_middle_opportunities(db_conn, "MLB", [opp])
+        assert first["new_ids"] == []
+
+        opp["verdict"] = "WORTH_IT"
+        second = sync_middle_opportunities(db_conn, "MLB", [opp])
+        assert second["new_ids"] == ["E1|P1|batting_totalBases_ou|1.5|2.5"]
 
     def test_stamps_opportunity_id_onto_the_passed_in_dict(self, db_conn):
         opp = _mid_opp()

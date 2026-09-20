@@ -2999,7 +2999,21 @@ def sync_middle_opportunities(
     """Same sync pattern as sync_arbitrage_opportunities, for middles --
     see its docstring for what "new_ids" means and why, including the
     2026-09-18 change to how it's computed (claim_middle_for_discord,
-    not a read-then-diff)."""
+    not a read-then-diff).
+
+    2026-09-19: the Discord claim is taken ONLY for opportunities whose
+    verdict is already 'WORTH_IT' -- src/worker.py::
+    _deliver_new_opportunity_alerts only ever attempts delivery for
+    that subset (a NOT_WORTH_IT middle pushed to Discord would defeat
+    the point of estimating true EV). Claiming the full current_ids set
+    regardless of verdict was a real bug: a NOT_WORTH_IT middle got
+    discord_sent permanently set to 1 at sync time even though delivery
+    was never attempted, so if that SAME still-ACTIVE opportunity's
+    verdict later flipped to WORTH_IT on a later scan, it could never
+    be delivered -- its claim was already burned by a verdict that was
+    never going to result in a send. Found via live production
+    verification (queued jobs against the real DB) while auditing
+    Discord delivery end-to-end."""
     now = datetime.now(timezone.utc).isoformat()
     current_ids: list[str] = []
     for opp in opportunities:
@@ -3064,7 +3078,10 @@ def sync_middle_opportunities(
             (league,),
         )
     conn.commit()
-    new_ids = claim_middle_for_discord(conn, current_ids)
+    worth_it_ids = [
+        opp["opportunity_id"] for opp in opportunities if opp.get("verdict") == "WORTH_IT"
+    ]
+    new_ids = claim_middle_for_discord(conn, worth_it_ids)
     return {"active": len(current_ids), "new_ids": new_ids}
 
 
