@@ -704,6 +704,22 @@ def _run_test_mlb_discord(config) -> dict:
     return {"status": "success", **result}
 
 
+def _run_replay_arbitrage_delivery(config) -> dict:
+    """2026-09-19 (operator request): live end-to-end verification found
+    EV-pick and middle Discord delivery both actually succeeding for
+    real opportunities, but zero arbitrage opportunities have EVER been
+    delivered (0 of 935 all-time rows). Queue a 'replay-arbitrage-
+    delivery' job to replay ONLY the Discord-delivery portion of the
+    real pipeline for the single most recent real, active,
+    not-yet-claimed arbitrage opportunity -- see
+    src/discord_delivery.py::replay_most_recent_arbitrage_delivery for
+    what it actually does (real claim/send/release functions, no
+    fabricated data, dedup preserved either way)."""
+    from src.discord_delivery import replay_most_recent_arbitrage_delivery
+    result = replay_most_recent_arbitrage_delivery(config)
+    return {"status": "success", **result}
+
+
 # ── API quota alerts ──────────────────────────────────────────────
 
 
@@ -793,6 +809,7 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "health-check": lambda: _run_health_check(config),
         "schedule-refresh": lambda: _run_pregame_checks(conn, config),
         "test-mlb-discord": lambda: _run_test_mlb_discord(config),
+        "replay-arbitrage-delivery": lambda: _run_replay_arbitrage_delivery(config),
     }
     handler = dispatch.get(job_type)
     if not handler:

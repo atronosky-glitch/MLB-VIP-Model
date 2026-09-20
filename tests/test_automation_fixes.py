@@ -895,3 +895,36 @@ class TestMlbDiscordConnectionJob:
         ).fetchone()
         assert row["status"] == "completed"
         assert json.loads(row["metadata"]) == {"status": "success", **fake_result}
+
+
+class TestReplayArbitrageDeliveryJob:
+    """2026-09-19 (operator request): a live-triggerable
+    'replay-arbitrage-delivery' job -- live production verification
+    found EV-pick and middle Discord delivery both actually working,
+    but zero arbitrage opportunities have EVER been delivered (0 of 935
+    all-time rows). See src/discord_delivery.py::
+    replay_most_recent_arbitrage_delivery."""
+
+    def test_job_type_registered_in_dispatch(self):
+        import inspect
+        source = inspect.getsource(worker._execute_job)
+        assert '"replay-arbitrage-delivery"' in source
+
+    def test_run_replay_arbitrage_delivery_delegates_to_discord_delivery(self):
+        config = MagicMock()
+        fake_result = {"configured": True, "replayed": True, "success": True, "opportunity_id": "X"}
+        with patch(
+            "src.discord_delivery.replay_most_recent_arbitrage_delivery", return_value=fake_result,
+        ) as mocked:
+            result = worker._run_replay_arbitrage_delivery(config)
+        mocked.assert_called_once_with(config)
+        assert result == {"status": "success", **fake_result}
+
+    def test_execute_job_dispatches_replay_arbitrage_delivery(self, db_conn):
+        config = MagicMock()
+        fake_result = {"configured": False, "replayed": False, "reason": "arbitrage webhook not configured"}
+        with patch(
+            "src.discord_delivery.replay_most_recent_arbitrage_delivery", return_value=fake_result,
+        ):
+            result = worker._execute_job("replay-arbitrage-delivery", db_conn, config)
+        assert result == {"status": "success", **fake_result}

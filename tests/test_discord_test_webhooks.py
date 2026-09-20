@@ -384,3 +384,202 @@ class TestMlbDiscordConnectionCliDispatch:
         assert "FAIL" in out
         assert "http_status=403" in out
         assert "403: Forbidden" in out
+
+
+def _make_db_with_one_active_arbitrage(tmp_path, opportunity_id="E1|P1|k|6.5", detected_at=None):
+    """A real temp SQLite file (not the :memory: db_conn fixture, which
+    monkeypatches get_connection only for the duration of setup --
+    replay_most_recent_arbitrage_delivery opens its own connection via
+    get_connection(config.database_path), so it needs a real file on
+    disk, matching the established convention in
+    tests/test_phase10_discord.py's _make_full_db helpers).
+
+    sync_arbitrage_opportunities auto-claims (discord_sent 0->1) any
+    opportunity it syncs, so the claim is released right back to 0
+    here -- matching the real, observed production state this replay
+    tool exists to fix: every one of 935 all-time arbitrage rows sits
+    at discord_sent=0 (claimed-then-released, or never delivered), not
+    freshly-inserted-and-still-0."""
+    import sqlite3
+    from database.db_manager import init_db, sync_arbitrage_opportunities, release_arbitrage_discord_claim
+
+    db_path = tmp_path / "replay_test.db"
+    init_db(str(db_path))
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    opp = {
+        "group_key": opportunity_id, "event_id": "E1", "matchup": "Away @ Home",
+        "event_start_time": "2026-09-09T20:00:00+00:00",
+        "player_id": "P1", "player_name": "Test Pitcher",
+        "market_type": "pitching_strikeouts_ou", "line": 6.5,
+        "side_a": "OVER", "side_a_book": "BookA", "side_a_price": 110,
+        "side_a_decimal_odds": 2.10, "side_a_stake_pct": 0.523,
+        "side_b": "UNDER", "side_b_book": "BookB", "side_b_price": 130,
+        "side_b_decimal_odds": 2.30, "side_b_stake_pct": 0.477,
+        "guaranteed_roi_pct": 8.5,
+    }
+    sync_arbitrage_opportunities(conn, "MLB", [opp])
+    release_arbitrage_discord_claim(conn, [opportunity_id])
+    if detected_at is not None:
+        conn.execute(
+            "UPDATE arbitrage_opportunities SET detected_at = ? WHERE opportunity_id = ?",
+            (detected_at, opportunity_id),
+        )
+        conn.commit()
+    conn.close()
+    return db_path
+
+
+class TestReplayMostRecentArbitrageDelivery:
+    """Tests for replay_most_recent_arbitrage_delivery() -- the
+    2026-09-19 fallback for verifying the real arbitrage Discord
+    delivery path when no genuinely new arbitrage opportunity has
+    occurred naturally to observe (live production data found 0 of 935
+    all-time arbitrage_opportunities rows ever actually delivered)."""
+
+    def test_not_configured(self, tmp_path):
+        from src.discord_delivery import replay_most_recent_arbitrage_delivery
+        db_path = _make_db_with_one_active_arbitrage(tmp_path)
+        config = _FakeConfig()
+        config.database_path = str(db_path)
+        result = replay_most_recent_arbitrage_delivery(config)
+        assert result == {"configured": False, "replayed": False, "reason": "arbitrage webhook not configured"}
+
+    def test_no_eligible_opportunity_found(self, tmp_path):
+        from database.db_manager import init_db
+        from src.discord_delivery import replay_most_recent_arbitrage_delivery
+        db_path = tmp_path / "empty.db"
+        init_db(str(db_path))
+        config = _FakeConfig()
+        config.database_path = str(db_path)
+        config.discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb1"
+        result = replay_most_recent_arbitrage_delivery(config)
+        assert result["configured"] is True
+        assert result["replayed"] is False
+        assert "no eligible" in result["reason"]
+
+    def test_successful_replay_persists_the_claim(self, tmp_path):
+        import sqlite3
+        from src.discord_delivery import replay_most_recent_arbitrage_delivery
+        db_path = _make_db_with_one_active_arbitrage(tmp_path)
+        config = _FakeConfig()
+        config.database_path = str(db_path)
+        config.discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb1"
+
+        with mock.patch("src.discord_delivery._send_webhook_raw", return_value=True):
+            result = replay_most_recent_arbitrage_delivery(config)
+
+        assert result["success"] is True
+        assert result["claim_persisted"] is True
+        assert result["opportunity_id"] == "E1|P1|k|6.5"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT discord_sent FROM arbitrage_opportunities WHERE opportunity_id = ?", ("E1|P1|k|6.5",)
+        ).fetchone()
+        conn.close()
+        assert row["discord_sent"] == 1
+
+    def test_failed_replay_releases_the_claim_for_a_retry(self, tmp_path):
+        import sqlite3
+        from src.discord_delivery import replay_most_recent_arbitrage_delivery
+        db_path = _make_db_with_one_active_arbitrage(tmp_path)
+        config = _FakeConfig()
+        config.database_path = str(db_path)
+        config.discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb1"
+
+        with mock.patch("src.discord_delivery._send_webhook_raw", return_value=False):
+            result = replay_most_recent_arbitrage_delivery(config)
+
+        assert result["success"] is False
+        assert result["claim_persisted"] is False
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT discord_sent FROM arbitrage_opportunities WHERE opportunity_id = ?", ("E1|P1|k|6.5",)
+        ).fetchone()
+        conn.close()
+        assert row["discord_sent"] == 0, "a failed replay must not permanently burn the claim"
+
+    def test_picks_the_most_recently_detected_eligible_opportunity(self, tmp_path):
+        import sqlite3
+        from database.db_manager import init_db, sync_arbitrage_opportunities, release_arbitrage_discord_claim
+        db_path = tmp_path / "two_opps.db"
+        init_db(str(db_path))
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        base_opp = {
+            "event_id": "E1", "matchup": "Away @ Home", "event_start_time": "2026-09-09T20:00:00+00:00",
+            "player_id": "P1", "player_name": "Test Pitcher", "market_type": "pitching_strikeouts_ou",
+            "line": 6.5, "side_a": "OVER", "side_a_book": "BookA", "side_a_price": 110,
+            "side_a_decimal_odds": 2.10, "side_a_stake_pct": 0.523, "side_b": "UNDER",
+            "side_b_book": "BookB", "side_b_price": 130, "side_b_decimal_odds": 2.30,
+            "side_b_stake_pct": 0.477, "guaranteed_roi_pct": 8.5,
+        }
+        older = {**base_opp, "group_key": "OLDER|P1|k|6.5"}
+        newer = {**base_opp, "group_key": "NEWER|P1|k|6.5"}
+        sync_arbitrage_opportunities(conn, "MLB", [older])
+        sync_arbitrage_opportunities(conn, "MLB", [older, newer])
+        release_arbitrage_discord_claim(conn, ["OLDER|P1|k|6.5", "NEWER|P1|k|6.5"])
+        conn.execute("UPDATE arbitrage_opportunities SET detected_at = '2026-01-01T00:00:00+00:00' WHERE opportunity_id = 'OLDER|P1|k|6.5'")
+        conn.execute("UPDATE arbitrage_opportunities SET detected_at = '2026-09-19T00:00:00+00:00' WHERE opportunity_id = 'NEWER|P1|k|6.5'")
+        conn.commit()
+        conn.close()
+
+        from src.discord_delivery import replay_most_recent_arbitrage_delivery
+        config = _FakeConfig()
+        config.database_path = str(db_path)
+        config.discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb1"
+        with mock.patch("src.discord_delivery._send_webhook_raw", return_value=True):
+            result = replay_most_recent_arbitrage_delivery(config)
+        assert result["opportunity_id"] == "NEWER|P1|k|6.5"
+
+    def test_never_logs_or_returns_the_webhook_url(self, tmp_path, caplog):
+        db_path = _make_db_with_one_active_arbitrage(tmp_path)
+        config = _FakeConfig()
+        config.database_path = str(db_path)
+        config.discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb1/secrettoken"
+
+        from src.discord_delivery import replay_most_recent_arbitrage_delivery
+        with mock.patch("src.discord_delivery._send_webhook_raw", return_value=True):
+            result = replay_most_recent_arbitrage_delivery(config)
+        assert "secrettoken" not in str(result)
+        for record in caplog.records:
+            assert "secrettoken" not in record.getMessage()
+
+
+class TestReplayArbitrageCliDispatch:
+    def test_not_configured_exits_nonzero(self, tmp_path, capsys):
+        config = _FakeConfig()
+        config.database_path = str(_make_db_with_one_active_arbitrage(tmp_path))
+        with mock.patch("src.production_config.load_config", return_value=config):
+            exit_code = main(["replay-arbitrage"])
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert '"configured": false' in out
+
+    def test_successful_replay_exits_zero(self, tmp_path, capsys):
+        config = _FakeConfig()
+        config.database_path = str(_make_db_with_one_active_arbitrage(tmp_path))
+        config.discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb1"
+        with mock.patch("src.production_config.load_config", return_value=config), \
+             mock.patch("src.discord_delivery._send_webhook_raw", return_value=True):
+            exit_code = main(["replay-arbitrage"])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert '"success": true' in out
+
+    def test_no_eligible_opportunity_exits_zero(self, tmp_path, capsys):
+        from database.db_manager import init_db
+        db_path = tmp_path / "empty.db"
+        init_db(str(db_path))
+        config = _FakeConfig()
+        config.database_path = str(db_path)
+        config.discord_webhook_urls_arb_middle = "https://discord.com/api/webhooks/arb1"
+        with mock.patch("src.production_config.load_config", return_value=config):
+            exit_code = main(["replay-arbitrage"])
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert '"replayed": false' in out

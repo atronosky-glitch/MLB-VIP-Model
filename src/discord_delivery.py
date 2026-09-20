@@ -797,6 +797,87 @@ def test_mlb_discord_connection(config: Any = None) -> dict[str, Any]:
     }
 
 
+def replay_most_recent_arbitrage_delivery(config: Any = None) -> dict[str, Any]:
+    """One-shot fallback (2026-09-19 operator request): live production
+    verification found EV-pick and middle delivery both actually
+    succeeding for real opportunities after the Cloudflare/User-Agent
+    fix, but zero arbitrage opportunities have EVER been delivered
+    (discord_sent=1 in 0 of 935 all-time rows) -- no genuinely new
+    arbitrage has occurred to observe naturally. This replays ONLY the
+    Discord-delivery portion of the real pipeline for the single most
+    recent real, currently-ACTIVE, not-yet-claimed arbitrage
+    opportunity already sitting in the database -- never fabricates an
+    opportunity. Uses the exact same claim_arbitrage_for_discord /
+    deliver_arbitrage_alerts / release_arbitrage_discord_claim
+    functions src.worker._deliver_new_opportunity_alerts calls for a
+    real scan, so this is a real, correctly-deduplicated send, not a
+    simulation: a successful send leaves the claim in place (won't
+    re-alert this opportunity while it stays continuously ACTIVE,
+    exactly like the real pipeline); a failed send releases the claim
+    so the next real scan retries it instead of it being silently
+    stuck. Never logs or returns a webhook URL."""
+    import sys
+
+    from database.db_manager import (
+        get_connection, claim_arbitrage_for_discord, release_arbitrage_discord_claim,
+    )
+
+    if config is None:
+        from src.production_config import load_config
+        config = load_config()
+
+    arb_urls = [
+        u.strip() for u in (getattr(config, "discord_webhook_urls_arb_middle", "") or "").split(",") if u.strip()
+    ]
+    logger.info("[DISCORD] Arbitrage webhook configured: %s", "yes" if arb_urls else "no")
+    if not arb_urls:
+        return {"configured": False, "replayed": False, "reason": "arbitrage webhook not configured"}
+
+    conn = get_connection(config.database_path)
+    try:
+        row = conn.execute("""
+            SELECT * FROM arbitrage_opportunities
+            WHERE status = 'ACTIVE' AND discord_sent = 0
+            ORDER BY detected_at DESC LIMIT 1
+        """).fetchone()
+        if row is None:
+            return {"configured": True, "replayed": False, "reason": "no eligible active arbitrage opportunity found"}
+
+        opp = dict(row)
+        opp_id = opp["opportunity_id"]
+
+        claimed = claim_arbitrage_for_discord(conn, [opp_id])
+        if not claimed:
+            return {
+                "configured": True, "replayed": False, "opportunity_id": opp_id,
+                "reason": "lost the claim race to a concurrent run",
+            }
+
+        _dd = sys.modules.get("src.discord_delivery") or __import__(
+            "src.discord_delivery", fromlist=["_last_response_statuses"]
+        )
+        _dd._last_response_statuses.clear()
+
+        result = deliver_arbitrage_alerts([opp], arb_urls)
+        response_statuses = list(_dd._last_response_statuses)
+        success = result.get("errors", 0) == 0 and result.get("sent", 0) > 0
+
+        if success:
+            logger.info("[DISCORD] Arbitrage replay id=%s delivered successfully", opp_id)
+        else:
+            logger.error("[DISCORD] Arbitrage replay id=%s failed; releasing claim", opp_id)
+            release_arbitrage_discord_claim(conn, [opp_id])
+
+        return {
+            "configured": True, "replayed": True, "success": success,
+            "opportunity_id": opp_id, "league": opp.get("league"), "market_type": opp.get("market_type"),
+            "detected_at": opp.get("detected_at"), "response_statuses": response_statuses,
+            "claim_persisted": success,
+        }
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog="python -m src.discord_delivery")
@@ -808,6 +889,14 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser(
         "test-mlb",
         help='Send the literal message "MLB Discord connection test" to MLB_DISCORD_WEBHOOKS specifically',
+    )
+    subparsers.add_parser(
+        "replay-arbitrage",
+        help=(
+            "Replay ONLY the Discord-delivery portion of the real pipeline for the single "
+            "most recent real, active, not-yet-claimed arbitrage opportunity already in the "
+            "database. Never fabricates data; preserves real dedup afterward."
+        ),
     )
     simulate_p = subparsers.add_parser(
         "simulate",
@@ -866,6 +955,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"    response_body={attempt['response_body']!r}")
         return 0 if result["failed"] == 0 else 1
+
+    if args.command == "replay-arbitrage":
+        result = replay_most_recent_arbitrage_delivery()
+        print(json.dumps(result, indent=2, default=str))
+        if not result["configured"]:
+            return 1
+        if not result["replayed"]:
+            return 0
+        return 0 if result["success"] else 1
 
     if args.command == "test-webhooks":
         result = test_webhooks()
