@@ -141,9 +141,14 @@ class TestMessageFormatting:
         assert "3.5" in msg
         assert "55.0" in msg  # fair_prob
         assert "52.4" in msg  # offered_implied_prob
-        assert "6" in msg  # n_consensus_books
+        # n_consensus_books is no longer shown in the message (removed
+        # 2026-09-21 per direct operator feedback).
         assert "72" in msg
         assert "BET" in msg
+        # "Period: game" is suppressed -- the value is the uninteresting
+        # full-game default (removed 2026-09-21 per direct operator
+        # feedback; a real sub-game period like "1h" still shows).
+        assert "Period:" not in msg
 
     def test_format_recommendation_matchup_is_the_real_db_column(self):
         """2026-09-18: this used to read rec["event_name"], a column that
@@ -174,6 +179,18 @@ class TestMessageFormatting:
         assert "LAD vs SF" in msg
         assert "350" in msg
         assert "6.2" in msg
+        # 2026-09-21: renamed from "Price Advantage:" -- "pp" (percentage
+        # points) confused readers per direct operator feedback.
+        assert "Edge: +6.20%" in msg
+        assert "Price Advantage" not in msg
+
+    def test_format_recommendation_shows_a_real_sub_game_period(self):
+        """Only the uninteresting "game" default is suppressed -- a real
+        sub-game period (e.g. CFB's 1st-half markets) still shows."""
+        from src.message_formatter import format_recommendation
+        rec = {"player_name": "Test Player", "period": "1h"}
+        msg = format_recommendation(rec)
+        assert "Period: 1h" in msg
 
     def test_format_recommendation_minimal(self):
         """No sport/fair_prob/implied_prob/consensus-books data must

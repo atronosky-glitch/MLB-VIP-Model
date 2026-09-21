@@ -408,7 +408,8 @@ class TestMessageFormatterReceivesCorrectData:
         assert "MLB" in content
         assert "55.0" in content  # fair_prob
         assert "52.4" in content  # offered_implied_prob
-        assert "Consensus books: 7" in content
+        # n_consensus_books is no longer shown in the message (removed
+        # 2026-09-21 per direct operator feedback) -- not asserted here.
 
 
 class TestUnconfiguredChannelDoesNotPermanentlyBurnAClaim:

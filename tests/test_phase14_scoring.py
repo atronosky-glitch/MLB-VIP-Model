@@ -108,7 +108,12 @@ class TestColumnSeparation:
     def test_message_formatter_uses_pp_for_yn(self):
         source = Path("src/message_formatter.py").read_text(encoding="utf-8")
         assert "pp adv" in source
-        assert "Price Advantage:" in source
+        # 2026-09-21: format_recommendation's individual-pick label was
+        # renamed from "Price Advantage:" to "Edge:" per direct operator
+        # feedback ("pp" confused readers) -- the real invariant this
+        # test protects is that EV% and the price-advantage figure stay
+        # visually separate, not the literal old label text.
+        assert "Edge:" in source
 
 
 # ==================================================================

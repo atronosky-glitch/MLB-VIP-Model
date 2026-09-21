@@ -35,8 +35,8 @@ def format_recommendation(rec: dict[str, Any]) -> str:
         database/db_manager.py's historical_recommendations table):
         player_name, matchup, sport/league, market_type, sportsbook,
         line, offered_american_odds, offered_implied_prob, fair_prob,
-        n_consensus_books, status, ev_pct (optional), price_advantage_pct
-        (optional), confidence_score (optional), rec_status,
+        status, ev_pct (optional), price_advantage_pct (optional),
+        confidence_score (optional), rec_status,
         recommendation_fingerprint, etc.
     """
     lines = []
@@ -66,11 +66,16 @@ def format_recommendation(rec: dict[str, Any]) -> str:
 
     line_val = rec.get("line")
     side = rec.get("side", "")
+    # 2026-09-21: "Period: game" showed on literally every message (every
+    # current player-prop market is full-game; only CFB's 1Q/1H game
+    # markets carry a genuinely different value) and read as meaningless
+    # noise per direct operator feedback -- suppressed only for the
+    # uninteresting default, still shown for a real sub-game period.
     period = rec.get("period", "")
 
     if line_val is not None:
         lines.append(f"Line: {line_val} ({side})" if side else f"Line: {line_val}")
-    if period:
+    if period and period != "game":
         lines.append(f"Period: {period}")
 
     lines.append(f"Book: **{book}** @ {odds_str}")
@@ -80,9 +85,12 @@ def format_recommendation(rec: dict[str, Any]) -> str:
     if ev is not None:
         lines.append(f"EV: {ev:+.2f}%")
 
+    # 2026-09-21: was "Price Advantage: +5.38 pp" -- "pp" (percentage
+    # points) confused the operator and, per their own feedback, everyone
+    # else reading it too. Same number, plainer label.
     pa = rec.get("yn_implied_prob_adv") or rec.get("price_advantage_pct")
     if pa is not None:
-        lines.append(f"Price Advantage: {pa:+.2f} pp")
+        lines.append(f"Edge: {pa:+.2f}%")
 
     # Fair vs. implied probability -- both already computed at
     # recommendation time (see src/player_prop_analysis.py), just not
@@ -97,9 +105,8 @@ def format_recommendation(rec: dict[str, Any]) -> str:
             parts.append(f"Implied {implied_prob * 100:.1f}%")
         lines.append("Probability: " + " vs. ".join(parts))
 
-    n_books = rec.get("n_consensus_books")
-    if n_books is not None:
-        lines.append(f"Consensus books: {n_books}")
+    # 2026-09-21: "Consensus books" removed per direct operator feedback
+    # -- not meaningful to a customer reading the alert.
 
     # Confidence
     conf = rec.get("confidence_score")
