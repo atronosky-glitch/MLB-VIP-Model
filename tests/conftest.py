@@ -327,6 +327,15 @@ def db_conn():
             created_at          TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ms_rec ON market_settlements(recommendation_id);
+        CREATE TABLE IF NOT EXISTS bet_units (
+            settlement_id       TEXT PRIMARY KEY,
+            recommendation_id   TEXT NOT NULL,
+            risk_units          REAL NOT NULL DEFAULT 1.0,
+            profit_units        REAL NOT NULL DEFAULT 0.0,
+            return_units        REAL NOT NULL DEFAULT 0.0,
+            odds_at_settle      INTEGER,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS event_results (
             event_id TEXT PRIMARY KEY, final_status TEXT DEFAULT 'UNRESOLVED',
             away_score INTEGER, home_score INTEGER, result_source TEXT,

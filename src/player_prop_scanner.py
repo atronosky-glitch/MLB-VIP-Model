@@ -518,6 +518,18 @@ def run_scan(
     # scans can calculate CLV from the exact historical market evidence.
     if all_odds:
         try:
+            # 2026-09-21: player_prop_odds.league defaults to 'MLB' at the
+            # column level (see database/db_manager.py::save_player_prop_
+            # batch) and was never set here despite this whole scan
+            # running for one specific *league* the whole way through --
+            # every row from an NFL/WNBA scan silently saved as if it were
+            # MLB. Confirmed live in production (real NFL player props
+            # stored league='MLB'), which also meant src/arb_middle_scan.py
+            # could never find a single non-MLB row to scan for
+            # arbitrage/middles. Force-set here, not setdefault -- this
+            # batch is always for exactly this run_scan call's own league.
+            for row in all_odds:
+                row["league"] = league
             prop_conn = get_connection()
             try:
                 save_player_prop_batch(prop_conn, all_odds, all_audit)

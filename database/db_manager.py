@@ -1960,16 +1960,31 @@ def save_player_prop_batch(
                  team_id, team_name, market_type, market_group_key,
                  side, line, price, decimal_odds, is_alt_line, available,
                  validation_status, mapping_confidence, mapping_method,
-                 validation_reason, captured_at, bet_link)
+                 validation_reason, captured_at, bet_link, league)
             VALUES
                 (:event_id, :odd_id, :sportsbook, :player_id, :player_name,
                  :team_id, :team_name, :market_type, :market_group_key,
                  :side, :line, :price, :decimal_odds, :is_alt_line, :available,
                  :validation_status, :mapping_confidence, :mapping_method,
-                 :validation_reason, :captured_at, :bet_link)
+                 :validation_reason, :captured_at, :bet_link, :league)
         """
         for row in rows:
             row.setdefault("bet_link", None)
+            # 2026-09-21: league was never in this INSERT's column list at
+            # all -- every row silently fell back to the column's own
+            # DEFAULT 'MLB' (see _PLAYER_PROP_MIGRATIONS), regardless of
+            # which league's scan actually produced it. Confirmed live in
+            # production: real NFL player props (e.g. Dalton Schultz
+            # receiving yards) sitting in player_prop_odds tagged
+            # league='MLB' -- which also means src/arb_middle_scan.py's
+            # per-league WHERE league=? filter could never find a single
+            # NFL/WNBA row (arbitrage/middle detection silently found
+            # nothing for every league but MLB), while MLB's own scan was
+            # silently pooling in cross-league odds. src/player_prop_
+            # scanner.py now stamps the real league onto every row before
+            # calling this; the setdefault here is only a safety net for
+            # any other caller that doesn't.
+            row.setdefault("league", "MLB")
         conn.executemany(sql, rows)
 
         if audit_rows:
@@ -3391,6 +3406,108 @@ def grade_middle_opportunities(conn: DB) -> dict:
         graded += 1
     conn.commit()
     return {"examined": len(rows), "graded": graded, "unresolved": len(rows) - graded}
+
+
+# ── Daily Discord results summary (2026-09-21) ──────────────────────
+#
+# "All bets ever made in that section" (the operator's own words) means
+# literally what was ever posted to that Discord channel -- tracked via
+# discord_alerts_sent (EV picks) / discord_sent (arbitrage, middles) --
+# not some other internal tier like official_picks, which is a
+# separate, narrower customer-facing classification. *since* (an ISO
+# timestamp string) scopes a query to "today"; omit it for all-time.
+# Callers compute *since* themselves (src/worker.py, from the
+# configured local timezone's midnight) so these stay plain, testable
+# DB functions with no timezone logic of their own.
+
+def get_ev_pick_results_summary(conn: DB, since: str | None = None) -> dict:
+    """Record (win/loss/push/void counts) + total profit in units for
+    every EV pick recommendation ever alerted to the EV Discord channel,
+    joined to its real settlement outcome."""
+    query = """
+        SELECT ms.settlement_status, bu.profit_units
+        FROM discord_alerts_sent das
+        JOIN market_settlements ms ON ms.recommendation_id = das.alert_key
+        LEFT JOIN bet_units bu ON bu.recommendation_id = ms.recommendation_id
+        WHERE das.alert_type = 'ev_pick'
+          AND ms.settlement_status IN ('WIN', 'LOSS', 'PUSH', 'VOID', 'CANCELLED')
+    """
+    params: list = []
+    if since:
+        query += " AND ms.settled_at >= ?"
+        params.append(since)
+    rows = conn.execute(query, tuple(params)).fetchall()
+
+    wins = losses = pushes = voids = 0
+    profit = 0.0
+    for r in rows:
+        d = dict(r)
+        status = d["settlement_status"]
+        if status == "WIN":
+            wins += 1
+        elif status == "LOSS":
+            losses += 1
+        elif status == "PUSH":
+            pushes += 1
+        else:  # VOID, CANCELLED
+            voids += 1
+        profit += d["profit_units"] or 0.0
+
+    return {
+        "wins": wins, "losses": losses, "pushes": pushes, "voids": voids,
+        "graded_count": len(rows), "profit_units": round(profit, 2),
+    }
+
+
+def _profit_based_results_summary(
+    conn: DB, table: str, since: str | None, extra_where: str = "",
+) -> dict:
+    """Shared implementation for arbitrage/middle results summaries.
+    Neither table has a natural single WIN/LOSS tag the way a straight
+    EV pick does -- arbitrage's own `outcome` column is a compound
+    per-leg string like "WIN/LOSS", not an overall verdict -- so a
+    graded, delivered opportunity is bucketed as a win or loss by its
+    profit_units sign instead."""
+    if table not in ("arbitrage_opportunities", "middle_opportunities"):
+        raise ValueError(f"not a results-summary table: {table!r}")
+    query = f"""
+        SELECT profit_units FROM {table}
+        WHERE discord_sent = 1 AND status = 'GRADED'{extra_where}
+    """
+    params: list = []
+    if since:
+        query += " AND graded_at >= ?"
+        params.append(since)
+    rows = conn.execute(query, tuple(params)).fetchall()
+
+    wins = losses = 0
+    profit = 0.0
+    for r in rows:
+        p = dict(r)["profit_units"] or 0.0
+        profit += p
+        if p > 0:
+            wins += 1
+        else:
+            losses += 1
+
+    return {"wins": wins, "losses": losses, "graded_count": len(rows), "profit_units": round(profit, 2)}
+
+
+def get_arbitrage_results_summary(conn: DB, since: str | None = None) -> dict:
+    """Record (profitable/unprofitable) + total profit in units for
+    every arbitrage opportunity ever delivered to the arbitrage Discord
+    channel."""
+    return _profit_based_results_summary(conn, "arbitrage_opportunities", since)
+
+
+def get_middle_results_summary(conn: DB, since: str | None = None) -> dict:
+    """Same as get_arbitrage_results_summary, for middles. Filters to
+    verdict='WORTH_IT' too -- only those are ever actually delivered
+    (see sync_middle_opportunities' 2026-09-19 claim fix); this extra
+    filter is a safety net against any legacy pre-fix row."""
+    return _profit_based_results_summary(
+        conn, "middle_opportunities", since, " AND verdict = 'WORTH_IT'",
+    )
 
 
 def get_performance_baseline(conn: DB) -> str | None:

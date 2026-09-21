@@ -150,6 +150,32 @@ class TestProductionConfig:
         assert isinstance(SECRET_FIELDS, frozenset)
         assert "api_key" in SECRET_FIELDS
 
+    def test_arbitrage_finder_env_var_maps_to_arb_middle_webhook(self, monkeypatch):
+        """2026-09-21: the operator named their Render env var
+        'Arbitrage_Finder' directly, rather than the
+        MLB_DISCORD_WEBHOOKS_ARB_MIDDLE convention -- both must work."""
+        monkeypatch.delenv("MLB_DISCORD_WEBHOOKS_ARB_MIDDLE", raising=False)
+        monkeypatch.setenv("Arbitrage_Finder", "https://discord.com/api/webhooks/arb-real")
+        cfg = load_config()
+        assert cfg.discord_webhook_urls_arb_middle == "https://discord.com/api/webhooks/arb-real"
+
+    def test_result_webhook_env_var_maps_to_results_webhook_url(self, monkeypatch):
+        monkeypatch.setenv("Result_Webhook", "https://discord.com/api/webhooks/results-real")
+        cfg = load_config()
+        assert cfg.results_webhook_url == "https://discord.com/api/webhooks/results-real"
+
+    def test_results_webhook_url_is_a_secret_field(self):
+        assert "results_webhook_url" in SECRET_FIELDS
+
+    def test_results_webhook_url_defaults_empty(self):
+        cfg = ProductionConfig()
+        assert cfg.results_webhook_url == ""
+
+    def test_env_example_mentions_the_new_webhook_names(self):
+        content = create_env_example()
+        assert "Arbitrage_Finder" in content
+        assert "Result_Webhook" in content
+
 
 class TestExecutionLayerConfig:
     """Stage 1 (2026-09-12): Kalshi/Polymarket US read-only provider

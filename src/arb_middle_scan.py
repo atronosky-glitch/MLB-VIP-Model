@@ -49,9 +49,14 @@ def _fetch_recent_odds_rows(conn, league: str, freshness_seconds: int) -> list[d
     ]
 
 
-# Purely cosmetic (see run_scan's docstring on where "sport" is actually
-# used, or rather isn't) -- kept correct anyway since it's cheap to.
-_SPORT_BY_LEAGUE = {"MLB": "baseball", "NFL": "football", "WNBA": "basketball"}
+# A fallback display value only -- _league_prefix() in
+# src/message_formatter.py always prefers the real "league" code (set
+# on every opp below) when present, so this "sport" value is now just a
+# secondary label. NCAAF was missing here entirely, which meant
+# .get(league, "baseball") silently mislabeled every college-football
+# opportunity as baseball -- kept correct now regardless, since this
+# dict is cheap to keep complete.
+_SPORT_BY_LEAGUE = {"MLB": "baseball", "NFL": "football", "WNBA": "basketball", "NCAAF": "football"}
 
 
 def _event_context(conn, league: str) -> dict[str, dict]:
@@ -84,7 +89,7 @@ def _event_context(conn, league: str) -> dict[str, dict]:
         context[d["event_id"]] = {
             "matchup": f"{away} @ {home}" if away and home else None,
             "event_start_time": d.get("start_time"),
-            "sport": _SPORT_BY_LEAGUE.get(league, "baseball"),
+            "sport": _SPORT_BY_LEAGUE.get(league, "unknown"),
         }
 
     rec_rows = conn.execute(
@@ -115,16 +120,33 @@ def run_scan(conn, league: str = "MLB", freshness_seconds: int = DEFAULT_FRESHNE
     arb_opps = find_arbitrage_opportunities(rows)
     mid_opps = find_middle_opportunities(rows)
 
+    # Fallback sport label when _event_context found no games/
+    # historical_recommendations row for an event at all (context is
+    # then {} for it) -- was hardcoded "baseball" regardless of *league*,
+    # which is the exact bug that mislabeled a shown-with-no-matchup
+    # non-MLB opportunity. Now moot for the Discord header itself
+    # (opp["league"] below is always correct and _league_prefix()
+    # prefers it), but kept correct anyway since it's cheap to.
+    default_sport = _SPORT_BY_LEAGUE.get(league, "unknown")
+
     for opp in arb_opps:
         ctx = context.get(opp.get("event_id"), {})
         opp["matchup"] = ctx.get("matchup")
         opp["event_start_time"] = ctx.get("event_start_time")
-        opp["sport"] = ctx.get("sport", "baseball")
+        opp["sport"] = ctx.get("sport") or default_sport
+        # 2026-09-21: never set before -- src/message_formatter.py's
+        # _league_prefix() prefers "league" over "sport" for the Discord
+        # alert header, so every arbitrage/middle message fell back to
+        # the coarser "sport" value (or the wrong "baseball" default for
+        # any league missing from _SPORT_BY_LEAGUE below) instead of
+        # showing the real league code (MLB/NFL/WNBA/NCAAF).
+        opp["league"] = league
     for opp in mid_opps:
         ctx = context.get(opp.get("event_id"), {})
         opp["matchup"] = ctx.get("matchup")
         opp["event_start_time"] = ctx.get("event_start_time")
-        opp["sport"] = ctx.get("sport", "baseball")
+        opp["sport"] = ctx.get("sport") or default_sport
+        opp["league"] = league
 
     arb_sync = sync_arbitrage_opportunities(conn, league, arb_opps)
     mid_sync = sync_middle_opportunities(conn, league, mid_opps)

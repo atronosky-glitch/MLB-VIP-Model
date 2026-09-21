@@ -98,6 +98,41 @@ class TestRunScan:
 
         assert result["new_arbitrage"] == []
 
+    def test_opportunities_are_stamped_with_the_real_league_not_left_unset(self, db_conn):
+        """Real bug found live in production (2026-09-21): opp["league"]
+        was never set on the in-memory opportunity dicts at all (only
+        opp["sport"], a coarser value) -- src/message_formatter.py's
+        _league_prefix() prefers "league" over "sport" for the Discord
+        alert header, so every arbitrage/middle message fell back to
+        showing "sport" (or the wrong "baseball" default for NCAAF,
+        which was missing from _SPORT_BY_LEAGUE) instead of the real
+        league code."""
+        _insert_odds_row(
+            db_conn, sportsbook="BookA", side="OVER", price=110, decimal_odds=2.10, odd_id="o1", league="NFL",
+        )
+        _insert_odds_row(
+            db_conn, sportsbook="BookB", side="UNDER", price=130, decimal_odds=2.30, odd_id="o2", league="NFL",
+        )
+        result = run_scan(db_conn, league="NFL", freshness_seconds=10_000_000)
+        assert result["new_arbitrage"][0]["league"] == "NFL"
+        assert result["new_middles"] == [] or result["new_middles"][0]["league"] == "NFL"
+
+    def test_ncaaf_sport_fallback_is_football_not_baseball(self, db_conn):
+        """_SPORT_BY_LEAGUE was missing an NCAAF entry entirely, so
+        .get(league, "baseball") silently mislabeled every college-
+        football opportunity's "sport" as baseball. Now moot for the
+        Discord message itself (league is stamped and preferred), but
+        the sport fallback value should still be correct."""
+        _insert_odds_row(
+            db_conn, sportsbook="BookA", side="OVER", price=110, decimal_odds=2.10, odd_id="o1", league="NCAAF",
+        )
+        _insert_odds_row(
+            db_conn, sportsbook="BookB", side="UNDER", price=130, decimal_odds=2.30, odd_id="o2", league="NCAAF",
+        )
+        result = run_scan(db_conn, league="NCAAF", freshness_seconds=10_000_000)
+        assert result["new_arbitrage"][0]["sport"] == "football"
+        assert result["new_arbitrage"][0]["league"] == "NCAAF"
+
 
 class TestEventContext:
     """Real bug found live 2026-09-15: a "Game Total" middle/arbitrage

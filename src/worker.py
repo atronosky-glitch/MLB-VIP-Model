@@ -720,6 +720,22 @@ def _run_replay_arbitrage_delivery(config) -> dict:
     return {"status": "success", **result}
 
 
+def _run_daily_results_summary(conn: DB, config) -> dict:
+    """2026-09-21 (operator request): end-of-day record+profit summary
+    to the dedicated Results Discord channel -- see
+    src/discord_delivery.py::deliver_daily_results_summary. Computes
+    "today" as midnight in the configured local timezone (the same
+    _now_local()/TZ_NAME this module's other daily scheduling already
+    uses), converted to UTC for the DB query."""
+    from src.discord_delivery import deliver_daily_results_summary
+    now_local = _now_local()
+    today_midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start_iso = today_midnight_local.astimezone(timezone.utc).isoformat()
+    date_label = now_local.strftime("%Y-%m-%d")
+    result = deliver_daily_results_summary(config, today_start_iso=today_start_iso, date_label=date_label)
+    return {"status": "success", **result}
+
+
 # ── API quota alerts ──────────────────────────────────────────────
 
 
@@ -810,6 +826,7 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "schedule-refresh": lambda: _run_pregame_checks(conn, config),
         "test-mlb-discord": lambda: _run_test_mlb_discord(config),
         "replay-arbitrage-delivery": lambda: _run_replay_arbitrage_delivery(config),
+        "daily-results-summary": lambda: _run_daily_results_summary(conn, config),
     }
     handler = dispatch.get(job_type)
     if not handler:
@@ -1332,6 +1349,66 @@ def _check_and_schedule_morning_run(conn: DB) -> None:
         logger.info("Auto-scheduled morning run: %s", job_id[:8])
 
 
+DAILY_RESULTS_SUMMARY_RETRY_COOLDOWN_MINUTES = 60
+DAILY_RESULTS_SUMMARY_HOUR = 23  # 11 PM local (see TZ_NAME) -- end of day
+
+
+def _check_and_schedule_daily_results_summary(conn: DB) -> None:
+    """Auto-schedule the end-of-day results summary at
+    DAILY_RESULTS_SUMMARY_HOUR local time if none exists for today.
+
+    Unlike _check_and_schedule_morning_run's LIKE-prefix dedup (safe
+    there because its normal/catch-up firing window is morning through
+    late evening, so the stored UTC scheduled_at usually still starts
+    with the same calendar-date string as local "today"), this job is
+    designed to fire ONLY late in the local evening -- e.g. 11 PM ET is
+    already 3-4 AM UTC the *next* calendar date. A LIKE '{today}%'
+    match against that UTC-stored value would never find the row this
+    function itself just inserted, scheduling a real duplicate every
+    single time. Dedup here instead by a local-day UTC *window*
+    (local midnight today through local midnight tomorrow, both
+    converted to UTC) rather than a date-string prefix match, so it's
+    correct regardless of which UTC calendar date the stored timestamp
+    falls on."""
+    from src.automation import create_job
+    now = _now_local()
+    if now.hour < DAILY_RESULTS_SUMMARY_HOUR:
+        return
+    local_midnight_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_start = local_midnight_today.astimezone(timezone.utc).isoformat()
+    window_end = (local_midnight_today + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+    latest = conn.execute(
+        "SELECT status, completed_at FROM scheduled_jobs "
+        "WHERE job_type = 'daily-results-summary' AND scheduled_at >= ? AND scheduled_at < ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (window_start, window_end),
+    ).fetchone()
+
+    should_schedule = True
+    if latest:
+        status = latest["status"]
+        if status in ("pending", "running", "completed"):
+            should_schedule = False
+        elif status == "failed":
+            completed_at = None
+            if latest["completed_at"]:
+                try:
+                    completed_at = datetime.fromisoformat(latest["completed_at"].replace("Z", "+00:00"))
+                    if completed_at.tzinfo is None:
+                        completed_at = completed_at.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    completed_at = None
+            if completed_at is not None:
+                elapsed_minutes = (now.astimezone(timezone.utc) - completed_at).total_seconds() / 60
+                should_schedule = elapsed_minutes >= DAILY_RESULTS_SUMMARY_RETRY_COOLDOWN_MINUTES
+
+    if should_schedule:
+        job_id = create_job(
+            conn, job_type="daily-results-summary", scheduled_at=now.astimezone(timezone.utc).isoformat(),
+        )
+        logger.info("Auto-scheduled daily results summary: %s", job_id[:8])
+
+
 # ── Main loop ─────────────────────────────────────────────────────
 
 
@@ -1360,6 +1437,7 @@ def run_worker_persistent(config) -> None:
     last_pregame_check = 0
     last_grading_check = 0
     last_morning_check = 0
+    last_results_summary_check = 0
     last_nfl_check = 0
     last_cfb_check = 0
     last_wnba_check = 0
@@ -1397,6 +1475,12 @@ def run_worker_persistent(config) -> None:
             if now - last_morning_check >= 60:
                 _check_and_schedule_morning_run(conn)
                 last_morning_check = now
+
+            # Auto-schedule the end-of-day results summary (check once
+            # per minute in window, same cadence as morning run above)
+            if now - last_results_summary_check >= 60:
+                _check_and_schedule_daily_results_summary(conn)
+                last_results_summary_check = now
 
             # Schedule pregame checks (every 10 min during game window)
             if now - last_pregame_check >= PREGAME_CHECK_INTERVAL_MINUTES * 60:
@@ -1504,6 +1588,7 @@ def run_worker_once(config) -> None:
         _run_catchup_grading(conn)
         executed = _process_pending_jobs(conn, config)
         _check_and_schedule_morning_run(conn)
+        _check_and_schedule_daily_results_summary(conn)
         _check_and_schedule_pregame(conn)
         _check_and_schedule_grading(conn)
         # NFL/WNBA/MLB-props scheduling checks — isolated so a failure in

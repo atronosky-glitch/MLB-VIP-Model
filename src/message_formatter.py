@@ -268,6 +268,53 @@ def format_middle_alert(opportunities: list[dict[str, Any]]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _results_summary_line(label: str, stats: dict[str, Any], *, include_pushes: bool) -> str:
+    """One 'Today: 12-3-1 | +4.25u' style line. EV picks get a real
+    win/loss/push/void record (from market_settlements); arbitrage and
+    middles get a profitable/unprofitable record instead (see
+    database/db_manager.py::_profit_based_results_summary's docstring
+    for why neither has a natural single WIN/LOSS tag)."""
+    profit = stats.get("profit_units", 0.0)
+    profit_str = f"{profit:+.2f}u"
+    if include_pushes:
+        record = f"{stats['wins']}-{stats['losses']}-{stats['pushes']}"
+        if stats.get("voids"):
+            record += f" ({stats['voids']} void)"
+    else:
+        record = f"{stats['wins']}-{stats['losses']}"
+    return f"{label}: {record} | {profit_str}"
+
+
+def format_daily_results_summary(
+    ev_today: dict[str, Any], ev_all_time: dict[str, Any],
+    arb_today: dict[str, Any], arb_all_time: dict[str, Any],
+    mid_today: dict[str, Any], mid_all_time: dict[str, Any],
+    *, date_label: str,
+) -> str:
+    """One end-of-day message with today's and all-time record + profit
+    (in units) for every category actually delivered to Discord -- EV
+    picks, arbitrage, middles. See database/db_manager.py's
+    get_*_results_summary functions for exactly what "a bet made in
+    that section" means (literally what was posted there)."""
+    lines = [f"**\U0001F4CA Daily Results Summary — {date_label}**", ""]
+
+    lines.append("**\U0001F4B0 EV Picks**")
+    lines.append(_results_summary_line("Today", ev_today, include_pushes=True))
+    lines.append(_results_summary_line("All-Time", ev_all_time, include_pushes=True))
+    lines.append("")
+
+    lines.append("**\U0001F512 Arbitrage**")
+    lines.append(_results_summary_line("Today", arb_today, include_pushes=False))
+    lines.append(_results_summary_line("All-Time", arb_all_time, include_pushes=False))
+    lines.append("")
+
+    lines.append("**\U0001F3AF Middles**")
+    lines.append(_results_summary_line("Today", mid_today, include_pushes=False))
+    lines.append(_results_summary_line("All-Time", mid_all_time, include_pushes=False))
+
+    return "\n".join(lines)
+
+
 # ── Helpers ────────────────────────────────────────────────────────
 
 def _american(price: Any) -> str:

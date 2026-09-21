@@ -653,3 +653,69 @@ class TestFetchPlayerPropsFiltersToNearTermEvents:
             )
 
         fake_client.get_event_odds.assert_called_once()
+
+
+def _minimal_prop_row(event_id="e1", player_id="P1"):
+    """Satisfies database.db_manager._PP_REQUIRED_KEYS -- the exact
+    shape save_player_prop_batch requires, deliberately without a
+    'league' key so the test proves run_scan stamps it, not that the
+    row already carried one."""
+    return {
+        "event_id": event_id, "odd_id": "odd-1", "sportsbook": "draftkings",
+        "player_id": player_id, "player_name": "Test Player",
+        "market_type": "batting_hits_ou", "market_group_key": "grp-1",
+        "side": "OVER", "line": 1.5, "price": -110, "decimal_odds": 1.91,
+        "is_alt_line": 0, "available": 1, "validation_status": "VALID",
+        "mapping_confidence": "HIGH", "mapping_method": "exact",
+        "validation_reason": "", "captured_at": "2026-09-21T00:00:00+00:00",
+    }
+
+
+class TestRunScanStampsTheRealLeagueOntoSavedRows:
+    """Real bug found live in production (2026-09-21): player_prop_odds.
+    league defaults to 'MLB' at the column level and was never set by
+    run_scan/save_player_prop_batch at all -- every row from every
+    league's scan silently saved as league='MLB'. Confirmed live: real
+    NFL player props (e.g. Dalton Schultz receiving yards) sitting in
+    the table tagged league='MLB', which also meant src/arb_middle_
+    scan.py's per-league WHERE league=? filter could never find a
+    single non-MLB row."""
+
+    def test_mlb_scan_stamps_league_mlb(self):
+        from src import player_prop_scanner as scanner
+
+        sgo_events = {"data": [{"eventID": "e1", "odds": {}}]}
+        row = _minimal_prop_row()
+        with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
+             mock.patch.object(scanner, "create_run", return_value="run-1"), \
+             mock.patch.object(scanner, "save_player_prop_batch") as mock_save, \
+             mock.patch.object(scanner.SportsGameOddsClient, "get_events",
+                                return_value=(sgo_events, False)), \
+             mock.patch.object(scanner, "parse_player_props",
+                                return_value=mock.MagicMock(odds_rows=[row], audit_rows=[])):
+            scanner.run_scan(mode="all", market="all", market_form="all", league="MLB", fetch_props=False)
+
+        mock_save.assert_called_once()
+        saved_rows = mock_save.call_args[0][1]
+        assert all(r["league"] == "MLB" for r in saved_rows)
+
+    def test_nfl_scan_stamps_league_nfl_not_mlb(self):
+        """The actual regression: an NFL scan's rows must never end up
+        tagged 'MLB'."""
+        from src import player_prop_scanner as scanner
+
+        sgo_events = {"data": [{"eventID": "e1", "odds": {}}]}
+        row = _minimal_prop_row()
+        with mock.patch.object(scanner, "get_connection", return_value=mock.MagicMock()), \
+             mock.patch.object(scanner, "create_run", return_value="run-1"), \
+             mock.patch.object(scanner, "save_player_prop_batch") as mock_save, \
+             mock.patch.object(scanner.SportsGameOddsClient, "get_events",
+                                return_value=(sgo_events, False)), \
+             mock.patch.object(scanner, "parse_player_props",
+                                return_value=mock.MagicMock(odds_rows=[row], audit_rows=[])):
+            scanner.run_scan(mode="all", market="all", market_form="all", league="NFL", fetch_props=False)
+
+        mock_save.assert_called_once()
+        saved_rows = mock_save.call_args[0][1]
+        assert all(r["league"] == "NFL" for r in saved_rows)
+        assert not any(r["league"] == "MLB" for r in saved_rows)

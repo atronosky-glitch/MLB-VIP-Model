@@ -928,3 +928,120 @@ class TestReplayArbitrageDeliveryJob:
         ):
             result = worker._execute_job("replay-arbitrage-delivery", db_conn, config)
         assert result == {"status": "success", **fake_result}
+
+
+class TestDailyResultsSummaryJob:
+    """2026-09-21 (operator request): an end-of-day 'daily-results-
+    summary' job posting today's and all-time record + profit in
+    units, per category, to the Results Discord channel. See
+    src/discord_delivery.py::deliver_daily_results_summary."""
+
+    def test_job_type_registered_in_dispatch(self):
+        import inspect
+        source = inspect.getsource(worker._execute_job)
+        assert '"daily-results-summary"' in source
+
+    def test_run_daily_results_summary_computes_local_midnight_as_today_start(self, db_conn):
+        config = MagicMock()
+        fake_now = worker._now_local().replace(
+            year=2026, month=9, day=21, hour=23, minute=0, second=0, microsecond=0,
+        )
+        with patch.object(worker, "_now_local", return_value=fake_now), \
+             patch("src.discord_delivery.deliver_daily_results_summary") as mocked:
+            mocked.return_value = {"configured": True, "sent": 1, "errors": 0}
+            result = worker._run_daily_results_summary(db_conn, config)
+
+        assert result == {"status": "success", "configured": True, "sent": 1, "errors": 0}
+        mocked.assert_called_once()
+        call_kwargs = mocked.call_args.kwargs
+        assert call_kwargs["date_label"] == "2026-09-21"
+        midnight_utc = fake_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        assert call_kwargs["today_start_iso"] == midnight_utc.isoformat()
+
+    def test_execute_job_dispatches_daily_results_summary(self, db_conn):
+        config = MagicMock()
+        fake_result = {"configured": False, "sent": 0, "errors": 0}
+        with patch("src.discord_delivery.deliver_daily_results_summary", return_value=fake_result):
+            result = worker._execute_job("daily-results-summary", db_conn, config)
+        assert result == {"status": "success", **fake_result}
+
+
+class TestDailyResultsSummaryScheduling:
+    """Same dedup-by-calendar-day / failure-retry-cooldown shape as
+    _check_and_schedule_morning_run (see TestMorningRunCatchUpWindow
+    above), just for a fixed evening hour."""
+
+    def test_does_not_fire_before_the_hour(self, db_conn):
+        now = worker._now_local().replace(hour=22, minute=59, second=0, microsecond=0)
+        with patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_daily_results_summary(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'daily-results-summary'"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_fires_at_the_scheduled_hour(self, db_conn):
+        now = worker._now_local().replace(hour=23, minute=0, second=0, microsecond=0)
+        with patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_daily_results_summary(db_conn)
+        row = db_conn.execute(
+            "SELECT job_type FROM scheduled_jobs WHERE job_type = 'daily-results-summary'"
+        ).fetchone()
+        assert row is not None
+
+    def test_does_not_duplicate_if_already_scheduled_today(self, db_conn):
+        first = worker._now_local().replace(hour=23, minute=0, second=0, microsecond=0)
+        later = first.replace(hour=23, minute=30)
+        with patch.object(worker, "_now_local", return_value=first):
+            worker._check_and_schedule_daily_results_summary(db_conn)
+        with patch.object(worker, "_now_local", return_value=later):
+            worker._check_and_schedule_daily_results_summary(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'daily-results-summary'"
+        ).fetchone()["c"]
+        assert count == 1
+
+    def test_first_insert_itself_already_crosses_utc_midnight(self, db_conn):
+        """Real bug caught while writing this feature: unlike morning-run
+        (whose normal firing point is 9 AM local, comfortably same UTC
+        calendar date), THIS job only ever fires late in the local
+        evening -- 11 PM ET is already 3-4 AM UTC the *next* calendar
+        date, so the very FIRST insert's own scheduled_at falls on a
+        different UTC date than a LIKE-prefix-on-local-date dedup check
+        would look for, scheduling a real duplicate every single time.
+        Fixed by dedup-ing on a local-day UTC window instead of a date
+        string prefix match."""
+        now = worker._now_local().replace(hour=23, minute=0, second=0, microsecond=0)
+        assert now.astimezone(timezone.utc).date() != now.date(), (
+            "test setup assumption broken: 11 PM local should already be "
+            "a different UTC calendar date"
+        )
+        with patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_daily_results_summary(db_conn)
+            worker._check_and_schedule_daily_results_summary(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'daily-results-summary'"
+        ).fetchone()["c"]
+        assert count == 1
+
+    def test_retries_after_a_failure_once_cooldown_elapses(self, db_conn):
+        now = worker._now_local().replace(hour=23, minute=0, second=0, microsecond=0)
+        with patch.object(worker, "_now_local", return_value=now):
+            worker._check_and_schedule_daily_results_summary(db_conn)
+        db_conn.execute(
+            "UPDATE scheduled_jobs SET status = 'failed', completed_at = ? WHERE job_type = 'daily-results-summary'",
+            ((now.astimezone(timezone.utc) - timedelta(minutes=90)).isoformat(),),
+        )
+        db_conn.commit()
+        later = now.replace(minute=30)
+        with patch.object(worker, "_now_local", return_value=later):
+            worker._check_and_schedule_daily_results_summary(db_conn)
+        count = db_conn.execute(
+            "SELECT COUNT(*) AS c FROM scheduled_jobs WHERE job_type = 'daily-results-summary'"
+        ).fetchone()["c"]
+        assert count == 2
+
+    def test_registered_in_run_worker_once(self):
+        import inspect
+        source = inspect.getsource(worker.run_worker_once)
+        assert "_check_and_schedule_daily_results_summary(conn)" in source

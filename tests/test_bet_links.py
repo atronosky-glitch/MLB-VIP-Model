@@ -68,6 +68,56 @@ class TestSavePlayerPropBatchBetLink:
         assert dict(result)["bet_link"] is None
 
 
+class TestSavePlayerPropBatchLeague:
+    """Real bug found live in production (2026-09-21): league was never
+    in save_player_prop_batch's INSERT column list at all, so every row
+    silently fell back to the column's own DEFAULT 'MLB' regardless of
+    which league's scan produced it -- confirmed live via real NFL
+    player props stored with league='MLB'. src/player_prop_scanner.py
+    now stamps the real league onto every row before calling this; the
+    setdefault inside save_player_prop_batch is only a safety net for
+    any other caller that doesn't."""
+
+    def _row(self, **overrides):
+        row = {
+            "event_id": "E1", "odd_id": "o1", "sportsbook": "draftkings",
+            "player_id": "p1", "player_name": "Test Player", "team_id": "", "team_name": "",
+            "market_type": "receiving_yards_ou", "market_group_key": "E1|p1|79.5|0|OVER",
+            "side": "OVER", "line": 79.5, "price": -110, "decimal_odds": 1.909,
+            "is_alt_line": 0, "available": 1, "validation_status": "VALID",
+            "mapping_confidence": "HIGH", "mapping_method": "exact", "validation_reason": "OK",
+            "captured_at": "2026-09-21T12:00:00+00:00",
+        }
+        row.update(overrides)
+        return row
+
+    def test_explicit_league_persists(self, db_conn):
+        save_player_prop_batch(db_conn, [self._row(league="NFL")])
+        row = db_conn.execute("SELECT league FROM player_prop_odds WHERE event_id='E1'").fetchone()
+        assert dict(row)["league"] == "NFL"
+
+    def test_row_without_league_key_defaults_to_mlb_not_a_crash(self, db_conn):
+        """Safety-net default for a caller that doesn't set it -- not
+        the primary fix (that's player_prop_scanner.py always setting
+        it explicitly), just proof this doesn't raise."""
+        row = self._row()
+        assert "league" not in row
+        save_player_prop_batch(db_conn, [row])
+        result = db_conn.execute("SELECT league FROM player_prop_odds WHERE event_id='E1'").fetchone()
+        assert dict(result)["league"] == "MLB"
+
+    def test_different_leagues_in_the_same_batch_each_persist_correctly(self, db_conn):
+        save_player_prop_batch(db_conn, [
+            self._row(event_id="E1", league="NFL"),
+            self._row(event_id="E2", odd_id="o2", league="MLB"),
+        ])
+        rows = {
+            dict(r)["event_id"]: dict(r)["league"]
+            for r in db_conn.execute("SELECT event_id, league FROM player_prop_odds").fetchall()
+        }
+        assert rows == {"E1": "NFL", "E2": "MLB"}
+
+
 class TestGetBetLinks:
     def _insert(self, conn, **overrides):
         row = {

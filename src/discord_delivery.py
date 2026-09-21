@@ -878,6 +878,52 @@ def replay_most_recent_arbitrage_delivery(config: Any = None) -> dict[str, Any]:
         conn.close()
 
 
+def deliver_daily_results_summary(
+    config: Any = None, *, today_start_iso: str | None = None, date_label: str | None = None,
+) -> dict[str, Any]:
+    """End-of-day summary (2026-09-21 operator request) to the
+    dedicated Results Discord channel -- for each category actually
+    delivered to Discord (EV picks, arbitrage, middles), today's and
+    all-time record + profit in units. *today_start_iso* is the caller-
+    supplied UTC cutoff for "today" (src/worker.py computes it from the
+    configured local timezone's midnight, once per day) -- an explicit
+    parameter rather than computed here so this function stays testable
+    without timezone mocking. *date_label* defaults to today's UTC date
+    if not given."""
+    if config is None:
+        from src.production_config import load_config
+        config = load_config()
+
+    urls = [u.strip() for u in (getattr(config, "results_webhook_url", "") or "").split(",") if u.strip()]
+    logger.info("[DISCORD] Results webhook configured: %s", "yes" if urls else "no")
+    if not urls:
+        return {"configured": False, "sent": 0, "errors": 0}
+
+    from database.db_manager import (
+        get_connection, get_ev_pick_results_summary,
+        get_arbitrage_results_summary, get_middle_results_summary,
+    )
+    from src.message_formatter import format_daily_results_summary
+
+    conn = get_connection(config.database_path)
+    try:
+        ev_today = get_ev_pick_results_summary(conn, since=today_start_iso)
+        ev_all_time = get_ev_pick_results_summary(conn)
+        arb_today = get_arbitrage_results_summary(conn, since=today_start_iso)
+        arb_all_time = get_arbitrage_results_summary(conn)
+        mid_today = get_middle_results_summary(conn, since=today_start_iso)
+        mid_all_time = get_middle_results_summary(conn)
+    finally:
+        conn.close()
+
+    label = date_label or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    text = format_daily_results_summary(
+        ev_today, ev_all_time, arb_today, arb_all_time, mid_today, mid_all_time, date_label=label,
+    )
+    result = _deliver_chunks(text, urls)
+    return {"configured": True, **result}
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog="python -m src.discord_delivery")
@@ -896,6 +942,13 @@ def main(argv: list[str] | None = None) -> int:
             "Replay ONLY the Discord-delivery portion of the real pipeline for the single "
             "most recent real, active, not-yet-claimed arbitrage opportunity already in the "
             "database. Never fabricates data; preserves real dedup afterward."
+        ),
+    )
+    subparsers.add_parser(
+        "daily-results-summary",
+        help=(
+            "Send the end-of-day results summary (today's and all-time record + profit in "
+            "units, per category) to the Results Discord channel right now."
         ),
     )
     simulate_p = subparsers.add_parser(
@@ -964,6 +1017,13 @@ def main(argv: list[str] | None = None) -> int:
         if not result["replayed"]:
             return 0
         return 0 if result["success"] else 1
+
+    if args.command == "daily-results-summary":
+        result = deliver_daily_results_summary()
+        print(json.dumps(result, indent=2, default=str))
+        if not result["configured"]:
+            return 1
+        return 0 if result.get("errors", 0) == 0 else 1
 
     if args.command == "test-webhooks":
         result = test_webhooks()
