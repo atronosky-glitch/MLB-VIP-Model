@@ -33,7 +33,7 @@ import requests
 from . import prop_config as cfg
 from .sports.base import build_lookup_maps
 from .api_client import SportsGameOddsClient
-from .player_prop_parser import parse_player_props
+from .player_prop_parser import parse_player_props, _build_group_key
 from .player_prop_analysis import analyze_prop_group, analyze_yn_group, is_pinnacle_book
 from .pinnacle_feed import (
     PinnacleFeedClient, build_pinnacle_lookup, inject_pinnacle_reference,
@@ -176,6 +176,65 @@ def _log_line_fragmentation(ou_groups: dict) -> None:
                 ",".join(str(l) for l in other_pinnacle),
                 e["over_books"], e["under_books"],
             )
+
+
+def _merge_equivalent_yn_ou_books(ou_groups: dict, yn_groups: dict, yn_type_map: dict) -> None:
+    """Fold a stat's YN "Yes" quotes into its Over/Under sibling's
+    Over-0.5 book pool, and vice versa, for any book that only quotes
+    one representation -- before either group is analyzed.
+
+    Confirmed live (2026-09-21): for every stat with a YN sibling
+    (src/prop_config.py's MarketConfig.market_type_yn), a book's YN
+    "Yes" price and its Over-0.5 price for the identical player/event
+    are numerically IDENTICAL -- same book, same moment (e.g. BetMGM
+    posting -250 on both "Over 0.5 Strikeouts" and "Yes, will record a
+    strikeout"). They are the literal same bet, just offered through
+    two different API representations -- not a coincidence or an
+    approximation. Without this merge, a book quoting only one
+    representation never contributes to the other's consensus/fair-
+    price pool, silently shrinking the book count (and therefore the
+    fair-price reliability) behind every recommendation for a stat
+    that has both representations, and hiding any real cross-format
+    price comparison between them.
+
+    Mutates *ou_groups* and *yn_groups* in place. Never touches a
+    book's own native-format price -- a book already quoting both
+    representations keeps its own OU-side price exactly as offered,
+    never replaced by its YN-derived twin -- so no book's opinion is
+    ever double-counted in analyze_prop_group's/analyze_yn_group's
+    LOO-median consensus. Only ever enriches an OU group that already
+    exists at line 0.5 from real rows; never fabricates one. YN "No"
+    has no equivalent merge target -- analyze_yn_group only ever uses
+    the "Yes" side (see its own docstring), and this codebase captures
+    no "No"-side YN price at all today.
+    """
+    for yn_group in yn_groups.values():
+        config = yn_type_map.get(yn_group["market_type"])
+        if config is None or not config.market_type_ou:
+            continue
+        ou_key = _build_group_key(
+            yn_group["event_id"], yn_group["player_id"], 0.5,
+            is_alt_line=0, side=None, market_type=config.market_type_ou,
+        )
+        ou_group = ou_groups.get(ou_key)
+        if ou_group is None:
+            continue
+
+        yn_yes = yn_group["yes"]
+        ou_over = ou_group["over"]
+        for book, entry in yn_yes.items():
+            if book not in ou_over:
+                ou_over[book] = {
+                    "price": entry["price"], "decimal_odds": entry["decimal_odds"],
+                    "line": 0.5, "validation_status": entry["validation_status"],
+                    "display_side": "OVER",
+                }
+        for book, entry in ou_over.items():
+            if book not in yn_yes:
+                yn_yes[book] = {
+                    "price": entry["price"], "decimal_odds": entry["decimal_odds"],
+                    "validation_status": entry["validation_status"],
+                }
 
 
 # ==================================================================
@@ -654,6 +713,12 @@ def run_scan(
                 "validation_status": row["validation_status"],
                 "display_side": source_side,
             }
+
+    # Fold YN "Yes" quotes and their Over-0.5 sibling's quotes together
+    # (see _merge_equivalent_yn_ou_books's docstring) before either
+    # representation is analyzed, so a book that only posts one of the
+    # two never silently drops out of the other's consensus/book count.
+    _merge_equivalent_yn_ou_books(ou_groups, yn_groups, _yn_type_map)
 
     # Analyze each O/U group
     if seen_books:
