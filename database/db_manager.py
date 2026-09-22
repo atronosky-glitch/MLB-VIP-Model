@@ -755,7 +755,7 @@ def init_db(db_path: str | None = None) -> None:
         -- needs the score AT THE END of a specific period, not the final
         -- score event_results holds -- a genuinely different fact, so a
         -- separate table rather than a pile of away_score_q1/q2/q3/q4
-        -- columns on event_results. One row per (event_id, period);
+        -- columns on event_results. One row per event_id/period pair --
         -- "1st half" is derived at grading time by summing periods 1+2,
         -- not stored as its own row, since it's not an independent fact
         -- ESPN reports -- see src/game_settlement.py.
