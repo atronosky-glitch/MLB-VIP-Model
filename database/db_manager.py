@@ -750,6 +750,25 @@ def init_db(db_path: str | None = None) -> None:
             updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        -- Per-period (quarter) scores -- 2026-09-19, added for CFB 1st
+        -- quarter / 1st half markets (src/sports/cfb.py). Settling those
+        -- needs the score AT THE END of a specific period, not the final
+        -- score event_results holds -- a genuinely different fact, so a
+        -- separate table rather than a pile of away_score_q1/q2/q3/q4
+        -- columns on event_results. One row per (event_id, period);
+        -- "1st half" is derived at grading time by summing periods 1+2,
+        -- not stored as its own row, since it's not an independent fact
+        -- ESPN reports -- see src/game_settlement.py.
+        CREATE TABLE IF NOT EXISTS event_period_scores (
+            event_id    TEXT NOT NULL,
+            period      INTEGER NOT NULL,
+            away_score  INTEGER,
+            home_score  INTEGER,
+            result_source TEXT,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (event_id, period)
+        );
+
         -- Player stat results (individual stat lines)
         CREATE TABLE IF NOT EXISTS player_stat_results (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1526,6 +1545,34 @@ def init_db(db_path: str | None = None) -> None:
         )
     """)
 
+    # Customer Polymarket Auto-Bet (2026-09-21): additive, nullable
+    # account_id on the three live-execution tables that a per-customer
+    # exposure/duplicate check needs to scope by customer --
+    # prepared_live_orders (what was proposed), execution_authorizations
+    # (what a human -- or, under a customer's own auto_approve_max_usd
+    # cap, the auto-approval path -- actually authorized), and
+    # live_positions (what's actually open, for exposure limits). NULL
+    # means "the operator's own manual Streamlit live-trading flow" --
+    # its existing behavior, tables, and tests are completely unchanged;
+    # only a NEW account_id-scoped query path (src/execution/live/
+    # customer_store.py) reads this column. live_orders/live_fills/
+    # live_submission_attempts/live_execution_events are not touched --
+    # they're always reachable via prepared_order_id/approval_id, so a
+    # customer-scoped join through prepared_live_orders/
+    # execution_authorizations covers them without a duplicate column.
+    _add_columns_if_missing(conn, "prepared_live_orders", [("account_id", "TEXT")])
+    _add_columns_if_missing(conn, "execution_authorizations", [("account_id", "TEXT"), ("approval_mode", "TEXT")])
+    _add_columns_if_missing(conn, "live_positions", [("account_id", "TEXT")])
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prepared_live_orders_account ON prepared_live_orders(account_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_execution_authorizations_account ON execution_authorizations(account_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_live_positions_account ON live_positions(account_id)"
+    )
+
     # Multi-league support: league/sport tags on every remaining table that
     # carries per-event or per-recommendation data, so results, settlement,
     # closing-line, and lifecycle records can be filtered/reported per
@@ -1771,6 +1818,102 @@ def init_db(db_path: str | None = None) -> None:
             unit_usd     REAL,
             state        TEXT,
             updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Per-customer Polymarket Auto-Bet (2026-09-21). encrypted_api_key_id/
+    # encrypted_private_key hold Fernet ciphertext only (see
+    # src/credential_encryption.py) -- the plaintext/raw key material
+    # never touches this table or any other. *_fingerprint columns are
+    # short, safe-to-display/compare values (last 4 chars, or an
+    # irreversible hash of both fields together) -- never enough to
+    # reconstruct the real credential. autobet_enabled and live_execution
+    # both default to 0 (OFF/PAPER) -- connecting an account must never
+    # itself enable betting (see src/customer_polymarket.py). Every
+    # column here is nullable/defaulted so a customer with no Polymarket
+    # account connected is simply absent from this table -- the site and
+    # worker must both keep working unchanged for them.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS customer_polymarket_accounts (
+            account_id              TEXT PRIMARY KEY,
+            polymarket_connected     INTEGER NOT NULL DEFAULT 0,
+            encrypted_api_key_id      TEXT,
+            encrypted_private_key      TEXT,
+            api_key_id_fingerprint      TEXT,
+            credential_fingerprint        TEXT,
+            connected_at                   TEXT,
+            last_verified_at                TEXT,
+            last_verify_status               TEXT,
+            last_verify_error                  TEXT,
+            autobet_enabled                     INTEGER NOT NULL DEFAULT 0,
+            live_execution                       INTEGER NOT NULL DEFAULT 0,
+            unit_size_usd                         REAL,
+            max_bet_usd                            REAL,
+            max_daily_loss_usd                      REAL,
+            max_total_exposure_usd                   REAL,
+            max_open_positions                        INTEGER,
+            min_net_ev_pct                             REAL,
+            max_price_move_pct                          REAL,
+            max_slippage_pct                             REAL,
+            auto_approve_max_usd                          REAL,
+            sport_filter                                   TEXT,
+            created_at                                      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at                                        TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Auto-Bet activity log -- one row per attempt, including skips and
+    # failures, so the customer's activity table (and any audit) shows
+    # WHY a qualifying pick did or didn't result in a bet, never just
+    # silence. approval_mode distinguishes an auto-approved order (under
+    # the customer's own auto_approve_max_usd cap) from one a human
+    # approved manually, for the same audit reason official picks/paper
+    # trades already track "what decided this."
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS customer_autobet_executions (
+            execution_id        TEXT PRIMARY KEY,
+            account_id            TEXT NOT NULL,
+            recommendation_id       TEXT,
+            market_type               TEXT,
+            matchup                     TEXT,
+            side                          TEXT,
+            model_ev_pct                   REAL,
+            price_at_detection               REAL,
+            price_at_execution                 REAL,
+            stake_usd                            REAL,
+            filled_quantity                        REAL,
+            avg_fill_price                           REAL,
+            status                                     TEXT NOT NULL,
+            skip_reason                                  TEXT,
+            provider_order_id                              TEXT,
+            mode                                             TEXT NOT NULL,
+            approval_mode                                     TEXT,
+            created_at                                          TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cae_account ON customer_autobet_executions(account_id, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cae_rec ON customer_autobet_executions(account_id, recommendation_id)"
+    )
+
+    # Atomic claim-before-execute for one (account_id, recommendation_id)
+    # pair -- the exact same claim-before-send pattern already proven
+    # for EV-pick Discord delivery (discord_alerts_sent /
+    # claim_recommendations_for_alert): a claim taken here BEFORE
+    # attempting a real order means two concurrent worker passes (or a
+    # worker restart mid-scan) can never both execute the same
+    # recommendation for the same customer. A failed attempt releases
+    # its claim (see release_autobet_claim) so the SAME recommendation
+    # is eligible to be retried on a later scan; a successful one never
+    # does, so it can never be re-executed.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS customer_autobet_claims (
+            account_id          TEXT NOT NULL,
+            recommendation_id     TEXT NOT NULL,
+            claimed_at              TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (account_id, recommendation_id)
         )
     """)
 
@@ -2055,6 +2198,108 @@ def get_bet_links(conn: DB, keys: list[tuple]) -> dict[tuple, str]:
             freshest[key] = (d["bet_link"], d["captured_at"] or "")
 
     return {key: link for key, (link, _) in freshest.items()}
+
+
+# ==================================================================
+# Customer Polymarket Auto-Bet -- execution claim (2026-09-21)
+# ==================================================================
+#
+# Same claim-before-execute pattern already proven for EV-pick Discord
+# delivery (see discord_alerts_sent / claim_recommendations_for_alert
+# above): an atomic INSERT that only succeeds for a (account_id,
+# recommendation_id) pair with no existing claim, so two concurrent
+# worker passes -- or a worker restart mid-scan -- can never both
+# execute the same recommendation for the same customer. A failed
+# attempt releases its claim so the SAME pair is retried on a later
+# scan; a successful one never does.
+
+def claim_autobet_recommendation(conn: DB, account_id: str, recommendation_id: str) -> bool:
+    """Atomically claim this (account_id, recommendation_id) pair for
+    execution. Returns True if this call won the claim, False if it
+    was already claimed (by a prior successful or in-flight attempt)."""
+    now = datetime.now(timezone.utc).isoformat()
+    result = conn.execute(
+        """INSERT INTO customer_autobet_claims (account_id, recommendation_id, claimed_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT (account_id, recommendation_id) DO NOTHING""",
+        (account_id, recommendation_id, now),
+    )
+    conn.commit()
+    return bool(result.rowcount)
+
+
+def release_autobet_claim(conn: DB, account_id: str, recommendation_id: str) -> None:
+    """Undo a claim from claim_autobet_recommendation after a failed
+    attempt, so the pair is NOT left permanently marked "already
+    executed" and can be retried on a later scan."""
+    conn.execute(
+        "DELETE FROM customer_autobet_claims WHERE account_id = ? AND recommendation_id = ?",
+        (account_id, recommendation_id),
+    )
+    conn.commit()
+
+
+def is_autobet_recommendation_claimed(conn: DB, account_id: str, recommendation_id: str) -> bool:
+    """Read-only check, for a caller that wants to know without
+    claiming (e.g. a dashboard or a pre-flight duplicate check)."""
+    row = conn.execute(
+        "SELECT 1 FROM customer_autobet_claims WHERE account_id = ? AND recommendation_id = ?",
+        (account_id, recommendation_id),
+    ).fetchone()
+    return row is not None
+
+
+def save_autobet_execution(conn: DB, execution: dict) -> str:
+    """Persist one Auto-Bet activity row -- an attempt outcome
+    (EXECUTED/PARTIALLY_FILLED/SKIPPED/FAILED/CANCELLED), never only
+    successes, so the customer's activity table always shows why a
+    qualifying pick did or didn't result in a bet. Returns the new
+    execution_id."""
+    execution_id = execution.get("execution_id") or str(uuid.uuid4())
+    conn.execute(
+        """INSERT INTO customer_autobet_executions (
+               execution_id, account_id, recommendation_id, market_type, matchup, side,
+               model_ev_pct, price_at_detection, price_at_execution, stake_usd,
+               filled_quantity, avg_fill_price, status, skip_reason, provider_order_id,
+               mode, approval_mode
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            execution_id, execution["account_id"], execution.get("recommendation_id"),
+            execution.get("market_type"), execution.get("matchup"), execution.get("side"),
+            execution.get("model_ev_pct"), execution.get("price_at_detection"),
+            execution.get("price_at_execution"), execution.get("stake_usd"),
+            execution.get("filled_quantity"), execution.get("avg_fill_price"),
+            execution["status"], execution.get("skip_reason"), execution.get("provider_order_id"),
+            execution["mode"], execution.get("approval_mode"),
+        ),
+    )
+    conn.commit()
+    return execution_id
+
+
+def get_autobet_executions(conn: DB, account_id: str, limit: int = 50) -> list[dict]:
+    """Most recent Auto-Bet activity for one customer, newest first --
+    powers the customer-facing activity table."""
+    rows = conn.execute(
+        """SELECT * FROM customer_autobet_executions
+           WHERE account_id = ? ORDER BY created_at DESC LIMIT ?""",
+        (account_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def has_executed_autobet_for_recommendation(conn: DB, account_id: str, recommendation_id: str) -> bool:
+    """True if this customer already has an EXECUTED or
+    PARTIALLY_FILLED row for this exact recommendation -- the
+    authoritative "would this be a duplicate bet" check, independent of
+    (and in addition to) the claim table above."""
+    row = conn.execute(
+        """SELECT 1 FROM customer_autobet_executions
+           WHERE account_id = ? AND recommendation_id = ?
+             AND status IN ('EXECUTED', 'PARTIALLY_FILLED') LIMIT 1""",
+        (account_id, recommendation_id),
+    ).fetchone()
+    return row is not None
 
 
 # ==================================================================
@@ -3638,6 +3883,35 @@ def save_event_result(
          result_source, source_observed_at, result_detail),
     )
     conn.commit()
+
+
+def save_event_period_score(
+    conn: DB, event_id: str, period: int, *,
+    away_score: int | None, home_score: int | None, result_source: str | None = None,
+) -> None:
+    """Insert or update one period's (quarter's) score for an event --
+    see event_period_scores' schema comment for why this is separate
+    from save_event_result's final-score-only row."""
+    conn.execute(
+        """INSERT INTO event_period_scores (event_id, period, away_score, home_score, result_source)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(event_id, period) DO UPDATE SET
+               away_score = excluded.away_score,
+               home_score = excluded.home_score,
+               result_source = excluded.result_source""",
+        (event_id, period, away_score, home_score, result_source),
+    )
+    conn.commit()
+
+
+def get_event_period_scores(conn: DB, event_id: str) -> dict[int, dict]:
+    """Return {period: {"away_score": int|None, "home_score": int|None}}
+    for every period recorded so far for this event, or {} if none."""
+    rows = conn.execute(
+        "SELECT period, away_score, home_score FROM event_period_scores WHERE event_id = ? ORDER BY period",
+        (event_id,),
+    ).fetchall()
+    return {r["period"]: {"away_score": r["away_score"], "home_score": r["home_score"]} for r in rows}
 
 
 def save_player_stat_result(

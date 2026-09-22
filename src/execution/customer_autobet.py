@@ -1,0 +1,591 @@
+"""Per-customer Polymarket Auto-Bet orchestration (2026-09-21).
+
+MODEL recommendation -> Stage 2A/2B matching+evaluation (REUSED,
+completely unmodified: src.execution.paper_cli._gather_qualified_signals,
+OpportunityEvaluator.compare) -> for every customer with
+polymarket_connected=1 AND autobet_enabled=1 -> decrypt THEIR
+credentials server-side (src.credential_encryption) -> build a
+PolymarketUSProvider using ONLY that customer's own key material ->
+re-run risk with a context scoped to ONLY that customer's own
+exposure/positions (src.execution.live.customer_store) -> size ->
+decide PAPER or LIVE -> decide auto-approve (at/under the customer's
+own auto_approve_max_usd cap) vs. queue for one-tap approval -> record
+the outcome -- EVERY outcome, including every skip and failure, never
+silently -- to customer_autobet_executions.
+
+PAPER mode is a lightweight, self-contained simulation scoped entirely
+within customer_autobet_executions -- it reuses RiskEngine (the pure,
+config-driven engine, parameterized per customer) directly, but does
+NOT use src.execution.paper.broker.PaperBroker, which is tied to ONE
+shared global paper_accounts bankroll; retrofitting that to be multi-
+tenant was out of scope for this stage (see the operator-facing
+report). Never touches live_* tables, never calls any provider write
+method.
+
+LIVE mode reuses src.execution.live.approval / service COMPLETELY
+UNMODIFIED -- this module never calls the provider's own gated live-
+order submission method itself (that would violate
+tests/test_live_architecture.py's enforced "only LiveExecutionService
+may call this" invariant). A real order is
+only ever reached via LiveExecutionService.execute_authorized(),
+exactly like the operator's own manual Streamlit flow. The only new
+concept is WHO may set an ExecutionAuthorization to APPROVED: a human
+(approval.approve(), unchanged, for an order over the customer's own
+auto_approve_max_usd cap -- queued, never auto-submitted) or, newly,
+this module itself calling that SAME approval.approve() function with
+approved_by=f"autobet_system:{account_id}", for an order AT OR UNDER
+that cap. Every existing global safety gate (config.live_trading_enabled,
+config.require_human_approval, the specific provider's own *_live_enabled,
+the kill switch, the circuit breaker) still applies on top, unchanged,
+re-checked fresh by execute_authorized() itself -- this module adds a
+customer-level gate, it never removes or bypasses an existing one.
+"""
+
+from __future__ import annotations
+
+import copy
+import logging
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any
+
+from database.db_manager import (
+    claim_autobet_recommendation,
+    get_connection,
+    has_executed_autobet_for_recommendation,
+    release_autobet_claim,
+    save_autobet_execution,
+)
+from src.credential_encryption import CredentialEncryptionError, decrypt_secret
+from src.execution.credentials import CredentialLoadError
+from src.execution.evaluator import ExecutionOpportunity, ExecutionSignal
+from src.execution.live import approval as live_approval
+from src.execution.live import customer_store as live_customer_store
+from src.execution.live import kill_switch
+from src.execution.live.models import PreparedLiveOrder, PreparedOrderStatus
+from src.execution.live.revalidation import build_live_risk_context
+from src.execution.live.service import _can_attempt_live_trade, execute_authorized
+from src.execution.live import store as live_store
+from src.execution.paper.models import event_identity, fingerprint as compute_fingerprint
+from src.execution.polymarket_us import PolymarketUSProvider
+from src.execution.risk import RiskContext, RiskEngine
+
+logger = logging.getLogger(__name__)
+
+_RISK_CONFIG_OVERRIDES = {
+    "unit_size_usd": "unit_size_usd",
+    "max_bet_usd": "max_bet_usd",
+    "max_daily_loss_usd": "max_daily_loss_usd",
+    "max_total_exposure_usd": "max_open_exposure_usd",
+    "max_open_positions": "max_open_positions",
+}
+
+
+def _customer_risk_config(base_config: Any, account: dict) -> Any:
+    """A copy of the platform config with this customer's OWN risk
+    settings overlaid on top -- every field RiskEngine.evaluate() reads
+    that the customer hasn't configured (max_trades_per_hour,
+    max_event_exposure_usd, etc.) still comes from the platform's own,
+    already-reviewed defaults. Never mutates base_config."""
+    cfg = copy.copy(base_config)
+    for account_field, config_field in _RISK_CONFIG_OVERRIDES.items():
+        value = account.get(account_field)
+        if value is not None:
+            setattr(cfg, config_field, value)
+    return cfg
+
+
+def _all_autobet_enabled_accounts(conn: Any) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM customer_polymarket_accounts WHERE polymarket_connected = 1 AND autobet_enabled = 1"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _decrypt_account_credentials(account: dict) -> tuple[str, str] | None:
+    """Never logs the decrypted values. Returns None (not an
+    exception) on any failure -- a customer's broken/rotated
+    credential must never crash the whole Auto-Bet pass for every
+    other customer."""
+    encrypted_api_key_id = account.get("encrypted_api_key_id")
+    encrypted_private_key = account.get("encrypted_private_key")
+    if not encrypted_api_key_id or not encrypted_private_key:
+        return None
+    try:
+        api_key_id = decrypt_secret(encrypted_api_key_id)
+        private_key_b64 = decrypt_secret(encrypted_private_key)
+    except CredentialEncryptionError:
+        logger.error(
+            "Could not decrypt Polymarket credentials for an Auto-Bet account (detail withheld)"
+        )
+        return None
+    return api_key_id, private_key_b64
+
+
+def _build_customer_provider(account: dict) -> PolymarketUSProvider | None:
+    creds = _decrypt_account_credentials(account)
+    if creds is None:
+        return None
+    api_key_id, private_key_b64 = creds
+    try:
+        return PolymarketUSProvider(api_key_id=api_key_id, private_key_b64=private_key_b64)
+    except (CredentialLoadError, ValueError):
+        logger.exception("Could not construct PolymarketUSProvider for an Auto-Bet account")
+        return None
+
+
+def _build_scanning_only_provider() -> PolymarketUSProvider:
+    """A PolymarketUSProvider for the market-data SCAN phase only
+    (get_markets/parse_game_event -- both hit the public,
+    unauthenticated gateway.polymarket.us, confirmed by
+    PolymarketUSProvider's own module docstring). Deliberately
+    independent of whether the OPERATOR has their own global Polymarket
+    credentials configured (config.polymarket_us_api_key_id/
+    _private_key_path) -- this is a customer-facing feature; the
+    operator's own account is a separate, optional concern. Uses a
+    throwaway, freshly-generated Ed25519 key that is never used for
+    anything authenticated and never leaves this process."""
+    import base64
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    throwaway_key = ed25519.Ed25519PrivateKey.generate()
+    raw = throwaway_key.private_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return PolymarketUSProvider(api_key_id="scan-only", private_key_b64=base64.b64encode(raw).decode("ascii"))
+
+
+def _record(conn: Any, **fields: Any) -> None:
+    save_autobet_execution(conn, fields)
+
+
+def _paper_risk_context(conn: Any, account_id: str, recommendation_id: str) -> RiskContext:
+    """PAPER-mode equivalent of build_live_risk_context, computed
+    entirely from this customer's OWN customer_autobet_executions
+    history (mode='PAPER', status='EXECUTED') -- never touches the
+    live_* tables at all. available_bankroll_usd has no real balance to
+    check in paper mode, so it's treated as always sufficient (a very
+    large number) -- the customer's own max_bet_usd/max_total_exposure_usd
+    caps are what actually bound a paper stake."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rows = conn.execute(
+        """SELECT * FROM customer_autobet_executions
+           WHERE account_id = ? AND mode = 'PAPER' AND status IN ('EXECUTED', 'PARTIALLY_FILLED')""",
+        (account_id,),
+    ).fetchall()
+    rows = [dict(r) for r in rows]
+    total_exposure = sum(Decimal(str(r["stake_usd"] or 0)) for r in rows)
+    today_rows = [r for r in rows if (r.get("created_at") or "").startswith(today)]
+    daily_wagered = sum(Decimal(str(r["stake_usd"] or 0)) for r in today_rows)
+    has_duplicate = any(r["recommendation_id"] == recommendation_id for r in rows)
+    return RiskContext(
+        available_bankroll_usd=Decimal("1000000"),
+        open_positions_count=len(rows),
+        event_exposure_usd=Decimal("0"),
+        provider_exposure_usd=total_exposure,
+        sport_exposure_usd=Decimal("0"),
+        total_open_exposure_usd=total_exposure,
+        daily_wagered_usd=daily_wagered,
+        daily_realized_pnl_usd=Decimal("0"),
+        trades_in_last_hour=len(today_rows),
+        has_open_duplicate=has_duplicate,
+        has_settled_duplicate=False,
+    )
+
+
+def _execute_paper(
+    conn: Any, config: Any, account: dict, opportunity: ExecutionOpportunity, signal: ExecutionSignal,
+) -> str:
+    account_id = account["account_id"]
+    cfg = _customer_risk_config(config, account)
+    unit_size = Decimal(str(account.get("unit_size_usd") or 5.0))
+    recommended_stake = min(
+        unit_size, Decimal(str(account.get("max_bet_usd") or unit_size)),
+    )
+    recommended_units = recommended_stake / unit_size if unit_size > 0 else Decimal("0")
+
+    context = _paper_risk_context(conn, account_id, opportunity.recommendation_id)
+    decision = RiskEngine(cfg).evaluate(recommended_stake, recommended_units, unit_size, context, False)
+
+    matchup = f"{signal.away_team} @ {signal.home_team}"
+    if not decision.approved:
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=opportunity.side,
+            model_ev_pct=float(opportunity.net_ev_pct), price_at_detection=float(opportunity.best_ask or 0),
+            status="SKIPPED",
+            skip_reason=decision.rejection_reason.value if decision.rejection_reason else "RISK_REJECTED",
+            mode="PAPER",
+        )
+        return "SKIPPED"
+
+    _record(
+        conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+        market_type=signal.market_type, matchup=matchup, side=opportunity.side,
+        model_ev_pct=float(opportunity.net_ev_pct), price_at_detection=float(opportunity.best_ask or 0),
+        price_at_execution=float(opportunity.expected_fill_price),
+        stake_usd=float(decision.approved_stake_usd),
+        filled_quantity=float(opportunity.quantity_analyzed), avg_fill_price=float(opportunity.expected_fill_price),
+        status="EXECUTED", mode="PAPER", approval_mode="AUTO",
+    )
+    return "EXECUTED"
+
+
+def _execute_live(
+    conn: Any, config: Any, account: dict, opportunity: ExecutionOpportunity, signal: ExecutionSignal,
+    provider: PolymarketUSProvider,
+) -> str:
+    account_id = account["account_id"]
+    matchup = f"{signal.away_team} @ {signal.home_team}"
+
+    can_trade, gate_detail = _can_attempt_live_trade(config, opportunity.provider)
+    if not can_trade:
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=opportunity.side,
+            model_ev_pct=float(opportunity.net_ev_pct), status="SKIPPED",
+            skip_reason=f"LIVE_TRADING_DISABLED: {gate_detail}", mode="LIVE",
+        )
+        return "SKIPPED"
+
+    engaged, kill_reason = kill_switch.is_kill_switch_engaged(conn)
+    if engaged:
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=opportunity.side,
+            status="SKIPPED", skip_reason=f"KILL_SWITCH_ENGAGED: {kill_reason}", mode="LIVE",
+        )
+        return "SKIPPED"
+
+    cfg = _customer_risk_config(config, account)
+
+    # Reuse approval.prepare_order's OWN sizing (_size) but NOT its
+    # internal build_live_risk_context call (global-scoped, wrong for a
+    # customer) -- so this module builds the RiskContext itself and
+    # calls RiskEngine directly, then persists a PreparedLiveOrder via
+    # the same, unmodified live_store.persist_prepared_order.
+    side = opportunity.side
+    fp = compute_fingerprint(
+        opportunity.recommendation_id, opportunity.provider, opportunity.provider_market_id,
+        side, signal.line, "live",
+    )
+    existing = live_store.get_open_prepared_order_by_fingerprint(conn, fp)
+    if existing is not None and live_customer_store.get_account_id_for_prepared_order(
+        conn, existing["prepared_order_id"]
+    ) == account_id:
+        return "SKIPPED"  # already queued for this exact customer
+
+    try:
+        balance = provider.get_balance()
+        available_bankroll = Decimal(str(balance.available))
+    except Exception:
+        logger.exception("Could not fetch live Polymarket balance for an Auto-Bet account")
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=side, status="FAILED",
+            skip_reason="PROVIDER_BALANCE_UNAVAILABLE", mode="LIVE",
+        )
+        return "FAILED"
+
+    unit_size = Decimal(str(account.get("unit_size_usd") or 5.0))
+    recommended_stake = min(unit_size, Decimal(str(account.get("max_bet_usd") or unit_size)), available_bankroll)
+    recommended_units = recommended_stake / unit_size if unit_size > 0 else Decimal("0")
+
+    event_id = event_identity(
+        signal.league, signal.home_team, signal.away_team,
+        signal.event_start_time.date().isoformat() if signal.event_start_time else "unknown",
+    )
+    context = build_live_risk_context(
+        conn, provider, event_id, opportunity.provider, opportunity.league,
+        opportunity.recommendation_id, side, account_id=account_id,
+    )
+    decision = RiskEngine(cfg).evaluate(recommended_stake, recommended_units, unit_size, context, False)
+    if not decision.approved:
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=side,
+            model_ev_pct=float(opportunity.net_ev_pct), status="SKIPPED",
+            skip_reason=decision.rejection_reason.value if decision.rejection_reason else "RISK_REJECTED",
+            mode="LIVE",
+        )
+        return "SKIPPED"
+
+    now = datetime.now(timezone.utc)
+    order = PreparedLiveOrder(
+        prepared_order_id=None, opportunity_id=None, recommendation_id=opportunity.recommendation_id,
+        provider=opportunity.provider, provider_market_id=opportunity.provider_market_id,
+        league=opportunity.league, event=opportunity.event, event_id=event_id, side=side,
+        event_start_time=signal.event_start_time, model_probability=opportunity.model_probability,
+        current_price=opportunity.best_ask or opportunity.expected_fill_price,
+        expected_fill_price=opportunity.expected_fill_price, net_ev_pct=opportunity.net_ev_pct,
+        recommended_units=recommended_units, recommended_stake=recommended_stake,
+        risk_approved_stake=decision.approved_stake_usd, risk_approved_units=decision.approved_units,
+        quantity=opportunity.quantity_analyzed, maximum_entry_price=opportunity.max_acceptable_price,
+        fees_estimate=opportunity.estimated_fees, slippage_estimate=opportunity.expected_slippage,
+        available_liquidity=opportunity.available_liquidity, fingerprint=fp,
+        risk_snapshot={
+            "limiting_constraint": decision.limiting_constraint.value if decision.limiting_constraint else None,
+            "checks": list(decision.checks), "available_bankroll": str(available_bankroll),
+        },
+        status=PreparedOrderStatus.READY, created_at=now,
+        expires_at=now + timedelta(seconds=int(config.max_opportunity_age_seconds)),
+    )
+    prepared_order_id = live_store.persist_prepared_order(conn, order)
+    live_customer_store.tag_prepared_order_with_account(conn, prepared_order_id, account_id)
+    live_store.log_event(
+        conn, "PREPARED", f"auto-bet account={account_id} net_ev_pct={opportunity.net_ev_pct}",
+        prepared_order_id=prepared_order_id,
+    )
+
+    auto_approve_cap = account.get("auto_approve_max_usd")
+    should_auto_approve = auto_approve_cap is not None and decision.approved_stake_usd <= Decimal(str(auto_approve_cap))
+
+    if not should_auto_approve:
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=side,
+            model_ev_pct=float(opportunity.net_ev_pct), price_at_detection=float(opportunity.best_ask or 0),
+            stake_usd=float(decision.approved_stake_usd), status="SKIPPED",
+            skip_reason="AWAITING_MANUAL_APPROVAL", mode="LIVE", approval_mode="MANUAL",
+        )
+        return "SKIPPED"  # queued in prepared_live_orders; claim stays held so it isn't re-queued
+
+    authorization = live_approval.approve(conn, prepared_order_id, config, approved_by=f"autobet_system:{account_id}")
+    if authorization is None:
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=side, status="FAILED",
+            skip_reason="AUTO_APPROVAL_FAILED", mode="LIVE",
+        )
+        return "FAILED"
+
+    live_customer_store.tag_authorization_with_account(conn, authorization.approval_id, account_id, "AUTO")
+
+    result = execute_authorized(conn, authorization.approval_id, provider, config)
+
+    if result.outcome == "SUBMITTED" and result.live_order_id is not None:
+        live_order = live_store.get_live_order(conn, result.live_order_id)
+        if live_order:
+            position = conn.execute(
+                "SELECT position_id FROM live_positions WHERE live_order_id = ?", (result.live_order_id,)
+            ).fetchone()
+            if position:
+                live_customer_store.tag_position_with_account(conn, dict(position)["position_id"], account_id)
+        status = "EXECUTED" if (not live_order or live_order.get("status") != "PARTIALLY_FILLED") else "PARTIALLY_FILLED"
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=side,
+            model_ev_pct=float(opportunity.net_ev_pct), price_at_detection=float(opportunity.best_ask or 0),
+            price_at_execution=float(live_order.get("average_fill_price") or opportunity.expected_fill_price) if live_order else None,
+            stake_usd=float(decision.approved_stake_usd),
+            filled_quantity=float(live_order.get("quantity_filled") or 0) if live_order else None,
+            avg_fill_price=float(live_order.get("average_fill_price") or 0) if live_order else None,
+            provider_order_id=live_order.get("provider_order_id") if live_order else None,
+            status=status, mode="LIVE", approval_mode="AUTO",
+        )
+        return status
+
+    _record(
+        conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+        market_type=signal.market_type, matchup=matchup, side=side,
+        model_ev_pct=float(opportunity.net_ev_pct), status="FAILED",
+        skip_reason=f"{result.reason}: {result.detail}", mode="LIVE", approval_mode="AUTO",
+    )
+    return "FAILED"
+
+
+def approve_pending_order(conn: Any, config: Any, account_id: str, prepared_order_id: int) -> tuple[bool, str]:
+    """Customer-initiated approval for an over-cap LIVE order this
+    module queued for manual approval (_execute_live's
+    AWAITING_MANUAL_APPROVAL path -- see the customer-facing "pending
+    approval" queue in src/customer_view.py). Mirrors _execute_live's
+    own auto-approve tail exactly; only approved_by/approval_mode
+    differ, reflecting a real human click instead of the automatic
+    under-cap check. Every existing safety gate (config gates, kill
+    switch, revalidation) still applies unchanged inside
+    execute_authorized() -- this function does not bypass any of them."""
+    prepared = live_store.get_prepared_order(conn, prepared_order_id)
+    if prepared is None or prepared["status"] != "READY":
+        return False, "This order is no longer awaiting approval."
+    if live_customer_store.get_account_id_for_prepared_order(conn, prepared_order_id) != account_id:
+        return False, "This order does not belong to your account."
+
+    account_row = conn.execute(
+        "SELECT * FROM customer_polymarket_accounts WHERE account_id = ?", (account_id,)
+    ).fetchone()
+    if account_row is None:
+        return False, "Account not found."
+    account = dict(account_row)
+
+    provider = _build_customer_provider(account)
+    if provider is None:
+        return False, "Could not use your saved Polymarket credentials -- please reconnect your account."
+
+    authorization = live_approval.approve(conn, prepared_order_id, config, approved_by=f"customer:{account_id}")
+    if authorization is None:
+        return False, "Could not approve this order -- it may have expired or already been handled."
+    live_customer_store.tag_authorization_with_account(conn, authorization.approval_id, account_id, "MANUAL")
+
+    result = execute_authorized(conn, authorization.approval_id, provider, config)
+    matchup = prepared.get("event") or ""
+
+    if result.outcome == "SUBMITTED" and result.live_order_id is not None:
+        live_order = live_store.get_live_order(conn, result.live_order_id)
+        if live_order:
+            position = conn.execute(
+                "SELECT position_id FROM live_positions WHERE live_order_id = ?", (result.live_order_id,)
+            ).fetchone()
+            if position:
+                live_customer_store.tag_position_with_account(conn, dict(position)["position_id"], account_id)
+        status = "EXECUTED" if (not live_order or live_order.get("status") != "PARTIALLY_FILLED") else "PARTIALLY_FILLED"
+        _record(
+            conn, account_id=account_id, recommendation_id=prepared["recommendation_id"],
+            matchup=matchup, side=prepared.get("side"),
+            price_at_execution=float(live_order.get("average_fill_price") or 0) if live_order else None,
+            stake_usd=float(prepared.get("risk_approved_stake") or 0),
+            filled_quantity=float(live_order.get("quantity_filled") or 0) if live_order else None,
+            avg_fill_price=float(live_order.get("average_fill_price") or 0) if live_order else None,
+            provider_order_id=live_order.get("provider_order_id") if live_order else None,
+            status=status, mode="LIVE", approval_mode="MANUAL",
+        )
+        return True, f"Order {status.lower()}."
+
+    _record(
+        conn, account_id=account_id, recommendation_id=prepared["recommendation_id"],
+        matchup=matchup, side=prepared.get("side"), status="FAILED",
+        skip_reason=f"{result.reason}: {result.detail}", mode="LIVE", approval_mode="MANUAL",
+    )
+    return False, f"Order could not be executed: {result.detail}"
+
+
+def reject_pending_order(
+    conn: Any, account_id: str, prepared_order_id: int, reason: str | None = None,
+) -> bool:
+    """The customer's explicit "no" on a queued over-cap order. Releases
+    the recommendation's claim (mirroring every other non-terminal
+    outcome in process_recommendation_for_account) so a later scan may
+    reconsider it, e.g. at a smaller size or once conditions change."""
+    prepared = live_store.get_prepared_order(conn, prepared_order_id)
+    if prepared is None:
+        return False
+    if live_customer_store.get_account_id_for_prepared_order(conn, prepared_order_id) != account_id:
+        return False
+    ok = live_approval.reject(conn, prepared_order_id, reason)
+    if not ok:
+        return False
+    _record(
+        conn, account_id=account_id, recommendation_id=prepared["recommendation_id"],
+        matchup=prepared.get("event"), side=prepared.get("side"), status="SKIPPED",
+        skip_reason="MANUALLY_REJECTED", mode="LIVE", approval_mode="MANUAL",
+    )
+    release_autobet_claim(conn, account_id, prepared["recommendation_id"])
+    return True
+
+
+def process_recommendation_for_account(
+    conn: Any, config: Any, account: dict, comparison: Any, signal: ExecutionSignal,
+) -> str:
+    """Attempt to execute ONE qualified Stage 2B opportunity for ONE
+    customer. Returns the resulting status. Never raises -- every
+    failure mode is caught and recorded as a FAILED/SKIPPED row, never
+    silently dropped."""
+    account_id = account["account_id"]
+    recommendation_id = signal.recommendation_id
+
+    if has_executed_autobet_for_recommendation(conn, account_id, recommendation_id):
+        return "SKIPPED"
+
+    opportunity = comparison.best if comparison is not None else None
+    if opportunity is None or opportunity.provider != "polymarket_us":
+        return "SKIPPED"
+
+    sport_filter = (account.get("sport_filter") or "").strip()
+    if sport_filter:
+        allowed = {s.strip().upper() for s in sport_filter.split(",") if s.strip()}
+        if signal.league.upper() not in allowed:
+            return "SKIPPED"
+
+    min_ev = account.get("min_net_ev_pct")
+    if min_ev is not None and float(opportunity.net_ev_pct) < float(min_ev):
+        return "SKIPPED"
+
+    if not claim_autobet_recommendation(conn, account_id, recommendation_id):
+        return "SKIPPED"
+
+    try:
+        provider = _build_customer_provider(account)
+        if provider is None:
+            _record(
+                conn, account_id=account_id, recommendation_id=recommendation_id, status="FAILED",
+                skip_reason="CREDENTIALS_UNAVAILABLE", mode="LIVE" if account.get("live_execution") else "PAPER",
+            )
+            release_autobet_claim(conn, account_id, recommendation_id)
+            return "FAILED"
+
+        if account.get("live_execution"):
+            status = _execute_live(conn, config, account, opportunity, signal, provider)
+        else:
+            status = _execute_paper(conn, config, account, opportunity, signal)
+
+        if status not in ("EXECUTED", "PARTIALLY_FILLED"):
+            # AWAITING_MANUAL_APPROVAL deliberately keeps its claim
+            # (see _execute_live) -- everything else is free to retry.
+            already_pending = status == "SKIPPED" and conn.execute(
+                "SELECT 1 FROM customer_autobet_executions WHERE account_id = ? AND recommendation_id = ? "
+                "AND skip_reason = 'AWAITING_MANUAL_APPROVAL' ORDER BY created_at DESC LIMIT 1",
+                (account_id, recommendation_id),
+            ).fetchone()
+            if not already_pending:
+                release_autobet_claim(conn, account_id, recommendation_id)
+        return status
+    except Exception:
+        logger.exception("Unexpected error processing Auto-Bet for a customer account")
+        _record(
+            conn, account_id=account_id, recommendation_id=recommendation_id, status="FAILED",
+            skip_reason="UNEXPECTED_ERROR", mode="LIVE" if account.get("live_execution") else "PAPER",
+        )
+        release_autobet_claim(conn, account_id, recommendation_id)
+        return "FAILED"
+
+
+def run_customer_autobet_pass(config: Any) -> dict:
+    """The top-level entry point src/worker.py calls. Gathers today's
+    qualified Stage 2B opportunities ONCE (reused across every
+    customer, not re-fetched per customer), then attempts execution
+    for every connected + Auto-Bet-enabled customer independently."""
+    from src.execution.cli import _load_actionable_rows
+    from src.execution.paper_cli import _gather_qualified_signals
+
+    conn = get_connection(config.database_path)
+    try:
+        accounts = _all_autobet_enabled_accounts(conn)
+        if not accounts:
+            return {"accounts_considered": 0, "executed": 0, "skipped": 0, "failed": 0}
+
+        try:
+            provider = _build_scanning_only_provider()
+        except Exception:
+            logger.exception("Could not initialize the read-only polymarket_us provider for scanning")
+            return {"accounts_considered": len(accounts), "executed": 0, "skipped": 0, "failed": 0, "error": "PROVIDER_INIT_FAILED"}
+
+        rows = _load_actionable_rows(config)
+        gathered = _gather_qualified_signals(config, {"polymarket_us": provider}, rows, None, None)
+
+        counts = {"executed": 0, "skipped": 0, "failed": 0}
+        for kind, rec_event, signal, comparison in gathered:
+            if kind != "evaluated" or comparison is None or comparison.best is None:
+                continue
+            for account in accounts:
+                status = process_recommendation_for_account(conn, config, account, comparison, signal)
+                if status in ("EXECUTED", "PARTIALLY_FILLED"):
+                    counts["executed"] += 1
+                elif status == "FAILED":
+                    counts["failed"] += 1
+                else:
+                    counts["skipped"] += 1
+
+        return {"accounts_considered": len(accounts), **counts}
+    finally:
+        conn.close()

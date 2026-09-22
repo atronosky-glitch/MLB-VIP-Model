@@ -36,7 +36,7 @@ from src.execution.base import (
     NormalizedOrderBook, Orderbook, OrderLevel,
     PredictionMarketProvider, ProviderCapabilities, RawGameEvent, mask_secret,
 )
-from src.execution.credentials import load_ed25519_private_key
+from src.execution.credentials import load_ed25519_private_key, parse_ed25519_private_key_material
 from src.execution.signing import build_signed_message, sign_ed25519
 
 logger = logging.getLogger(__name__)
@@ -88,9 +88,31 @@ def build_polymarket_order_payload(
 class PolymarketUSProvider(PredictionMarketProvider):
     name = "polymarket_us"
 
-    def __init__(self, config: Any) -> None:
-        self._api_key_id = config.polymarket_us_api_key_id
-        self._private_key = load_ed25519_private_key(config.polymarket_us_private_key_path)
+    def __init__(
+        self, config: Any = None, *,
+        api_key_id: str | None = None, private_key_b64: str | None = None,
+    ) -> None:
+        """Two construction modes, mutually exclusive:
+
+        - ``PolymarketUSProvider(config)`` -- the original operator
+          single-account path: key material loaded from
+          ``config.polymarket_us_private_key_path`` on disk.
+        - ``PolymarketUSProvider(api_key_id=..., private_key_b64=...)``
+          -- per-customer path (src/execution/customer_autobet.py):
+          key material already decrypted server-side and held only in
+          memory for the lifetime of this instance -- never written to
+          disk. Both of these two kwargs are required together.
+        """
+        if api_key_id is not None or private_key_b64 is not None:
+            if not (api_key_id and private_key_b64):
+                raise ValueError("api_key_id and private_key_b64 must both be given together")
+            self._api_key_id = api_key_id
+            self._private_key = parse_ed25519_private_key_material(
+                private_key_b64, source_label="in-memory customer credential",
+            )
+        else:
+            self._api_key_id = config.polymarket_us_api_key_id
+            self._private_key = load_ed25519_private_key(config.polymarket_us_private_key_path)
         self.session = requests.Session()
         logger.info(
             "PolymarketUSProvider initialized: key_id=%s", mask_secret(self._api_key_id),

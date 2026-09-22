@@ -17,26 +17,46 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestWorkerHasNoLiveExecutionAwareness:
-    """src/worker.py is the only autonomous/scheduled code path in this
-    repo (confirmed during the Stage 4 audit: it imports nothing from
-    src.execution.* at all). This test fails loudly if that ever
-    changes without an explicit, reviewed decision."""
+    """src/worker.py originally imported nothing from src.execution.*
+    at all (Stage 4 audit finding). That changed 2026-09-21 by an
+    explicit, reviewed decision -- the user's own "Hybrid: auto-execute
+    under a hard dollar cap" choice for the per-customer Polymarket
+    Auto-Bet feature -- so the worker now reaches live execution, but
+    ONLY indirectly, through the single, fully-gated
+    src.execution.customer_autobet.run_customer_autobet_pass entry
+    point, which itself only ever calls the unmodified,
+    human-approval-shaped LiveExecutionService.execute_authorized()
+    (see src/execution/customer_autobet.py's own module docstring and
+    tests/test_customer_autobet.py's hybrid-approval coverage). These
+    tests lock that boundary down so a FUTURE change can't wire
+    worker.py to some other, less-reviewed execution path -- a raw
+    live-scan/live-execute/paper-scan job, or a second src.execution
+    import -- without this test failing loudly."""
 
-    def test_worker_module_does_not_import_the_execution_package(self):
+    def test_worker_imports_only_the_customer_autobet_entry_point_from_execution(self):
         text = (PROJECT_ROOT / "src" / "worker.py").read_text(encoding="utf-8")
-        assert "from src.execution" not in text
-        assert "import src.execution" not in text
+        execution_import_lines = [
+            line.strip() for line in text.splitlines()
+            if "from src.execution" in line or "import src.execution" in line
+        ]
+        assert execution_import_lines == [
+            "from src.execution.customer_autobet import run_customer_autobet_pass"
+        ], f"worker.py's src.execution import(s) changed unexpectedly: {execution_import_lines}"
 
     def test_worker_job_dispatch_table_has_no_live_or_paper_job_type(self):
         text = (PROJECT_ROOT / "src" / "worker.py").read_text(encoding="utf-8")
         for forbidden in ("live_scan", "live_execute", "live-scan", "live-execute", "paper_scan", "paper-scan"):
             assert forbidden not in text.lower(), f"worker.py must not know about {forbidden!r}"
 
-    def test_worker_can_still_be_imported_without_touching_live_execution(self):
-        """Confirms the above isn't just a text-grep artifact -- the
-        module actually imports cleanly and its dispatch dict (if
-        importable without side effects) never references
-        _submit_authorized_order transitively."""
+    def test_worker_never_references_the_live_mutation_entry_point_directly(self):
+        text = (PROJECT_ROOT / "src" / "worker.py").read_text(encoding="utf-8")
+        assert "_submit_authorized_order" not in text
+
+    def test_worker_imports_only_customer_autobet_from_the_execution_package(self):
+        """Confirms the above isn't just a text-grep artifact -- walks
+        the real AST (catching the lazy, function-local import too) and
+        confirms src.execution.customer_autobet is the ONLY module
+        under src.execution.* reachable from worker.py."""
         import ast
         tree = ast.parse((PROJECT_ROOT / "src" / "worker.py").read_text(encoding="utf-8"))
         imported_modules = set()
@@ -46,8 +66,11 @@ class TestWorkerHasNoLiveExecutionAwareness:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     imported_modules.add(alias.name)
-        execution_imports = [m for m in imported_modules if m.startswith("src.execution")]
-        assert execution_imports == []
+        execution_imports = {m for m in imported_modules if m.startswith("src.execution")}
+        assert execution_imports == {"src.execution.customer_autobet"}, (
+            "worker.py must import ONLY src.execution.customer_autobet from the execution "
+            f"package, got: {sorted(execution_imports)}"
+        )
 
 
 class TestNoStandaloneScriptReferencesLiveSubmission:

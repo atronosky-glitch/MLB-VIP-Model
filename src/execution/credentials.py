@@ -47,8 +47,15 @@ def load_rsa_private_key(path: str | Path) -> rsa.RSAPrivateKey:
     return key
 
 
-def load_ed25519_private_key(path: str | Path) -> ed25519.Ed25519PrivateKey:
-    """Load a Polymarket US Ed25519 private key from *path*.
+def parse_ed25519_private_key_material(
+    raw_base64: str, *, source_label: str = "<in-memory>",
+) -> ed25519.Ed25519PrivateKey:
+    """Parse a base64-encoded Ed25519 private key already held in memory
+    (e.g. decrypted from a per-customer database row) -- the shared
+    validation core behind load_ed25519_private_key below, extracted so
+    a caller with key material that never touched disk (and must
+    never be written to disk -- see src/customer_polymarket.py) can use
+    the identical validation without a temp file.
 
     Per docs.polymarket.us: the secret key is a base64-encoded string
     that decodes to 32 raw bytes (the seed). Also accepts a 64-byte
@@ -59,19 +66,16 @@ def load_ed25519_private_key(path: str | Path) -> ed25519.Ed25519PrivateKey:
     64-byte decode's first 32 bytes derive exactly its own last 32 bytes
     as an Ed25519 public key, which only a genuine seed+pubkey pair
     would do. Any other length is rejected outright, not guessed at.
-    """
-    p = Path(path)
-    try:
-        raw = p.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        logger.error("Could not read Ed25519 private key file %s: %s", p, type(exc).__name__)
-        raise CredentialLoadError(f"Could not read Ed25519 private key file {p}: {type(exc).__name__}") from exc
 
+    *source_label* appears only in error messages, never the key
+    material itself -- e.g. "customer account cus_abc123" is fine,
+    the raw key text is not.
+    """
     try:
-        decoded = base64.b64decode(raw, validate=True)
+        decoded = base64.b64decode(raw_base64.strip(), validate=True)
     except Exception as exc:
-        logger.error("Could not base64-decode Ed25519 private key file %s: %s", p, type(exc).__name__)
-        raise CredentialLoadError(f"Could not base64-decode Ed25519 private key file {p}: {type(exc).__name__}") from exc
+        logger.error("Could not base64-decode Ed25519 private key (%s): %s", source_label, type(exc).__name__)
+        raise CredentialLoadError(f"Could not base64-decode Ed25519 private key ({source_label}): {type(exc).__name__}") from exc
 
     if len(decoded) == 32:
         return ed25519.Ed25519PrivateKey.from_private_bytes(decoded)
@@ -84,12 +88,27 @@ def load_ed25519_private_key(path: str | Path) -> ed25519.Ed25519PrivateKey:
         )
         if derived_pub != claimed_pub:
             raise CredentialLoadError(
-                f"Ed25519 private key file {p} decoded to 64 bytes, but the second half is not "
+                f"Ed25519 private key ({source_label}) decoded to 64 bytes, but the second half is not "
                 "the Ed25519 public key derived from the first half (not a valid seed+pubkey pair)"
             )
         return key
 
     raise CredentialLoadError(
-        f"Ed25519 private key file {p} decoded to {len(decoded)} bytes, expected 32 (raw seed) "
+        f"Ed25519 private key ({source_label}) decoded to {len(decoded)} bytes, expected 32 (raw seed) "
         "or 64 (seed + derived public key)"
     )
+
+
+def load_ed25519_private_key(path: str | Path) -> ed25519.Ed25519PrivateKey:
+    """Load a Polymarket US Ed25519 private key from a file at *path*
+    (the operator's own single-account credential -- see
+    parse_ed25519_private_key_material for the per-customer, in-memory
+    equivalent used by src/customer_polymarket.py)."""
+    p = Path(path)
+    try:
+        raw = p.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.error("Could not read Ed25519 private key file %s: %s", p, type(exc).__name__)
+        raise CredentialLoadError(f"Could not read Ed25519 private key file {p}: {type(exc).__name__}") from exc
+
+    return parse_ed25519_private_key_material(raw, source_label=str(p))

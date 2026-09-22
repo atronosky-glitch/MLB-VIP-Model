@@ -72,6 +72,13 @@ MLB_PROPS_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
 # ingested (no API cost), so this can run more often than the
 # credit-metered scans above without any budget concern.
 ARB_MIDDLE_SCAN_INTERVAL_MINUTES = 15
+# Per-customer Polymarket Auto-Bet (2026-09-21): re-evaluates today's
+# already-computed Stage 2B opportunities (no extra API cost) against
+# every connected, Auto-Bet-enabled customer's own credentials/risk
+# settings. Tighter than the arbitrage/middle interval above since a
+# customer's queued LIVE orders and fresh-price re-checks are more
+# time-sensitive than a display-only opportunity list.
+CUSTOMER_AUTOBET_SCAN_INTERVAL_MINUTES = 5
 
 TZ_NAME = os.environ.get("MLB_SCHEDULER_TIMEZONE", os.environ.get("MLB_TIMEZONE", "America/New_York"))
 
@@ -433,6 +440,29 @@ def _run_arb_middle_scan(conn: DB, config) -> dict:
             _deliver_new_opportunity_alerts(conn, config, results)
 
     return {"status": "success", "results": results}
+
+
+def _run_customer_autobet_scan(config) -> dict:
+    """Per-customer Polymarket Auto-Bet pass (2026-09-21) -- the real
+    production entry point for src/execution/customer_autobet.py.
+    Reuses the same qualified Stage 2B opportunities the execution-
+    layer scan already computes, then attempts execution for every
+    customer with polymarket_connected=1 AND autobet_enabled=1 under
+    THEIR OWN decrypted credentials and risk settings. PAPER vs LIVE,
+    and (for LIVE) auto-approve-under-cap vs. queue-for-manual-approval,
+    are decided per customer inside that module -- this handler is a
+    thin dispatch wrapper, matching every other job in this table.
+    run_customer_autobet_pass manages its own DB connection (mirroring
+    _run_backup/_run_morning_scan's self-contained style below), so no
+    conn is threaded through here."""
+    from src.execution.customer_autobet import run_customer_autobet_pass
+
+    try:
+        result = run_customer_autobet_pass(config)
+    except Exception:
+        logger.exception("Customer Auto-Bet pass failed")
+        return {"status": "failed"}
+    return {"status": "success", **result}
 
 
 def _release_undeliverable_claims(conn: DB, config, results: dict[str, dict]) -> None:
@@ -819,6 +849,7 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "mlb-props-scan": lambda: _run_mlb_props_scan(config),
         "nfl-props-scan": lambda: _run_nfl_props_scan(config),
         "arb-middle-scan": lambda: _run_arb_middle_scan(conn, config),
+        "customer-autobet-scan": lambda: _run_customer_autobet_scan(config),
         "grading": lambda: _run_grading(conn, config),
         "backup": lambda: _run_backup(config),
         "adaptive-learning": lambda: _run_adaptive_learning(conn, config),
@@ -1443,6 +1474,7 @@ def run_worker_persistent(config) -> None:
     last_wnba_check = 0
     last_mlb_props_check = 0
     last_arb_middle_check = 0
+    last_customer_autobet_check = 0
     last_backup_minute = -1
     last_maintenance_day = ""
 
@@ -1539,6 +1571,16 @@ def run_worker_persistent(config) -> None:
                 if job_id:
                     logger.info("Scheduled arbitrage/middle scan: %s", job_id[:8])
                 last_arb_middle_check = now
+
+            # Per-customer Polymarket Auto-Bet: reuses whatever the
+            # execution-layer scan already computes, zero extra API
+            # cost beyond that shared scan -- a plain interval check,
+            # same reasoning as the arbitrage/middle scan above.
+            if now - last_customer_autobet_check >= CUSTOMER_AUTOBET_SCAN_INTERVAL_MINUTES * 60:
+                job_id = _create_job_if_not_queued(conn, "customer-autobet-scan")
+                if job_id:
+                    logger.info("Scheduled customer Auto-Bet pass: %s", job_id[:8])
+                last_customer_autobet_check = now
 
             # Daily backup at 3:30 AM ET
             if _is_backup_time(now_local) and last_backup_minute != now_local.minute:

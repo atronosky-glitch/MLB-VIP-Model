@@ -343,6 +343,12 @@ def db_conn():
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS event_period_scores (
+            event_id TEXT NOT NULL, period INTEGER NOT NULL,
+            away_score INTEGER, home_score INTEGER, result_source TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (event_id, period)
+        );
         CREATE TABLE IF NOT EXISTS official_picks (
             recommendation_id TEXT PRIMARY KEY,
             tier TEXT NOT NULL DEFAULT 'OFFICIAL_TRACKED',
@@ -655,10 +661,12 @@ def db_conn():
             risk_snapshot         TEXT,
             status                TEXT NOT NULL DEFAULT 'READY',
             created_at            TEXT NOT NULL DEFAULT (datetime('now')),
-            expires_at            TEXT NOT NULL
+            expires_at            TEXT NOT NULL,
+            account_id            TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_prepared_live_orders_status ON prepared_live_orders(status);
         CREATE INDEX IF NOT EXISTS idx_prepared_live_orders_fingerprint ON prepared_live_orders(fingerprint);
+        CREATE INDEX IF NOT EXISTS idx_prepared_live_orders_account ON prepared_live_orders(account_id);
         CREATE TABLE IF NOT EXISTS execution_authorizations (
             approval_id             TEXT PRIMARY KEY,
             prepared_order_id       INTEGER NOT NULL,
@@ -679,8 +687,11 @@ def db_conn():
             used_at                 TEXT,
             invalidated_at          TEXT,
             invalidation_reason     TEXT,
-            created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+            account_id              TEXT,
+            approval_mode           TEXT
         );
+        CREATE INDEX IF NOT EXISTS idx_execution_authorizations_account ON execution_authorizations(account_id);
         CREATE INDEX IF NOT EXISTS idx_execution_authorizations_status ON execution_authorizations(status);
         CREATE INDEX IF NOT EXISTS idx_execution_authorizations_prepared ON execution_authorizations(prepared_order_id);
         CREATE TABLE IF NOT EXISTS live_submission_attempts (
@@ -754,9 +765,11 @@ def db_conn():
             settled_at                  TEXT,
             settlement_value            REAL,
             realized_pnl                REAL,
-            created_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+            account_id                  TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_live_positions_status ON live_positions(status);
+        CREATE INDEX IF NOT EXISTS idx_live_positions_account ON live_positions(account_id);
         CREATE INDEX IF NOT EXISTS idx_live_positions_event ON live_positions(event_id);
         CREATE TABLE IF NOT EXISTS live_execution_events (
             event_id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -875,6 +888,60 @@ def db_conn():
             unit_usd     REAL,
             state        TEXT,
             updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS customer_polymarket_accounts (
+            account_id              TEXT PRIMARY KEY,
+            polymarket_connected     INTEGER NOT NULL DEFAULT 0,
+            encrypted_api_key_id      TEXT,
+            encrypted_private_key      TEXT,
+            api_key_id_fingerprint      TEXT,
+            credential_fingerprint        TEXT,
+            connected_at                   TEXT,
+            last_verified_at                TEXT,
+            last_verify_status               TEXT,
+            last_verify_error                  TEXT,
+            autobet_enabled                     INTEGER NOT NULL DEFAULT 0,
+            live_execution                       INTEGER NOT NULL DEFAULT 0,
+            unit_size_usd                         REAL,
+            max_bet_usd                            REAL,
+            max_daily_loss_usd                      REAL,
+            max_total_exposure_usd                   REAL,
+            max_open_positions                        INTEGER,
+            min_net_ev_pct                             REAL,
+            max_price_move_pct                          REAL,
+            max_slippage_pct                             REAL,
+            auto_approve_max_usd                          REAL,
+            sport_filter                                   TEXT,
+            created_at                                      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at                                        TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS customer_autobet_executions (
+            execution_id        TEXT PRIMARY KEY,
+            account_id            TEXT NOT NULL,
+            recommendation_id       TEXT,
+            market_type               TEXT,
+            matchup                     TEXT,
+            side                          TEXT,
+            model_ev_pct                   REAL,
+            price_at_detection               REAL,
+            price_at_execution                 REAL,
+            stake_usd                            REAL,
+            filled_quantity                        REAL,
+            avg_fill_price                           REAL,
+            status                                     TEXT NOT NULL,
+            skip_reason                                  TEXT,
+            provider_order_id                              TEXT,
+            mode                                             TEXT NOT NULL,
+            approval_mode                                     TEXT,
+            created_at                                          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_cae_account ON customer_autobet_executions(account_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_cae_rec ON customer_autobet_executions(account_id, recommendation_id);
+        CREATE TABLE IF NOT EXISTS customer_autobet_claims (
+            account_id          TEXT NOT NULL,
+            recommendation_id     TEXT NOT NULL,
+            claimed_at              TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (account_id, recommendation_id)
         );
     """)
 

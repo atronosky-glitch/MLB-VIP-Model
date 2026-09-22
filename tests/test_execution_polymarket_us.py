@@ -53,6 +53,54 @@ def provider(pm_key_path):
     return PolymarketUSProvider(_FakeConfig(pm_key_path))
 
 
+class TestInMemoryConstructor:
+    """PolymarketUSProvider(api_key_id=..., private_key_b64=...) -- the
+    per-customer construction path (src/execution/customer_autobet.py),
+    key material held only in memory, never written to disk."""
+
+    def _raw_b64_key(self):
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        raw = private_key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        return base64.b64encode(raw).decode("ascii")
+
+    def test_constructs_from_in_memory_key_material(self):
+        b64_key = self._raw_b64_key()
+        provider = PolymarketUSProvider(api_key_id="cus-key-id", private_key_b64=b64_key)
+        assert provider._api_key_id == "cus-key-id"
+        # Signing actually works -- proves the key parsed correctly, not
+        # just that construction didn't raise.
+        headers = provider._signed_headers("GET", "/v1/account/balances")
+        assert headers["X-PM-Access-Key"] == "cus-key-id"
+        assert "X-PM-Signature" in headers
+
+    def test_requires_both_kwargs_together_not_just_one(self):
+        b64_key = self._raw_b64_key()
+        with pytest.raises(ValueError):
+            PolymarketUSProvider(api_key_id="cus-key-id")
+        with pytest.raises(ValueError):
+            PolymarketUSProvider(private_key_b64=b64_key)
+
+    def test_config_path_still_works_unchanged(self, provider):
+        """Regression: the original single-operator construction path
+        (PolymarketUSProvider(config)) must be completely unaffected."""
+        assert provider._api_key_id == "test-pm-key-id"
+
+    def test_invalid_in_memory_key_material_raises_credential_load_error(self):
+        from src.execution.credentials import CredentialLoadError
+        with pytest.raises(CredentialLoadError):
+            PolymarketUSProvider(api_key_id="cus-key-id", private_key_b64="not valid base64!!!")
+
+    def test_in_memory_key_never_appears_in_repr_or_str(self):
+        b64_key = self._raw_b64_key()
+        provider = PolymarketUSProvider(api_key_id="cus-key-id", private_key_b64=b64_key)
+        assert b64_key not in repr(provider)
+        assert b64_key not in str(provider.__dict__)
+
+
 class TestNoEnvBranching:
     def test_provider_has_no_env_attribute_unlike_kalshi(self, provider):
         assert not hasattr(provider, "kalshi_env")

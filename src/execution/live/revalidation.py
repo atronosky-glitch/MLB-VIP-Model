@@ -46,25 +46,56 @@ def _fail(reason: InvalidationReason, detail: str) -> RevalidationResult:
 
 def build_live_risk_context(
     conn: Any, provider: PredictionMarketProvider, event_id: str, provider_name: str, league: str,
-    recommendation_id: str, side: str,
+    recommendation_id: str, side: str, account_id: str | None = None,
 ) -> RiskContext:
     """Live bankroll comes ONLY from the provider's authenticated,
     read-only get_balance() (Stage 1) -- never assumed, never a manual
     figure. Exposure/rate figures come from the live_* tables, entirely
-    separate from paper's simulated bankroll/positions."""
+    separate from paper's simulated bankroll/positions.
+
+    account_id (2026-09-21, additive, default None): when None -- every
+    EXISTING caller, i.e. the operator's own manual Streamlit live-
+    trading flow -- behavior is completely unchanged, scoped globally
+    exactly as before. When given a customer's account_id (see
+    src/execution/customer_autobet.py), every exposure/position/
+    duplicate figure is scoped to ONLY that customer's own rows
+    (src.execution.live.customer_store) -- required for real per-
+    customer isolation, since two different customers' trades must
+    never be able to block or leak into each other's risk limits, and
+    the OPERATOR's own manual trading (account_id IS NULL) must never
+    count against any customer's limits either, or vice versa."""
     balance = provider.get_balance()
+    if account_id is None:
+        return RiskContext(
+            available_bankroll_usd=Decimal(str(balance.available)),
+            open_positions_count=store.count_open_live_positions(conn),
+            event_exposure_usd=store.sum_open_live_exposure(conn, event_id=event_id),
+            provider_exposure_usd=store.sum_open_live_exposure(conn, provider=provider_name),
+            sport_exposure_usd=store.sum_open_live_exposure(conn, league=league),
+            total_open_exposure_usd=store.sum_open_live_exposure(conn),
+            daily_wagered_usd=store.sum_daily_live_wagered(conn),
+            daily_realized_pnl_usd=store.sum_daily_live_realized_pnl(conn),
+            trades_in_last_hour=store.count_live_trades_in_last_hour(conn),
+            has_open_duplicate=store.get_open_live_position_by_fingerprint(
+                conn, recommendation_id, provider_name, side,
+            ) is not None,
+            has_settled_duplicate=False,
+        )
+
+    from src.execution.live import customer_store
     return RiskContext(
         available_bankroll_usd=Decimal(str(balance.available)),
-        open_positions_count=store.count_open_live_positions(conn),
-        event_exposure_usd=store.sum_open_live_exposure(conn, event_id=event_id),
-        provider_exposure_usd=store.sum_open_live_exposure(conn, provider=provider_name),
-        sport_exposure_usd=store.sum_open_live_exposure(conn, league=league),
-        total_open_exposure_usd=store.sum_open_live_exposure(conn),
-        daily_wagered_usd=store.sum_daily_live_wagered(conn),
-        daily_realized_pnl_usd=store.sum_daily_live_realized_pnl(conn),
-        trades_in_last_hour=store.count_live_trades_in_last_hour(conn),
-        has_open_duplicate=store.get_open_live_position_by_fingerprint(conn, recommendation_id, provider_name, side)
-        is not None,
+        open_positions_count=customer_store.count_open_live_positions_for_account(conn, account_id),
+        event_exposure_usd=customer_store.sum_open_live_exposure_for_account(conn, account_id, event_id=event_id),
+        provider_exposure_usd=customer_store.sum_open_live_exposure_for_account(conn, account_id, provider=provider_name),
+        sport_exposure_usd=customer_store.sum_open_live_exposure_for_account(conn, account_id, league=league),
+        total_open_exposure_usd=customer_store.sum_open_live_exposure_for_account(conn, account_id),
+        daily_wagered_usd=customer_store.sum_daily_live_wagered_for_account(conn, account_id),
+        daily_realized_pnl_usd=customer_store.sum_daily_live_realized_pnl_for_account(conn, account_id),
+        trades_in_last_hour=customer_store.count_live_trades_in_last_hour_for_account(conn, account_id),
+        has_open_duplicate=customer_store.get_open_live_position_by_fingerprint_for_account(
+            conn, account_id, recommendation_id, provider_name, side,
+        ) is not None,
         has_settled_duplicate=False,
     )
 
@@ -169,10 +200,17 @@ def revalidate_approved_order(
         return _fail(InvalidationReason.ORDER_QUANTITY_CHANGED, "recalculated quantity exceeds approved_quantity")
 
     # Step 11: rerun RiskEngine against a FRESH live risk context.
+    # account_id (2026-09-21): authorization["account_id"] is None for
+    # the operator's own manual trading (unaffected -- see
+    # build_live_risk_context's own docstring) and a customer's
+    # account_id for an Auto-Bet order, so this re-check is scoped to
+    # the SAME customer whose credentials/risk settings produced the
+    # approval in the first place -- never the operator's or another
+    # customer's exposure.
     league = prepared_order.get("league") or ""
     risk_context = build_live_risk_context(
         conn, provider, prepared_order["event_id"], authorization["provider"], league,
-        authorization["recommendation_id"], side,
+        authorization["recommendation_id"], side, account_id=authorization.get("account_id"),
     )
     risk_decision = RiskEngine(config).evaluate(
         approved_stake, Decimal(str(authorization.get("approved_units") or 0)),
