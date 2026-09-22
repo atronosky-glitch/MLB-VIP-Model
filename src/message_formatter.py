@@ -343,10 +343,16 @@ def _league_prefix(o: dict[str, Any]) -> str:
 def _arbitrage_line(o: dict[str, Any]) -> str:
     player = o.get("player_name") or "?"
     market = (o.get("market_type") or "?").replace("_", " ").title()
-    matchup = o.get("matchup")
+    # Always show something for the game, never silently drop it --
+    # matches src/customer_view.py's own fallback text. With
+    # src/arb_middle_scan.py's _event_context now looking matchup up by
+    # event_id alone (2026-09-22), this fallback should be rare -- but
+    # it's still reachable for a genuinely brand-new event_id with no
+    # games/historical_recommendations row at all yet.
+    matchup = o.get("matchup") or "Matchup unavailable"
     roi = o.get("guaranteed_roi_pct")
     roi_str = f"{roi:+.2f}%" if roi is not None else "?"
-    header = f"**{_league_prefix(o)}{player}** — {market}" + (f" ({matchup})" if matchup else "")
+    header = f"**{_league_prefix(o)}{player}** — {market} ({matchup})"
     return (
         f"{header}\n"
         f"  {o.get('side_a', '?')} {_american(o.get('side_a_price'))} @ **{o.get('side_a_sportsbook', '?')}**"
@@ -365,13 +371,15 @@ _VERDICT_LABELS = {
 def _middle_line(o: dict[str, Any]) -> str:
     player = o.get("player_name") or "?"
     market = (o.get("market_type") or "?").replace("_", " ").title()
-    matchup = o.get("matchup")
+    # See _arbitrage_line's matching comment -- never silently drop the
+    # game identifier.
+    matchup = o.get("matchup") or "Matchup unavailable"
     best = o.get("best_case_roi_pct")
     worst = o.get("worst_case_roi_pct")
     best_str = f"{best:+.2f}%" if best is not None else "?"
     worst_str = f"{worst:+.2f}%" if worst is not None else "?"
     verdict_label = _VERDICT_LABELS.get(o.get("verdict"), _VERDICT_LABELS["UNKNOWN"])
-    header = f"**[{verdict_label}]** {_league_prefix(o)}{player} — {market}" + (f" ({matchup})" if matchup else "")
+    header = f"**[{verdict_label}]** {_league_prefix(o)}{player} — {market} ({matchup})"
     lines = [
         header,
         f"  Over {o.get('over_line', '?')} @ **{o.get('over_sportsbook', '?')}** ({_american(o.get('over_price'))})"

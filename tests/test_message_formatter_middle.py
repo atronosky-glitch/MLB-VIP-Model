@@ -21,6 +21,15 @@ def _opp(**overrides):
     return base
 
 
+def test_missing_matchup_shows_an_explicit_fallback_not_silence():
+    """2026-09-22: previously the matchup parenthetical was just
+    dropped entirely when unknown, so a Discord message could show no
+    game identification at all. Now matches src/customer_view.py's own
+    "Matchup unavailable" fallback -- always says SOMETHING."""
+    out = format_middle_alert([_opp(matchup=None)])
+    assert "Matchup unavailable" in out
+
+
 def test_shows_not_estimable_when_hit_probability_unavailable():
     out = format_middle_alert([_opp()])
     assert "not estimable" in out.lower()

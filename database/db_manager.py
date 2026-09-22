@@ -3181,6 +3181,30 @@ def sync_arbitrage_opportunities(
     """Upsert this scan's detected arbitrage opportunities and expire any
     previously-ACTIVE one for this league not found again this pass.
 
+    The *league* column is always written from this function's own
+    *league* parameter (the scan pass that found it), deliberately
+    NEVER from opp.get("league") even though src/arb_middle_scan.py's
+    run_scan now computes a possibly-more-correct per-opportunity
+    league (via _event_context, for the real-time Discord alert text).
+    Persisting that corrected value here would be unsafe: the expire
+    query a few lines down scopes "previously-ACTIVE and not seen this
+    pass" by league = ? (this same parameter) -- if a row's stored
+    league were corrected to a DIFFERENT league mid-cycle, that
+    league's own scan pass (running later in the same worker cycle,
+    see src/worker.py's per-league loop) would see an ACTIVE row tagged
+    as ITS league that its own current_ids never produced, and
+    immediately expire it. Confirmed live: a WNBA game's odds were
+    mistagged league='MLB' at ingestion; correcting the persisted
+    league to 'WNBA' here would have caused the very next WNBA scan
+    pass in the same cycle to expire the row it had never actually
+    detected. matchup/event_start_time/sport carry no such risk (not
+    part of the expire WHERE clause) and ARE corrected on every re-sync
+    below. The real fix for a wrong league is at the ingestion source
+    (see save_player_prop_batch) -- once that's correct, a fresh
+    detection under the right league's own scan pass replaces this one
+    naturally as the old, wrongly-tagged odds age out of the freshness
+    window.
+
     Returns "new_ids": opportunity_ids ACTIVE after this sync that were
     NOT ACTIVE before it -- brand new, or one that had EXPIRED and just
     reappeared. Also stamps opp["opportunity_id"] onto each passed-in
@@ -3222,6 +3246,20 @@ def sync_arbitrage_opportunities(
                 side_b_decimal_odds = excluded.side_b_decimal_odds,
                 side_b_stake_pct = excluded.side_b_stake_pct,
                 guaranteed_roi_pct = excluded.guaranteed_roi_pct,
+                -- 2026-09-22: matchup/event_start_time/sport are now
+                -- corrected on every re-sync, not just set once at
+                -- creation -- an opportunity first detected before the
+                -- games/schedule sync caught up (matchup=None at
+                -- creation) used to stay "Matchup unavailable" forever
+                -- even once a later pass resolved it, since nothing
+                -- ever wrote the better answer back. Deliberately NOT
+                -- including "league" here -- see sync_arbitrage_opportunities's
+                -- docstring for why the persisted league must keep
+                -- coming from the scan-pass parameter, not a
+                -- per-opportunity corrected value.
+                matchup = excluded.matchup,
+                event_start_time = excluded.event_start_time,
+                sport = excluded.sport,
                 last_seen_at = excluded.last_seen_at,
                 status = 'ACTIVE',
                 discord_sent = CASE WHEN arbitrage_opportunities.status != 'ACTIVE'
@@ -3309,6 +3347,12 @@ def sync_middle_opportunities(
                 true_ev_pct = excluded.true_ev_pct,
                 verdict = excluded.verdict,
                 recommended_stake_units = excluded.recommended_stake_units,
+                -- See sync_arbitrage_opportunities's docstring for why
+                -- matchup/event_start_time/sport are corrected on every
+                -- re-sync but "league" deliberately is not.
+                matchup = excluded.matchup,
+                event_start_time = excluded.event_start_time,
+                sport = excluded.sport,
                 last_seen_at = excluded.last_seen_at,
                 status = 'ACTIVE',
                 discord_sent = CASE WHEN middle_opportunities.status != 'ACTIVE'

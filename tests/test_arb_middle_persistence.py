@@ -53,6 +53,30 @@ class TestSyncArbitrageOpportunities:
         assert len(active) == 1
         assert active[0]["guaranteed_roi_pct"] == 6.0
 
+    def test_resync_corrects_a_previously_unknown_matchup(self, db_conn):
+        """2026-09-22 fix: a re-sync of the SAME still-active opportunity
+        used to never write matchup/event_start_time/sport back to an
+        existing row -- an opportunity detected before the games/
+        schedule sync caught up (matchup=None at creation) stayed
+        "Matchup unavailable" forever even once a later pass resolved
+        it. league is deliberately NOT corrected here -- see
+        sync_arbitrage_opportunities's own docstring for why."""
+        opp = _arb_opp()
+        opp["matchup"] = None
+        opp["event_start_time"] = None
+        sync_arbitrage_opportunities(db_conn, "MLB", [opp])
+        active = get_active_arbitrage_opportunities(db_conn, "MLB")
+        assert active[0]["matchup"] is None
+
+        resolved = _arb_opp()
+        resolved["matchup"] = "Atlanta Dream @ New York Liberty"
+        resolved["event_start_time"] = "2026-09-21T23:00:00+00:00"
+        sync_arbitrage_opportunities(db_conn, "MLB", [resolved])
+        active = get_active_arbitrage_opportunities(db_conn, "MLB")
+        assert len(active) == 1
+        assert active[0]["matchup"] == "Atlanta Dream @ New York Liberty"
+        assert active[0]["event_start_time"] == "2026-09-21T23:00:00+00:00"
+
     def test_first_sync_reports_it_as_new(self, db_conn):
         result = sync_arbitrage_opportunities(db_conn, "MLB", [_arb_opp()])
         assert result["new_ids"] == ["E1|P1|k|6.5"]
@@ -114,6 +138,22 @@ class TestSyncMiddleOpportunities:
         sync_middle_opportunities(db_conn, "MLB", [_mid_opp()])
         sync_middle_opportunities(db_conn, "MLB", [])
         assert get_active_middle_opportunities(db_conn, "MLB") == []
+
+    def test_resync_corrects_a_previously_unknown_matchup(self, db_conn):
+        """See TestSyncArbitrageOpportunities's matching test -- same
+        2026-09-22 self-healing fix, for middles."""
+        opp = _mid_opp()
+        opp["matchup"] = None
+        sync_middle_opportunities(db_conn, "MLB", [opp])
+        active = get_active_middle_opportunities(db_conn, "MLB")
+        assert active[0]["matchup"] is None
+
+        resolved = _mid_opp()
+        resolved["matchup"] = "Atlanta Dream @ New York Liberty"
+        sync_middle_opportunities(db_conn, "MLB", [resolved])
+        active = get_active_middle_opportunities(db_conn, "MLB")
+        assert len(active) == 1
+        assert active[0]["matchup"] == "Atlanta Dream @ New York Liberty"
 
     def test_first_sync_reports_it_as_new(self, db_conn):
         opp = _mid_opp()

@@ -59,8 +59,24 @@ def _fetch_recent_odds_rows(conn, league: str, freshness_seconds: int) -> list[d
 _SPORT_BY_LEAGUE = {"MLB": "baseball", "NFL": "football", "WNBA": "basketball", "NCAAF": "football"}
 
 
-def _event_context(conn, league: str) -> dict[str, dict]:
-    """matchup/event_start_time/sport per event_id, for display.
+def _event_context(conn) -> dict[str, dict]:
+    """matchup/event_start_time/sport/league per event_id, for display.
+
+    Deliberately NOT scoped by league (2026-09-22 fix): event_id is a
+    globally unique key on its own, so filtering this lookup by
+    "whichever league's scan pass is asking" only ever loses
+    information. Confirmed live: a WNBA game's player_prop_odds rows
+    were mistakenly tagged league='MLB' at ingestion (a data bug, now
+    fixed at the source -- see save_player_prop_batch), so the MLB scan
+    pass picked them up and asked THIS function for event_id's matchup
+    scoped to league='MLB' -- which could never find the real
+    (league='WNBA') games/historical_recommendations row for that same
+    event_id, producing a permanent "Matchup unavailable, MLB" card for
+    an actual WNBA game. Looking up by event_id alone, across every
+    league, means a mistagged odds row still resolves to the TRUE
+    matchup/league whenever games/historical_recommendations has it --
+    defense in depth against this exact class of bug, not just a fix
+    for this one instance of it.
 
     ``games`` (keyed by event_id, populated by the odds/schedule
     pipeline independent of whether the model ever produced a
@@ -78,35 +94,39 @@ def _event_context(conn, league: str) -> dict[str, dict]:
     context: dict[str, dict] = {}
 
     game_rows = conn.execute(
-        """SELECT event_id, away_team, home_team, start_time
+        """SELECT event_id, league, away_team, home_team, start_time
            FROM games
-           WHERE league = ? AND event_id IS NOT NULL""",
-        (league,),
+           WHERE event_id IS NOT NULL"""
     ).fetchall()
     for r in game_rows:
         d = dict(r)
         away, home = d.get("away_team"), d.get("home_team")
+        row_league = d.get("league")
         context[d["event_id"]] = {
             "matchup": f"{away} @ {home}" if away and home else None,
             "event_start_time": d.get("start_time"),
-            "sport": _SPORT_BY_LEAGUE.get(league, "unknown"),
+            "sport": _SPORT_BY_LEAGUE.get(row_league, "unknown"),
+            "league": row_league,
         }
 
     rec_rows = conn.execute(
-        """SELECT event_id, matchup, event_start_time, sport
+        """SELECT event_id, matchup, event_start_time, sport, league
            FROM historical_recommendations
-           WHERE league = ? AND event_id IS NOT NULL
+           WHERE event_id IS NOT NULL
            ORDER BY created_at DESC"""
-        , (league,),
     ).fetchall()
     for r in rec_rows:
         d = dict(r)
         context.setdefault(d["event_id"], d)
-        # A games row might itself have a null matchup (missing team
-        # names) -- backfill from historical_recommendations rather
-        # than leaving it None when a better answer exists.
-        if not context[d["event_id"]].get("matchup") and d.get("matchup"):
-            context[d["event_id"]]["matchup"] = d["matchup"]
+        # A games row might itself have a null matchup/league (missing
+        # team names, or no games row at all) -- backfill from
+        # historical_recommendations rather than leaving it unknown
+        # when a better answer exists.
+        entry = context[d["event_id"]]
+        if not entry.get("matchup") and d.get("matchup"):
+            entry["matchup"] = d["matchup"]
+        if not entry.get("league") and d.get("league"):
+            entry["league"] = d["league"]
 
     return context
 
@@ -115,7 +135,7 @@ def run_scan(conn, league: str = "MLB", freshness_seconds: int = DEFAULT_FRESHNE
     """Detect and sync arbitrage/middle opportunities for *league* from
     already-ingested odds, then grade whatever's since settled."""
     rows = _fetch_recent_odds_rows(conn, league, freshness_seconds)
-    context = _event_context(conn, league)
+    context = _event_context(conn)
 
     arb_opps = find_arbitrage_opportunities(rows)
     mid_opps = find_middle_opportunities(rows)
@@ -134,19 +154,22 @@ def run_scan(conn, league: str = "MLB", freshness_seconds: int = DEFAULT_FRESHNE
         opp["matchup"] = ctx.get("matchup")
         opp["event_start_time"] = ctx.get("event_start_time")
         opp["sport"] = ctx.get("sport") or default_sport
-        # 2026-09-21: never set before -- src/message_formatter.py's
-        # _league_prefix() prefers "league" over "sport" for the Discord
-        # alert header, so every arbitrage/middle message fell back to
-        # the coarser "sport" value (or the wrong "baseball" default for
-        # any league missing from _SPORT_BY_LEAGUE below) instead of
-        # showing the real league code (MLB/NFL/WNBA/NCAAF).
-        opp["league"] = league
+        # 2026-09-22: prefer the TRUE league from games/
+        # historical_recommendations (via _event_context, now looked up
+        # by event_id alone -- see its docstring) over *league*, the
+        # scan-pass parameter -- *league* is only "which league's
+        # player_prop_odds rows did we scan," which can be WRONG if an
+        # odds row was mistagged at ingestion (a real, confirmed-live
+        # bug: a WNBA game's odds were tagged league='MLB'). Falls back
+        # to *league* only when no real source knows better, so display
+        # is never worse than before.
+        opp["league"] = ctx.get("league") or league
     for opp in mid_opps:
         ctx = context.get(opp.get("event_id"), {})
         opp["matchup"] = ctx.get("matchup")
         opp["event_start_time"] = ctx.get("event_start_time")
         opp["sport"] = ctx.get("sport") or default_sport
-        opp["league"] = league
+        opp["league"] = ctx.get("league") or league
 
     arb_sync = sync_arbitrage_opportunities(conn, league, arb_opps)
     mid_sync = sync_middle_opportunities(conn, league, mid_opps)

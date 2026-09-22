@@ -177,6 +177,70 @@ class TestEventContext:
         active = get_active_arbitrage_opportunities(db_conn, "MLB")
         assert active[0]["matchup"] is None
 
+    def test_matchup_resolved_even_when_odds_row_is_mistagged_with_the_wrong_league(self, db_conn):
+        """Real bug found live in production (2026-09-22): a WNBA game's
+        player_prop_odds rows were mistagged league='MLB' at ingestion
+        (a data bug, separately fixed at the source -- see
+        save_player_prop_batch). Because _event_context used to be
+        scoped by the SAME league the odds row was (wrongly) tagged
+        with, the MLB-scoped scan pass could never find the real
+        (league='WNBA') games row for that event_id -- producing a
+        permanent "Matchup unavailable" card for a real, identifiable
+        game. _event_context now looks up by event_id alone, so the
+        true matchup/league resolve regardless of which league's odds
+        bucket the row was mistakenly swept into."""
+        self._insert_game(db_conn, event_id="E1", league="WNBA", away="Atlanta Dream", home="New York Liberty")
+        # Odds mistagged 'MLB' -- exactly the production data shape.
+        _insert_odds_row(
+            db_conn, sportsbook="BookA", side="OVER", price=110, decimal_odds=2.10,
+            market_type="game_total_ou", player_id="GAME", player_name="Game Total",
+            market_group_key="E1|game_total|177.5", line=177.5, odd_id="o1", league="MLB",
+        )
+        _insert_odds_row(
+            db_conn, sportsbook="BookB", side="UNDER", price=100, decimal_odds=2.00,
+            market_type="game_total_ou", player_id="GAME", player_name="Game Total",
+            market_group_key="E1|game_total|177.5", line=177.5, odd_id="o2", league="MLB",
+        )
+        result = run_scan(db_conn, league="MLB", freshness_seconds=10_000_000)
+        assert result["arbitrage"]["detected"] == 1
+        # The real-time in-memory opportunity (what src/worker.py's
+        # Discord alert is built from) must show the TRUE matchup and
+        # league, not "MLB"/unavailable just because that's which scan
+        # pass happened to find the mistagged odds.
+        assert result["new_arbitrage"][0]["matchup"] == "Atlanta Dream @ New York Liberty"
+        assert result["new_arbitrage"][0]["league"] == "WNBA"
+        # The persisted row's matchup is corrected too (website display).
+        active = get_active_arbitrage_opportunities(db_conn, "MLB")
+        assert len(active) == 1
+        assert active[0]["matchup"] == "Atlanta Dream @ New York Liberty"
+
+    def test_matchup_self_heals_on_a_later_pass_once_the_games_row_appears(self, db_conn):
+        """Documented-but-previously-unimplemented behavior: an
+        opportunity detected before the games/schedule sync catches up
+        (matchup=None at creation) should pick up the real matchup on a
+        later re-sync of the SAME still-active opportunity, once
+        games has the row -- the ON CONFLICT UPDATE previously never
+        wrote matchup/event_start_time/sport back for an existing row."""
+        _insert_odds_row(
+            db_conn, sportsbook="BookA", side="OVER", price=110, decimal_odds=2.10,
+            market_type="game_total_ou", player_id="GAME", player_name="Game Total",
+            market_group_key="E1|game_total|46.0", line=46.0, odd_id="o1", league="NFL",
+        )
+        _insert_odds_row(
+            db_conn, sportsbook="BookB", side="UNDER", price=130, decimal_odds=2.30,
+            market_type="game_total_ou", player_id="GAME", player_name="Game Total",
+            market_group_key="E1|game_total|46.0", line=46.0, odd_id="o2", league="NFL",
+        )
+        first = run_scan(db_conn, league="NFL", freshness_seconds=10_000_000)
+        assert first["new_arbitrage"][0]["matchup"] is None
+
+        self._insert_game(db_conn, event_id="E1", league="NFL", away="Denver Broncos", home="Kansas City Chiefs")
+        run_scan(db_conn, league="NFL", freshness_seconds=10_000_000)
+
+        active = get_active_arbitrage_opportunities(db_conn, "NFL")
+        assert len(active) == 1
+        assert active[0]["matchup"] == "Denver Broncos @ Kansas City Chiefs"
+
 
 class TestWorkerWiring:
     def test_arb_middle_scan_registered_in_dispatch(self):
