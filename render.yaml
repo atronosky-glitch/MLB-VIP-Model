@@ -100,6 +100,18 @@ services:
         sync: false
       - key: SITE_BASE_URL
         sync: false
+      # Per-customer Polymarket Auto-Bet (src/customer_polymarket.py,
+      # src/credential_encryption.py) -- the Fernet master key used to
+      # encrypt every customer's Polymarket API Key/Private Key at
+      # rest. Generate with `python -m src.credential_encryption
+      # generate-key` and set the SAME value on both this service and
+      # mlb-vip-worker below (a customer's credentials encrypted with
+      # one key can't be decrypted with another). Must be set manually
+      # in the Render dashboard -- never committed here. Connecting a
+      # Polymarket account fails safely (a clear error, no crash) until
+      # this is set.
+      - key: POLYMARKET_CREDENTIAL_ENCRYPTION_KEY
+        sync: false
       # Deliberately NOT declared here: MLB_CUSTOMER_FREE_ACCESS. Leaving
       # it undeclared keeps today's code default ("true" -- full access,
       # no account required) in effect until the operator explicitly
@@ -150,6 +162,12 @@ services:
       # Multi-League Health tab. Must be set manually in the Render
       # dashboard (this key is not committed anywhere in the repo).
       - key: THE_ODDS_API_KEY
+        sync: false
+      # Must match mlb-vip-customer's POLYMARKET_CREDENTIAL_ENCRYPTION_KEY
+      # exactly -- this worker's customer-autobet-scan job
+      # (src/execution/customer_autobet.py) decrypts each customer's
+      # stored Polymarket credentials to execute on their behalf.
+      - key: POLYMARKET_CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: DATABASE_URL
         fromDatabase:
