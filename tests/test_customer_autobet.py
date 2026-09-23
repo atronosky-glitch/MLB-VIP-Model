@@ -343,6 +343,47 @@ class TestCrossPlatformIndependence:
         platforms = {dict(r)["platform"] for r in rows}
         assert platforms == {"polymarket_us", "kalshi"}
 
+    def test_kalshi_scanning_provider_init_failure_does_not_block_polymarket_scan(self, db_conn):
+        """Section 24's explicit requirement at the scan/dispatch level
+        (not just per-account): if Kalshi's public market feed is down
+        or its scanning provider can't even be constructed, that must
+        never prevent Polymarket's own pass in the SAME
+        run_customer_autobet_pass call from proceeding."""
+        _connect_polymarket(db_conn, "acct-1")
+        _connect_kalshi(db_conn, "acct-1")
+        _enable_autobet(db_conn, "acct-1", platform="polymarket_us")
+        _enable_autobet(db_conn, "acct-1", platform="kalshi")
+
+        real_build = autobet._build_scanning_only_provider
+
+        def _flaky_build(platform):
+            if platform == "kalshi":
+                raise RuntimeError("Kalshi market feed unreachable")
+            return real_build(platform)
+
+        gathered = [("evaluated", mock.MagicMock(), _signal(), _FakeComparison(best=_opportunity(provider="polymarket_us")))]
+
+        class _UnclosableConnProxy:
+            def __init__(self, real):
+                self._real = real
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+            def close(self):
+                pass
+
+        with mock.patch("src.execution.customer_autobet.get_connection", return_value=_UnclosableConnProxy(db_conn)), \
+             mock.patch("src.execution.cli._load_actionable_rows", return_value=[]), \
+             mock.patch("src.execution.paper_cli._gather_qualified_signals", return_value=gathered), \
+             mock.patch.object(autobet, "_build_scanning_only_provider", side_effect=_flaky_build):
+            result = autobet.run_customer_autobet_pass(_FakeRiskConfig())
+
+        assert result["accounts_considered"] == 2  # both platforms' accounts counted
+        assert result["executed"] == 1  # only Polymarket's opportunity was even gathered/dispatched
+        rows = db_conn.execute(
+            "SELECT platform FROM customer_autobet_executions WHERE status = 'EXECUTED'"
+        ).fetchall()
+        assert {dict(r)["platform"] for r in rows} == {"polymarket_us"}
+
     def test_kalshi_credential_failure_does_not_block_polymarket_execution(self, db_conn):
         """Platform failure isolation: a broken/unavailable Kalshi
         connection for this customer must never prevent their
