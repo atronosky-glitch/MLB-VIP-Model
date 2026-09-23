@@ -37,6 +37,7 @@ from src.tracker import compute_variable_stake
 from src.production_config import load_config
 import src.customer_kalshi as customer_kalshi
 import src.customer_polymarket as customer_polymarket
+from src.customer_performance import get_customer_performance
 from src.execution.customer_autobet import approve_pending_order, reject_pending_order
 from src.execution.live import customer_store as live_customer_store
 
@@ -1109,6 +1110,118 @@ def _render_polymarket_autobet(account: "Account") -> None:
         conn.close()
 
 
+def _performance_cumulative_chart(series: list[dict]) -> None:
+    """Matches _cumulative_chart's exact visual style (Arbitrage/
+    Middling track records) but in real dollars, not units -- Auto-Bet
+    P&L is actual money, not the model's abstract unit sizing."""
+    if not series:
+        st.caption("No settled Auto-Bet results yet.")
+        return
+    df = pd.DataFrame(series)
+    df["date"] = pd.to_datetime(df["date"])
+    total = df["cumulative_pnl"].iloc[-1]
+    color = "#16a34a" if total >= 0 else "#dc2626"
+    st.markdown(f"""
+    <div class="results-panel">
+      <div class="results-eyebrow">Cumulative Auto-Bet P&amp;L</div>
+      <div class="results-number" style="color:{color};">{total:+.2f}</div>
+      <div class="results-caption">Realized profit/loss from your own settled Auto-Bet executions, in order.</div>
+    </div>
+    """, unsafe_allow_html=True)
+    chart = alt.Chart(df).mark_area(
+        line={"color": color, "strokeWidth": 2.5}, color=color, opacity=0.16, interpolate="step-after",
+    ).encode(
+        x=alt.X("date:T", title=None,
+                axis=alt.Axis(grid=False, labelColor="#6b7280", tickColor="#e5e7eb", domainColor="#e5e7eb")),
+        y=alt.Y("cumulative_pnl:Q", title="Cumulative P&L ($)", stack=None,
+                axis=alt.Axis(grid=True, gridColor="#f0f1f3", labelColor="#6b7280", titleColor="#6b7280")),
+    ).configure_view(strokeWidth=0).configure(background="transparent")
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_my_performance(account: "Account") -> None:
+    """Private to the logged-in customer -- performance of bets Auto-Bet
+    actually placed for THEM, completely separate from the model's
+    public track record. See src/customer_performance.py's module
+    docstring for exactly how settlement/P&L are computed and why."""
+    st.subheader("📈 My Performance")
+    st.caption(
+        "The real, private results of YOUR OWN Auto-Bet executions -- separate from the "
+        "model's public track record shown elsewhere on this site."
+    )
+
+    fcol1, fcol2, fcol3 = st.columns(3)
+    with fcol1:
+        mode = st.radio("Mode", ["LIVE", "PAPER"], horizontal=True, key="perf_mode",
+                         help="LIVE and PAPER results are never blended -- a simulated trade is not a real result.")
+    with fcol2:
+        platform_choice = st.radio("Platform", ["All", "Kalshi", "Polymarket"], horizontal=True, key="perf_platform")
+    with fcol3:
+        range_choice = st.radio("Range", ["7D", "30D", "90D", "All"], horizontal=True, key="perf_range")
+
+    platform = {"All": None, "Kalshi": "kalshi", "Polymarket": "polymarket_us"}[platform_choice]
+    days = {"7D": 7, "30D": 30, "90D": 90, "All": None}[range_choice]
+
+    conn = get_connection()
+    try:
+        perf = get_customer_performance(conn, account.account_id, platform=platform, mode=mode, days=days)
+    finally:
+        conn.close()
+
+    if mode == "PAPER":
+        st.info("🧪 Showing PAPER (simulated) results only — not real money.")
+
+    m1, m2, m3, m4 = st.columns(4)
+    pnl = perf["realized_pnl_usd"]
+    with m1:
+        st.metric("Realized P&L", f"${pnl:+,.2f}")
+    with m2:
+        st.metric("ROI", f"{perf['roi_pct']:+.1f}%" if perf["roi_pct"] is not None else "—")
+    with m3:
+        st.metric("Total Wagered", f"${perf['total_wagered_usd']:,.2f}")
+    with m4:
+        st.metric("Win Rate", f"{perf['win_rate_pct']:.1f}%" if perf["win_rate_pct"] is not None else "—")
+
+    m5, m6, m7, m8 = st.columns(4)
+    with m5:
+        st.metric("Total Bets", perf["total_bets"])
+    with m6:
+        st.metric("Wins / Losses", f"{perf['wins']} / {perf['losses']}")
+    with m7:
+        st.metric("Open Positions", perf["open_positions"])
+    with m8:
+        st.metric("Open Exposure", f"${perf['open_exposure_usd']:,.2f}")
+
+    _performance_cumulative_chart(perf["cumulative_pnl_series"])
+
+    if platform is None and perf["total_bets"] > 0:
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            st.metric("Kalshi P&L", f"${perf['realized_pnl_by_platform']['kalshi']:+,.2f}")
+        with bcol2:
+            st.metric("Polymarket P&L", f"${perf['realized_pnl_by_platform']['polymarket_us']:+,.2f}")
+
+    st.divider()
+    st.subheader("Activity")
+    conn = get_connection()
+    try:
+        rows = get_autobet_executions(conn, account.account_id, limit=100, platform=platform)
+    finally:
+        conn.close()
+    rows = [r for r in rows if r.get("mode") == mode]
+    if not rows:
+        st.caption("No Auto-Bet activity for this filter yet.")
+        return
+    df = pd.DataFrame(rows)
+    cols = [
+        c for c in (
+            "created_at", "platform", "matchup", "side", "status", "skip_reason",
+            "stake_usd", "avg_fill_price", "model_ev_pct",
+        ) if c in df.columns
+    ]
+    st.dataframe(df[cols], use_container_width=True, hide_index=True)
+
+
 _PRIVACY_POLICY_DRAFT = """
 **DRAFT — not yet reviewed by a lawyer. Replace before relying on this for a real launch.**
 
@@ -1677,7 +1790,7 @@ if st.session_state.view_mode is not None:
 if st.session_state.view_mode is None:
     st.subheader("What do you want to see?")
     st.caption("Independent ways to use this model. Pick one.")
-    menu_cols = st.columns(4 if current_account is not None else 3)
+    menu_cols = st.columns(5 if current_account is not None else 3)
 
     with menu_cols[0]:
         with st.container(border=True):
@@ -1740,6 +1853,17 @@ if st.session_state.view_mode is None:
                     st.metric("Polymarket", _platform_label(pm_status))
                 if st.button("Manage Auto-Bet →", key="choose_autobet", use_container_width=True, type="primary"):
                     st.session_state.view_mode = "autobet"
+                    st.rerun()
+
+        with menu_cols[4]:
+            with st.container(border=True):
+                st.markdown("### 📈 My Performance")
+                st.markdown(
+                    "Your own private results from Auto-Bet -- profit/loss, ROI, and win rate "
+                    "from bets actually placed for you."
+                )
+                if st.button("View My Performance →", key="choose_performance", use_container_width=True, type="primary"):
+                    st.session_state.view_mode = "performance"
                     st.rerun()
 
 # ==================================================================
@@ -1984,6 +2108,15 @@ elif st.session_state.view_mode == "autobet":
         st.warning("Log in to manage Auto-Bet.")
     else:
         _render_polymarket_autobet(current_account)
+
+# ==================================================================
+# My Performance (account required, strictly private)
+# ==================================================================
+elif st.session_state.view_mode == "performance":
+    if current_account is None:
+        st.warning("Log in to view My Performance.")
+    else:
+        _render_my_performance(current_account)
 
 st.divider()
 features = st.columns(4)
