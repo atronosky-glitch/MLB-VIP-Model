@@ -109,6 +109,8 @@ class _FakeRiskConfig:
     require_human_approval = True
     kalshi_live_enabled = True
     polymarket_us_live_enabled = True
+    kalshi_autobet_server_max_order_usd = 100.0
+    polymarket_us_autobet_server_max_order_usd = 100.0
     approval_ttl_seconds = 30
     live_require_fresh_orderbook = True
     live_max_orderbook_age_seconds = 10
@@ -632,6 +634,50 @@ class TestLiveModeGatingAndHybridApproval:
         assert prepared["status"] == "READY"
         assert prepared["account_id"] == "acct-1"
         assert db_conn.execute("SELECT COUNT(*) AS c FROM execution_authorizations").fetchone()["c"] == 0
+
+    def test_server_hard_cap_blocks_auto_approval_even_under_the_customers_own_cap(self, db_conn):
+        """The operator's server-side ceiling is a genuine ADDITIONAL
+        gate, not a re-statement of the customer's own cap: a customer
+        could set a generous $10,000 auto_approve_max_usd, but the
+        server-wide config.polymarket_us_autobet_server_max_order_usd
+        still caps what can auto-execute unattended. No customer
+        setting can override it."""
+        account = self._live_account(
+            db_conn, auto_approve_max_usd=10000.0, unit_size_usd=10.0, max_bet_usd=10.0,
+        )
+        config = _FakeRiskConfig()
+        config.polymarket_us_autobet_server_max_order_usd = 1.0  # far below the $10 stake
+        fake_provider = _FakeLiveProvider()
+        with mock.patch.object(autobet, "_build_customer_provider", return_value=fake_provider), \
+             mock.patch.object(autobet, "execute_authorized") as mocked_exec:
+            status = autobet.process_recommendation_for_account(
+                db_conn, config, account, "polymarket_us", _opportunity(), _signal(),
+            )
+        assert status == "SKIPPED"
+        mocked_exec.assert_not_called()
+        prepared = dict(db_conn.execute("SELECT * FROM prepared_live_orders").fetchone())
+        assert prepared["status"] == "READY"  # queued for manual approval, never auto-executed
+
+    def test_server_hard_cap_does_not_block_orders_within_it(self, db_conn):
+        """A sanity check that the new gate doesn't over-block: an order
+        within BOTH the customer's cap and a generous server cap still
+        auto-executes normally."""
+        account = self._live_account(db_conn, auto_approve_max_usd=100.0, unit_size_usd=10.0, max_bet_usd=10.0)
+        config = _FakeRiskConfig()
+        config.polymarket_us_autobet_server_max_order_usd = 100.0
+        fake_provider = _FakeLiveProvider()
+        with mock.patch.object(autobet, "_build_customer_provider", return_value=fake_provider), \
+             mock.patch.object(autobet, "execute_authorized") as mocked_exec:
+            from src.execution.live.service import ExecutionResult
+            mocked_exec.return_value = ExecutionResult(outcome="SUBMITTED", reason=None, detail="filled", live_order_id=1)
+            with mock.patch.object(autobet.live_store, "get_live_order", return_value={
+                "status": "FILLED", "average_fill_price": 0.68, "quantity_filled": 14,
+                "provider_order_id": "ORDER-1",
+            }):
+                status = autobet.process_recommendation_for_account(
+                    db_conn, config, account, "polymarket_us", _opportunity(), _signal(),
+                )
+        assert status == "EXECUTED"
 
     def test_manual_approval_pending_order_is_not_reclaimed_by_a_later_pass(self, db_conn):
         account = self._live_account(db_conn, auto_approve_max_usd=1.0, unit_size_usd=10.0, max_bet_usd=10.0)

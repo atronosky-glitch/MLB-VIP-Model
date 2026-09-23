@@ -402,8 +402,21 @@ def _execute_live(
         prepared_order_id=prepared_order_id,
     )
 
+    # The customer's own auto_approve_max_usd is necessary but never
+    # sufficient for unattended execution -- it must ALSO be at/under the
+    # operator-controlled server-side hard cap (config.<platform>_autobet_
+    # server_max_order_usd), which no customer setting can override. This
+    # is a genuine additional ceiling, not a re-statement of the customer
+    # cap: an order can be under a generous customer cap yet still exceed
+    # the server-wide safety limit.
     auto_approve_cap = account.get("auto_approve_max_usd")
-    should_auto_approve = auto_approve_cap is not None and decision.approved_stake_usd <= Decimal(str(auto_approve_cap))
+    server_cap = getattr(config, f"{platform}_autobet_server_max_order_usd", None)
+    should_auto_approve = (
+        auto_approve_cap is not None
+        and server_cap is not None
+        and decision.approved_stake_usd <= Decimal(str(auto_approve_cap))
+        and decision.approved_stake_usd <= Decimal(str(server_cap))
+    )
 
     if not should_auto_approve:
         _record(

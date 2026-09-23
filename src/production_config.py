@@ -115,6 +115,18 @@ DEFAULTS = {
     "require_human_approval": True,
     "kalshi_live_enabled": False,
     "polymarket_us_live_enabled": False,
+    # Per-customer Auto-Bet (src/execution/customer_autobet.py) hard
+    # server-side ceilings, section 12 of the Kalshi+Polymarket Auto-Bet
+    # spec: a customer's own auto_approve_max_usd is necessary but never
+    # sufficient for unattended execution -- the intended stake must ALSO
+    # be at/under this operator-controlled cap, which no customer setting
+    # can override. $100 is a conservative starting default (well above
+    # the customer-facing DEFAULT_RISK_SETTINGS auto_approve_max_usd of
+    # $10 so it doesn't interfere with typical accounts, but still a real
+    # ceiling against a misconfigured or compromised customer setting) --
+    # review and adjust for your own risk tolerance before relying on it.
+    "kalshi_autobet_server_max_order_usd": 100.0,
+    "polymarket_us_autobet_server_max_order_usd": 100.0,
     "approval_ttl_seconds": 30,
     "live_order_mode": "IOC_LIMIT",
     "live_max_price_move_pct": 0.02,
@@ -210,6 +222,8 @@ ENV_MAP = {
     "REQUIRE_HUMAN_APPROVAL": "require_human_approval",
     "KALSHI_LIVE_ENABLED": "kalshi_live_enabled",
     "POLYMARKET_US_LIVE_ENABLED": "polymarket_us_live_enabled",
+    "KALSHI_AUTOBET_SERVER_MAX_ORDER_USD": "kalshi_autobet_server_max_order_usd",
+    "POLYMARKET_US_AUTOBET_SERVER_MAX_ORDER_USD": "polymarket_us_autobet_server_max_order_usd",
     "APPROVAL_TTL_SECONDS": "approval_ttl_seconds",
     "LIVE_ORDER_MODE": "live_order_mode",
     "LIVE_MAX_PRICE_MOVE_PCT": "live_max_price_move_pct",
@@ -331,6 +345,8 @@ class ProductionConfig:
     require_human_approval: bool = True
     kalshi_live_enabled: bool = False
     polymarket_us_live_enabled: bool = False
+    kalshi_autobet_server_max_order_usd: float = 100.0
+    polymarket_us_autobet_server_max_order_usd: float = 100.0
     approval_ttl_seconds: int = 30
     live_order_mode: str = "IOC_LIMIT"
     live_max_price_move_pct: float = 0.02
@@ -397,6 +413,11 @@ class ProductionConfig:
                 "polymarket_us_enabled requires both polymarket_us_api_key_id "
                 "and polymarket_us_private_key_path"
             )
+
+        if self.kalshi_autobet_server_max_order_usd <= 0:
+            errors.append("kalshi_autobet_server_max_order_usd must be > 0")
+        if self.polymarket_us_autobet_server_max_order_usd <= 0:
+            errors.append("polymarket_us_autobet_server_max_order_usd must be > 0")
 
         if not 0.0 <= self.min_market_match_confidence <= 1.0:
             errors.append("min_market_match_confidence must be between 0 and 1")
@@ -677,6 +698,11 @@ def create_env_example() -> str:
         "# REQUIRE_HUMAN_APPROVAL=true",
         "# KALSHI_LIVE_ENABLED=false",
         "# POLYMARKET_US_LIVE_ENABLED=false",
+        "# Per-customer Auto-Bet hard server-side order-size ceilings -- no",
+        "# customer setting can exceed these regardless of their own",
+        "# auto_approve_max_usd. Review before launch.",
+        "# KALSHI_AUTOBET_SERVER_MAX_ORDER_USD=100.0",
+        "# POLYMARKET_US_AUTOBET_SERVER_MAX_ORDER_USD=100.0",
         "# APPROVAL_TTL_SECONDS=30",
         "# LIVE_ORDER_MODE=IOC_LIMIT",
         "# LIVE_MAX_PRICE_MOVE_PCT=0.02",

@@ -259,6 +259,52 @@ class TestExecutionLayerConfig:
         assert "POLYMARKET_US_PRIVATE_KEY_PATH" in content
 
 
+class TestAutobetServerHardCaps:
+    """Section 12 of the Kalshi+Polymarket Auto-Bet spec: an
+    operator-controlled ceiling on unattended per-order size that no
+    customer setting can override (src/execution/customer_autobet.py's
+    auto-approve decision)."""
+
+    def test_defaults_are_conservative_but_not_zero(self):
+        cfg = ProductionConfig()
+        assert cfg.kalshi_autobet_server_max_order_usd == 100.0
+        assert cfg.polymarket_us_autobet_server_max_order_usd == 100.0
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("KALSHI_AUTOBET_SERVER_MAX_ORDER_USD", "50")
+        monkeypatch.setenv("POLYMARKET_US_AUTOBET_SERVER_MAX_ORDER_USD", "25")
+        cfg = load_config()
+        assert cfg.kalshi_autobet_server_max_order_usd == 50.0
+        assert cfg.polymarket_us_autobet_server_max_order_usd == 25.0
+
+    def test_validate_rejects_zero_or_negative(self):
+        cfg = ProductionConfig(api_key="sk_test_12345678", kalshi_autobet_server_max_order_usd=0)
+        errors = cfg.validate()
+        assert any("kalshi_autobet_server_max_order_usd" in e for e in errors)
+
+        cfg2 = ProductionConfig(api_key="sk_test_12345678", polymarket_us_autobet_server_max_order_usd=-5)
+        errors2 = cfg2.validate()
+        assert any("polymarket_us_autobet_server_max_order_usd" in e for e in errors2)
+
+    def test_validate_passes_a_reasonable_positive_value(self):
+        cfg = ProductionConfig(
+            api_key="sk_test_12345678", kalshi_autobet_server_max_order_usd=250.0,
+            polymarket_us_autobet_server_max_order_usd=250.0,
+        )
+        errors = cfg.validate()
+        assert not any("autobet_server_max_order_usd" in e for e in errors)
+
+    def test_not_a_secret_field(self):
+        """A dollar ceiling isn't a credential -- must never be redacted."""
+        assert "kalshi_autobet_server_max_order_usd" not in SECRET_FIELDS
+        assert "polymarket_us_autobet_server_max_order_usd" not in SECRET_FIELDS
+
+    def test_env_example_mentions_both_caps(self):
+        content = create_env_example()
+        assert "KALSHI_AUTOBET_SERVER_MAX_ORDER_USD" in content
+        assert "POLYMARKET_US_AUTOBET_SERVER_MAX_ORDER_USD" in content
+
+
 class TestMarketMatchingConfig:
     """Stage 2 (2026-09-12): min_market_match_confidence gates
     src/execution/matching.py's find_best_match()."""
