@@ -933,15 +933,50 @@ def db_conn():
             provider_order_id                              TEXT,
             mode                                             TEXT NOT NULL,
             approval_mode                                     TEXT,
+            platform                                             TEXT,
             created_at                                          TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_cae_account ON customer_autobet_executions(account_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_cae_rec ON customer_autobet_executions(account_id, recommendation_id);
+        CREATE INDEX IF NOT EXISTS idx_cae_platform ON customer_autobet_executions(account_id, platform, created_at);
         CREATE TABLE IF NOT EXISTS customer_autobet_claims (
             account_id          TEXT NOT NULL,
             recommendation_id     TEXT NOT NULL,
             claimed_at              TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (account_id, recommendation_id)
+        );
+        CREATE TABLE IF NOT EXISTS customer_autobet_platform_claims (
+            account_id          TEXT NOT NULL,
+            recommendation_id     TEXT NOT NULL,
+            platform                TEXT NOT NULL,
+            claimed_at                TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (account_id, recommendation_id, platform)
+        );
+        CREATE TABLE IF NOT EXISTS customer_kalshi_accounts (
+            account_id              TEXT PRIMARY KEY,
+            kalshi_connected         INTEGER NOT NULL DEFAULT 0,
+            encrypted_api_key_id      TEXT,
+            encrypted_private_key      TEXT,
+            api_key_id_fingerprint      TEXT,
+            credential_fingerprint        TEXT,
+            connected_at                   TEXT,
+            last_verified_at                TEXT,
+            last_verify_status               TEXT,
+            last_verify_error                  TEXT,
+            autobet_enabled                     INTEGER NOT NULL DEFAULT 0,
+            live_execution                       INTEGER NOT NULL DEFAULT 0,
+            unit_size_usd                         REAL,
+            max_bet_usd                            REAL,
+            max_daily_loss_usd                      REAL,
+            max_total_exposure_usd                   REAL,
+            max_open_positions                        INTEGER,
+            min_net_ev_pct                             REAL,
+            max_price_move_pct                          REAL,
+            max_slippage_pct                             REAL,
+            auto_approve_max_usd                          REAL,
+            sport_filter                                   TEXT,
+            created_at                                      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at                                        TEXT NOT NULL DEFAULT (datetime('now'))
         );
     """)
 

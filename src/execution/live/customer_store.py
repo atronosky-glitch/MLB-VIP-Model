@@ -138,16 +138,28 @@ def count_live_trades_in_last_hour_for_account(conn: Any, account_id: str) -> in
     return dict(row)["c"]
 
 
-def get_ready_prepared_orders_for_account(conn: Any, account_id: str) -> list[dict]:
+def get_ready_prepared_orders_for_account(conn: Any, account_id: str, platform: str | None = None) -> list[dict]:
     """Powers the customer-facing manual-approval queue (over-cap LIVE
     orders src.execution.customer_autobet's hybrid design queues rather
     than auto-submits) -- READY orders tagged to THIS account only,
-    newest first."""
-    rows = conn.execute(
-        "SELECT * FROM prepared_live_orders WHERE account_id = ? AND status = 'READY' "
-        "ORDER BY created_at DESC",
-        (account_id,),
-    ).fetchall()
+    newest first. *platform* ("kalshi"/"polymarket_us") filters to one
+    platform's own queue when given -- the UI shows Kalshi and
+    Polymarket's pending-approval queues as separate sections, so a
+    Kalshi order must never appear in the Polymarket card or vice
+    versa. prepared_live_orders.provider already carries this value
+    (Stage 4's own provider column), so no new column is needed."""
+    if platform is not None:
+        rows = conn.execute(
+            "SELECT * FROM prepared_live_orders WHERE account_id = ? AND provider = ? AND status = 'READY' "
+            "ORDER BY created_at DESC",
+            (account_id, platform),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM prepared_live_orders WHERE account_id = ? AND status = 'READY' "
+            "ORDER BY created_at DESC",
+            (account_id,),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

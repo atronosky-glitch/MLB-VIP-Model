@@ -27,8 +27,36 @@ class CredentialLoadError(RuntimeError):
     """
 
 
+def parse_rsa_private_key_material(
+    raw_pem: str | bytes, *, source_label: str = "<in-memory>",
+) -> rsa.RSAPrivateKey:
+    """Parse a PEM-encoded RSA private key already held in memory (e.g.
+    decrypted from a per-customer database row) -- the shared
+    validation core behind load_rsa_private_key below, extracted so a
+    caller with key material that never touched disk (and must never
+    be written to disk -- see src/customer_kalshi.py) can use the
+    identical validation without a temp file. Mirrors
+    parse_ed25519_private_key_material's split for the same reason.
+
+    *source_label* appears only in error messages, never the key
+    material itself."""
+    data = raw_pem.encode("utf-8") if isinstance(raw_pem, str) else raw_pem
+    try:
+        key = serialization.load_pem_private_key(data, password=None)
+    except Exception as exc:
+        logger.error("Could not parse RSA private key (%s): %s", source_label, type(exc).__name__)
+        raise CredentialLoadError(f"Could not parse RSA private key ({source_label}): {type(exc).__name__}") from exc
+
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise CredentialLoadError(f"RSA private key ({source_label}) does not contain an RSA private key")
+    return key
+
+
 def load_rsa_private_key(path: str | Path) -> rsa.RSAPrivateKey:
-    """Load a Kalshi RSA private key from a PEM file at *path*."""
+    """Load a Kalshi RSA private key from a PEM file at *path* (the
+    operator's own single-account credential -- see
+    parse_rsa_private_key_material for the per-customer, in-memory
+    equivalent used by src/customer_kalshi.py)."""
     p = Path(path)
     try:
         data = p.read_bytes()
@@ -36,15 +64,7 @@ def load_rsa_private_key(path: str | Path) -> rsa.RSAPrivateKey:
         logger.error("Could not read RSA private key file %s: %s", p, type(exc).__name__)
         raise CredentialLoadError(f"Could not read RSA private key file {p}: {type(exc).__name__}") from exc
 
-    try:
-        key = serialization.load_pem_private_key(data, password=None)
-    except Exception as exc:
-        logger.error("Could not parse RSA private key file %s: %s", p, type(exc).__name__)
-        raise CredentialLoadError(f"Could not parse RSA private key file {p}: {type(exc).__name__}") from exc
-
-    if not isinstance(key, rsa.RSAPrivateKey):
-        raise CredentialLoadError(f"{p} does not contain an RSA private key")
-    return key
+    return parse_rsa_private_key_material(data, source_label=str(p))
 
 
 def parse_ed25519_private_key_material(

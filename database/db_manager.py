@@ -1917,6 +1917,79 @@ def init_db(db_path: str | None = None) -> None:
         )
     """)
 
+    # 2026-09-23: per-customer Kalshi Auto-Bet -- exact mirror of
+    # customer_polymarket_accounts above, adapted for Kalshi's RSA/PEM
+    # credential shape (src/execution/kalshi.py) instead of Polymarket's
+    # Ed25519/base64. Kept as a SEPARATE table (not a generalized
+    # "customer_platform_accounts") because each platform's risk
+    # settings are fully independent per the product design -- a
+    # customer's Kalshi auto_approve_max_usd has nothing to do with
+    # their Polymarket one, and keeping them as distinct rows/columns
+    # avoids a nullable-per-platform-field mess in one shared table.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS customer_kalshi_accounts (
+            account_id              TEXT PRIMARY KEY,
+            kalshi_connected         INTEGER NOT NULL DEFAULT 0,
+            encrypted_api_key_id      TEXT,
+            encrypted_private_key      TEXT,
+            api_key_id_fingerprint      TEXT,
+            credential_fingerprint        TEXT,
+            connected_at                   TEXT,
+            last_verified_at                TEXT,
+            last_verify_status               TEXT,
+            last_verify_error                  TEXT,
+            autobet_enabled                     INTEGER NOT NULL DEFAULT 0,
+            live_execution                       INTEGER NOT NULL DEFAULT 0,
+            unit_size_usd                         REAL,
+            max_bet_usd                            REAL,
+            max_daily_loss_usd                      REAL,
+            max_total_exposure_usd                   REAL,
+            max_open_positions                        INTEGER,
+            min_net_ev_pct                             REAL,
+            max_price_move_pct                          REAL,
+            max_slippage_pct                             REAL,
+            auto_approve_max_usd                          REAL,
+            sport_filter                                   TEXT,
+            created_at                                      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at                                        TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Platform-aware replacement for customer_autobet_claims above.
+    # 2026-09-23: a customer with BOTH Kalshi and Polymarket enabled must
+    # be able to execute the SAME recommendation independently on each
+    # platform (a real, intended outcome per the product design) -- the
+    # old 2-column (account_id, recommendation_id) primary key can't
+    # express that (claiming for Kalshi would block Polymarket's own,
+    # separate claim for the exact same pair). Changing that table's
+    # primary key in place isn't a safe additive migration, so this is a
+    # new table with the 3-column key instead; the old table is left in
+    # place unused rather than dropped (it holds no durable/historical
+    # data -- rows are deleted the moment a claim is released -- so an
+    # unused empty table carries no real cost, and dropping it isn't
+    # worth the additional migration risk).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS customer_autobet_platform_claims (
+            account_id          TEXT NOT NULL,
+            recommendation_id     TEXT NOT NULL,
+            platform                TEXT NOT NULL,
+            claimed_at                TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (account_id, recommendation_id, platform)
+        )
+    """)
+
+    # Additive: customer_autobet_executions predates multi-platform
+    # support and has no platform column at all -- every existing row is
+    # implicitly Polymarket (the only platform that existed when those
+    # rows were written). NULL is treated as "polymarket_us" by every
+    # read path for backward compatibility (see get_autobet_executions/
+    # has_executed_autobet_for_recommendation) rather than backfilling
+    # historical rows.
+    _add_columns_if_missing(conn, "customer_autobet_executions", [("platform", "TEXT")])
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cae_platform ON customer_autobet_executions(account_id, platform, created_at)"
+    )
+
     try:
         diagnostic = verify_required_schema(conn)
         conn.commit()
@@ -2213,38 +2286,42 @@ def get_bet_links(conn: DB, keys: list[tuple]) -> dict[tuple, str]:
 # attempt releases its claim so the SAME pair is retried on a later
 # scan; a successful one never does.
 
-def claim_autobet_recommendation(conn: DB, account_id: str, recommendation_id: str) -> bool:
-    """Atomically claim this (account_id, recommendation_id) pair for
-    execution. Returns True if this call won the claim, False if it
-    was already claimed (by a prior successful or in-flight attempt)."""
+def claim_autobet_recommendation(conn: DB, account_id: str, recommendation_id: str, platform: str) -> bool:
+    """Atomically claim this (account_id, recommendation_id, platform)
+    triple for execution. Returns True if this call won the claim,
+    False if it was already claimed (by a prior successful or
+    in-flight attempt). *platform* ("kalshi"/"polymarket_us") means the
+    SAME recommendation can be independently claimed and executed on
+    each platform for a customer who has both enabled -- see
+    customer_autobet_platform_claims's schema comment in init_db."""
     now = datetime.now(timezone.utc).isoformat()
     result = conn.execute(
-        """INSERT INTO customer_autobet_claims (account_id, recommendation_id, claimed_at)
-           VALUES (?, ?, ?)
-           ON CONFLICT (account_id, recommendation_id) DO NOTHING""",
-        (account_id, recommendation_id, now),
+        """INSERT INTO customer_autobet_platform_claims (account_id, recommendation_id, platform, claimed_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (account_id, recommendation_id, platform) DO NOTHING""",
+        (account_id, recommendation_id, platform, now),
     )
     conn.commit()
     return bool(result.rowcount)
 
 
-def release_autobet_claim(conn: DB, account_id: str, recommendation_id: str) -> None:
+def release_autobet_claim(conn: DB, account_id: str, recommendation_id: str, platform: str) -> None:
     """Undo a claim from claim_autobet_recommendation after a failed
-    attempt, so the pair is NOT left permanently marked "already
+    attempt, so the triple is NOT left permanently marked "already
     executed" and can be retried on a later scan."""
     conn.execute(
-        "DELETE FROM customer_autobet_claims WHERE account_id = ? AND recommendation_id = ?",
-        (account_id, recommendation_id),
+        "DELETE FROM customer_autobet_platform_claims WHERE account_id = ? AND recommendation_id = ? AND platform = ?",
+        (account_id, recommendation_id, platform),
     )
     conn.commit()
 
 
-def is_autobet_recommendation_claimed(conn: DB, account_id: str, recommendation_id: str) -> bool:
+def is_autobet_recommendation_claimed(conn: DB, account_id: str, recommendation_id: str, platform: str) -> bool:
     """Read-only check, for a caller that wants to know without
     claiming (e.g. a dashboard or a pre-flight duplicate check)."""
     row = conn.execute(
-        "SELECT 1 FROM customer_autobet_claims WHERE account_id = ? AND recommendation_id = ?",
-        (account_id, recommendation_id),
+        "SELECT 1 FROM customer_autobet_platform_claims WHERE account_id = ? AND recommendation_id = ? AND platform = ?",
+        (account_id, recommendation_id, platform),
     ).fetchone()
     return row is not None
 
@@ -2254,15 +2331,18 @@ def save_autobet_execution(conn: DB, execution: dict) -> str:
     (EXECUTED/PARTIALLY_FILLED/SKIPPED/FAILED/CANCELLED), never only
     successes, so the customer's activity table always shows why a
     qualifying pick did or didn't result in a bet. Returns the new
-    execution_id."""
+    execution_id. execution["platform"] should always be set by new
+    callers ("kalshi"/"polymarket_us") -- NULL is only ever produced by
+    pre-multi-platform historical rows (see the platform column's
+    migration comment in init_db)."""
     execution_id = execution.get("execution_id") or str(uuid.uuid4())
     conn.execute(
         """INSERT INTO customer_autobet_executions (
                execution_id, account_id, recommendation_id, market_type, matchup, side,
                model_ev_pct, price_at_detection, price_at_execution, stake_usd,
                filled_quantity, avg_fill_price, status, skip_reason, provider_order_id,
-               mode, approval_mode
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               mode, approval_mode, platform
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             execution_id, execution["account_id"], execution.get("recommendation_id"),
             execution.get("market_type"), execution.get("matchup"), execution.get("side"),
@@ -2270,35 +2350,64 @@ def save_autobet_execution(conn: DB, execution: dict) -> str:
             execution.get("price_at_execution"), execution.get("stake_usd"),
             execution.get("filled_quantity"), execution.get("avg_fill_price"),
             execution["status"], execution.get("skip_reason"), execution.get("provider_order_id"),
-            execution["mode"], execution.get("approval_mode"),
+            execution["mode"], execution.get("approval_mode"), execution.get("platform"),
         ),
     )
     conn.commit()
     return execution_id
 
 
-def get_autobet_executions(conn: DB, account_id: str, limit: int = 50) -> list[dict]:
+def get_autobet_executions(conn: DB, account_id: str, limit: int = 50, platform: str | None = None) -> list[dict]:
     """Most recent Auto-Bet activity for one customer, newest first --
-    powers the customer-facing activity table."""
-    rows = conn.execute(
-        """SELECT * FROM customer_autobet_executions
-           WHERE account_id = ? ORDER BY created_at DESC LIMIT ?""",
-        (account_id, limit),
-    ).fetchall()
+    powers the customer-facing activity table and My Performance page.
+    *platform* filters to one platform when given; pass None for every
+    platform combined. A NULL-platform historical row is only ever
+    reachable via platform=None (or the explicit "polymarket_us" filter
+    below), matching every row's real origin before Kalshi support
+    existed."""
+    if platform == "polymarket_us":
+        rows = conn.execute(
+            """SELECT * FROM customer_autobet_executions
+               WHERE account_id = ? AND (platform = ? OR platform IS NULL)
+               ORDER BY created_at DESC LIMIT ?""",
+            (account_id, platform, limit),
+        ).fetchall()
+    elif platform is not None:
+        rows = conn.execute(
+            """SELECT * FROM customer_autobet_executions
+               WHERE account_id = ? AND platform = ? ORDER BY created_at DESC LIMIT ?""",
+            (account_id, platform, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM customer_autobet_executions
+               WHERE account_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (account_id, limit),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
-def has_executed_autobet_for_recommendation(conn: DB, account_id: str, recommendation_id: str) -> bool:
+def has_executed_autobet_for_recommendation(conn: DB, account_id: str, recommendation_id: str, platform: str) -> bool:
     """True if this customer already has an EXECUTED or
-    PARTIALLY_FILLED row for this exact recommendation -- the
-    authoritative "would this be a duplicate bet" check, independent of
-    (and in addition to) the claim table above."""
-    row = conn.execute(
-        """SELECT 1 FROM customer_autobet_executions
-           WHERE account_id = ? AND recommendation_id = ?
-             AND status IN ('EXECUTED', 'PARTIALLY_FILLED') LIMIT 1""",
-        (account_id, recommendation_id),
-    ).fetchone()
+    PARTIALLY_FILLED row for this exact recommendation ON THIS
+    PLATFORM -- the authoritative "would this be a duplicate bet"
+    check, independent of (and in addition to) the claim table above.
+    Platform-scoped so the same recommendation can still execute once
+    on Kalshi AND once on Polymarket for a customer with both enabled."""
+    if platform == "polymarket_us":
+        row = conn.execute(
+            """SELECT 1 FROM customer_autobet_executions
+               WHERE account_id = ? AND recommendation_id = ? AND (platform = ? OR platform IS NULL)
+                 AND status IN ('EXECUTED', 'PARTIALLY_FILLED') LIMIT 1""",
+            (account_id, recommendation_id, platform),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT 1 FROM customer_autobet_executions
+               WHERE account_id = ? AND recommendation_id = ? AND platform = ?
+                 AND status IN ('EXECUTED', 'PARTIALLY_FILLED') LIMIT 1""",
+            (account_id, recommendation_id, platform),
+        ).fetchone()
     return row is not None
 
 

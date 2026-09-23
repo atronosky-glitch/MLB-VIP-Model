@@ -49,7 +49,7 @@ from src.execution.base import (
     NormalizedOrderBook, Orderbook, OrderLevel,
     PredictionMarketProvider, ProviderCapabilities, RawGameEvent, mask_secret,
 )
-from src.execution.credentials import load_rsa_private_key
+from src.execution.credentials import load_rsa_private_key, parse_rsa_private_key_material
 from src.execution.signing import build_signed_message, sign_rsa_pss
 
 logger = logging.getLogger(__name__)
@@ -114,18 +114,37 @@ def build_kalshi_order_payload(
 class KalshiProvider(PredictionMarketProvider):
     name = "kalshi"
 
-    def __init__(self, config: Any) -> None:
-        env = config.kalshi_env
-        if env not in _BASE_URLS:
-            raise ValueError(f"kalshi_env must be 'demo' or 'production', got {env!r}")
-        self._base_url = _BASE_URLS[env]
-        self._api_key_id = config.kalshi_api_key_id
-        self._private_key = load_rsa_private_key(config.kalshi_private_key_path)
+    def __init__(
+        self, config: Any = None, *,
+        api_key_id: str | None = None, private_key_pem: str | None = None,
+    ) -> None:
+        """Two mutually-exclusive construction modes, mirroring
+        PolymarketUSProvider: `KalshiProvider(config)` (the operator's
+        own single global account, unchanged) or
+        `KalshiProvider(api_key_id=..., private_key_pem=...)` (a
+        per-customer account, credentials decrypted in memory --
+        see src/customer_kalshi.py / src/execution/customer_autobet.py).
+        A per-customer instance always targets the PRODUCTION API --
+        demo/production is an operator-level testing concern
+        (config.kalshi_env), not something a real customer's own
+        account would ever need to choose."""
+        if api_key_id is not None or private_key_pem is not None:
+            if not (api_key_id and private_key_pem):
+                raise ValueError("api_key_id and private_key_pem must both be given together")
+            self._base_url = _BASE_URLS["production"]
+            self._api_key_id = api_key_id
+            self._private_key = parse_rsa_private_key_material(
+                private_key_pem, source_label="in-memory customer credential",
+            )
+        else:
+            env = config.kalshi_env
+            if env not in _BASE_URLS:
+                raise ValueError(f"kalshi_env must be 'demo' or 'production', got {env!r}")
+            self._base_url = _BASE_URLS[env]
+            self._api_key_id = config.kalshi_api_key_id
+            self._private_key = load_rsa_private_key(config.kalshi_private_key_path)
         self.session = requests.Session()
-        logger.info(
-            "KalshiProvider initialized: env=%s key_id=%s",
-            env, mask_secret(self._api_key_id),
-        )
+        logger.info("KalshiProvider initialized: key_id=%s", mask_secret(self._api_key_id))
 
     # -- signing -----------------------------------------------------
 

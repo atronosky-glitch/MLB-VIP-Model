@@ -18,15 +18,15 @@ from src.execution.live import customer_store
 from src.execution.live.revalidation import build_live_risk_context
 
 
-def _insert_prepared_order(conn, prepared_order_id, account_id, league="MLB"):
+def _insert_prepared_order(conn, prepared_order_id, account_id, league="MLB", provider="polymarket_us", status="READY"):
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """INSERT INTO prepared_live_orders (
                prepared_order_id, recommendation_id, provider, provider_market_id, league,
                event, event_id, side, fingerprint, status, created_at, expires_at, account_id
-           ) VALUES (?, 'rec-1', 'polymarket_us', 'mkt-1', ?, 'E', 'evt-1', 'YES', 'fp-1',
-                     'READY', ?, ?, ?)""",
-        (prepared_order_id, league, now, now, account_id),
+           ) VALUES (?, 'rec-1', ?, 'mkt-1', ?, 'E', 'evt-1', 'YES', ?,
+                     ?, ?, ?, ?)""",
+        (prepared_order_id, provider, league, f"fp-{prepared_order_id}", status, now, now, account_id),
     )
     conn.commit()
 
@@ -177,3 +177,35 @@ class TestBuildLiveRiskContextAccountScoping:
             db_conn, provider, "evt-1", "polymarket_us", "MLB", "rec-1", "YES", account_id="acct-A",
         )
         assert ctx.available_bankroll_usd == Decimal("42.0")
+
+
+class TestGetReadyPreparedOrdersForAccount:
+    """Powers the customer-facing manual-approval queue -- must show
+    only THIS account's own READY orders, and (2026-09-23) support
+    filtering to one platform so Kalshi and Polymarket render as
+    separate queue sections."""
+
+    def test_returns_only_this_accounts_ready_orders(self, db_conn):
+        _insert_prepared_order(db_conn, 1, "acct-A")
+        _insert_prepared_order(db_conn, 2, "acct-B")
+        rows = customer_store.get_ready_prepared_orders_for_account(db_conn, "acct-A")
+        assert [r["prepared_order_id"] for r in rows] == [1]
+
+    def test_excludes_non_ready_orders(self, db_conn):
+        _insert_prepared_order(db_conn, 1, "acct-A", status="APPROVED")
+        rows = customer_store.get_ready_prepared_orders_for_account(db_conn, "acct-A")
+        assert rows == []
+
+    def test_no_platform_filter_returns_both_platforms(self, db_conn):
+        _insert_prepared_order(db_conn, 1, "acct-A", provider="kalshi")
+        _insert_prepared_order(db_conn, 2, "acct-A", provider="polymarket_us")
+        rows = customer_store.get_ready_prepared_orders_for_account(db_conn, "acct-A")
+        assert {r["prepared_order_id"] for r in rows} == {1, 2}
+
+    def test_platform_filter_returns_only_that_platform(self, db_conn):
+        _insert_prepared_order(db_conn, 1, "acct-A", provider="kalshi")
+        _insert_prepared_order(db_conn, 2, "acct-A", provider="polymarket_us")
+        kalshi_rows = customer_store.get_ready_prepared_orders_for_account(db_conn, "acct-A", platform="kalshi")
+        assert [r["prepared_order_id"] for r in kalshi_rows] == [1]
+        poly_rows = customer_store.get_ready_prepared_orders_for_account(db_conn, "acct-A", platform="polymarket_us")
+        assert [r["prepared_order_id"] for r in poly_rows] == [2]

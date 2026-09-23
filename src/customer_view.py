@@ -35,6 +35,7 @@ from src.sportsbook_picker import render_sportsbook_picker
 from src.odds_api_client import TRACKED_BOOKMAKERS
 from src.tracker import compute_variable_stake
 from src.production_config import load_config
+import src.customer_kalshi as customer_kalshi
 import src.customer_polymarket as customer_polymarket
 from src.execution.customer_autobet import approve_pending_order, reject_pending_order
 from src.execution.live import customer_store as live_customer_store
@@ -835,102 +836,129 @@ def _handle_email_verification_query_param() -> None:
     st.query_params.pop("verify", None)
 
 
-_AUTOBET_CONFIRM_TEXT = (
+_AUTOBET_CONFIRM_TEXT_TMPL = (
     "By enabling Auto-Bet, eligible model picks may be automatically submitted using your "
-    "connected Polymarket account, subject to your configured limits above."
+    "connected {label} account, subject to your configured limits above."
 )
 
+# One small registry so every render function below works identically
+# for Kalshi and Polymarket -- the two platforms' customer_*.py modules
+# export the identical function/field shape on purpose (see
+# src/customer_kalshi.py's module docstring), so nothing here needs a
+# platform-specific branch beyond this lookup.
+_AUTOBET_PLATFORMS = {
+    "polymarket_us": {
+        "module": customer_polymarket, "label": "Polymarket", "key_prefix": "pm",
+        "api_key_label": "Polymarket API Key", "private_key_label": "Polymarket Private Key (base64)",
+    },
+    "kalshi": {
+        "module": customer_kalshi, "label": "Kalshi", "key_prefix": "ks",
+        "api_key_label": "Kalshi API Key ID", "private_key_label": "Kalshi Private Key (PEM)",
+    },
+}
 
-def _render_autobet_connection_form(conn, account: "Account", status) -> None:
+
+def _render_autobet_connection_form(conn, account: "Account", platform: str, status) -> None:
     """Connect / Replace Credentials / Disconnect. Never redisplays a
-    real secret -- only the masked fingerprint status already carries
-    (src.customer_polymarket.get_status)."""
+    real secret -- only the masked fingerprint status already carries."""
+    p = _AUTOBET_PLATFORMS[platform]
+    module, label, kp = p["module"], p["label"], p["key_prefix"]
     if status.connected:
         st.success(f"Connected — API Key: {status.api_key_id_display}")
         if status.last_verified_at:
             st.caption(f"Last verified: {status.last_verified_at} ({status.last_verify_status})")
         with st.expander("Replace credentials"):
-            with st.form("polymarket_replace_form"):
-                api_key_id = st.text_input("Polymarket API Key", key="pm_replace_api_key")
-                private_key = st.text_input("Polymarket Private Key (base64)", type="password", key="pm_replace_priv_key")
+            with st.form(f"{kp}_replace_form"):
+                api_key_id = st.text_input(p["api_key_label"], key=f"{kp}_replace_api_key")
+                private_key = st.text_input(p["private_key_label"], type="password", key=f"{kp}_replace_priv_key")
                 submitted = st.form_submit_button("Connect & Verify", type="primary")
             if submitted:
-                ok, message = customer_polymarket.connect_account(conn, account.account_id, api_key_id, private_key)
+                ok, message = module.connect_account(conn, account.account_id, api_key_id, private_key)
                 (st.success if ok else st.error)(message)
                 if ok:
                     st.rerun()
-        if st.button("Disconnect Polymarket account", key="pm_disconnect"):
-            st.session_state["_pm_confirm_disconnect"] = True
-        if st.session_state.get("_pm_confirm_disconnect"):
+        if st.button(f"Disconnect {label} account", key=f"{kp}_disconnect"):
+            st.session_state[f"_{kp}_confirm_disconnect"] = True
+        if st.session_state.get(f"_{kp}_confirm_disconnect"):
             st.warning(
                 "This stops Auto-Bet and permanently removes your saved credentials from our "
                 "servers. Existing open positions are not affected."
             )
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("Yes, disconnect", key="pm_disconnect_confirm", type="primary"):
-                    customer_polymarket.disconnect_account(conn, account.account_id)
-                    st.session_state["_pm_confirm_disconnect"] = False
+                if st.button("Yes, disconnect", key=f"{kp}_disconnect_confirm", type="primary"):
+                    module.disconnect_account(conn, account.account_id)
+                    st.session_state[f"_{kp}_confirm_disconnect"] = False
                     st.rerun()
             with c2:
-                if st.button("Cancel", key="pm_disconnect_cancel"):
-                    st.session_state["_pm_confirm_disconnect"] = False
+                if st.button("Cancel", key=f"{kp}_disconnect_cancel"):
+                    st.session_state[f"_{kp}_confirm_disconnect"] = False
                     st.rerun()
     else:
         st.info(
-            "Connect your Polymarket US account to enable Auto-Bet. Your API Key and Private "
+            f"Connect your {label} account to enable Auto-Bet. Your API Key and Private "
             "Key are encrypted before they're ever saved, and are never shown again after you "
             "connect — only a masked fingerprint is displayed."
         )
-        with st.form("polymarket_connect_form"):
-            api_key_id = st.text_input("Polymarket API Key", key="pm_connect_api_key")
-            private_key = st.text_input("Polymarket Private Key (base64)", type="password", key="pm_connect_priv_key")
+        with st.form(f"{kp}_connect_form"):
+            api_key_id = st.text_input(p["api_key_label"], key=f"{kp}_connect_api_key")
+            private_key = st.text_input(p["private_key_label"], type="password", key=f"{kp}_connect_priv_key")
             submitted = st.form_submit_button("Connect & Verify", type="primary")
         if submitted:
-            ok, message = customer_polymarket.connect_account(conn, account.account_id, api_key_id, private_key)
+            ok, message = module.connect_account(conn, account.account_id, api_key_id, private_key)
             (st.success if ok else st.error)(message)
             if ok:
                 st.rerun()
 
 
-def _render_autobet_risk_settings(conn, account_id: str) -> None:
-    settings = customer_polymarket.get_risk_settings(conn, account_id)
-    defaults = customer_polymarket.DEFAULT_RISK_SETTINGS
-    with st.expander("Risk settings", expanded=any(settings.get(f) is None for f in customer_polymarket._REQUIRED_FOR_AUTOBET)):
-        with st.form("polymarket_risk_form"):
+def _render_autobet_risk_settings(conn, account_id: str, platform: str) -> None:
+    p = _AUTOBET_PLATFORMS[platform]
+    module, kp = p["module"], p["key_prefix"]
+    settings = module.get_risk_settings(conn, account_id)
+    defaults = module.DEFAULT_RISK_SETTINGS
+    with st.expander("Risk settings", expanded=any(settings.get(f) is None for f in module._REQUIRED_FOR_AUTOBET)):
+        with st.form(f"{kp}_risk_form"):
             c1, c2 = st.columns(2)
             with c1:
                 unit_size = st.number_input(
                     "$ per unit (stake per bet)", min_value=1.0,
                     value=float(settings.get("unit_size_usd") or defaults["unit_size_usd"]),
+                    key=f"{kp}_risk_unit_size",
                 )
                 max_bet = st.number_input(
                     "Max $ per bet", min_value=1.0, value=float(settings.get("max_bet_usd") or defaults["max_bet_usd"]),
+                    key=f"{kp}_risk_max_bet",
                 )
                 max_daily_loss = st.number_input(
                     "Max daily loss ($)", min_value=1.0,
                     value=float(settings.get("max_daily_loss_usd") or defaults["max_daily_loss_usd"]),
+                    key=f"{kp}_risk_max_daily_loss",
                 )
                 max_exposure = st.number_input(
                     "Max total exposure ($)", min_value=1.0,
                     value=float(settings.get("max_total_exposure_usd") or defaults["max_total_exposure_usd"]),
+                    key=f"{kp}_risk_max_exposure",
                 )
                 max_positions = st.number_input(
                     "Max open positions", min_value=1, step=1,
                     value=int(settings.get("max_open_positions") or defaults["max_open_positions"]),
+                    key=f"{kp}_risk_max_positions",
                 )
             with c2:
                 min_ev = st.number_input(
                     "Minimum net EV %", min_value=0.0,
                     value=float(settings.get("min_net_ev_pct") or defaults["min_net_ev_pct"]),
+                    key=f"{kp}_risk_min_ev",
                 )
                 max_price_move = st.number_input(
                     "Max price move tolerance %", min_value=0.0,
                     value=float(settings.get("max_price_move_pct") or defaults["max_price_move_pct"]),
+                    key=f"{kp}_risk_max_price_move",
                 )
                 max_slippage = st.number_input(
                     "Max slippage tolerance %", min_value=0.0,
                     value=float(settings.get("max_slippage_pct") or defaults["max_slippage_pct"]),
+                    key=f"{kp}_risk_max_slippage",
                 )
                 auto_approve_max = st.number_input(
                     "Auto-approve LIVE orders up to ($)", min_value=0.0,
@@ -939,14 +967,16 @@ def _render_autobet_risk_settings(conn, account_id: str) -> None:
                         "LIVE orders at or under this amount execute automatically. Anything "
                         "larger waits for your one-tap approval below."
                     ),
+                    key=f"{kp}_risk_auto_approve_max",
                 )
                 sport_filter = st.text_input(
                     "Only bet these leagues (comma-separated, blank = all)",
                     value=settings.get("sport_filter") or "",
+                    key=f"{kp}_risk_sport_filter",
                 )
             submitted = st.form_submit_button("Save risk settings", type="primary")
         if submitted:
-            customer_polymarket.save_risk_settings(
+            module.save_risk_settings(
                 conn, account_id, unit_size_usd=unit_size, max_bet_usd=max_bet,
                 max_daily_loss_usd=max_daily_loss, max_total_exposure_usd=max_exposure,
                 max_open_positions=int(max_positions), min_net_ev_pct=min_ev,
@@ -957,44 +987,47 @@ def _render_autobet_risk_settings(conn, account_id: str) -> None:
             st.rerun()
 
 
-def _render_autobet_controls(conn, account_id: str, status) -> None:
+def _render_autobet_controls(conn, account_id: str, platform: str, status) -> None:
+    p = _AUTOBET_PLATFORMS[platform]
+    module, label, kp = p["module"], p["label"], p["key_prefix"]
     st.markdown(
         f"**Status:** {'🟢 Auto-Bet ON' if status.autobet_enabled else '⚪ Auto-Bet OFF'} · "
         f"{'🔴 LIVE (real money)' if status.live_execution else '🧪 PAPER (simulated)'}"
     )
     if not status.autobet_enabled:
-        st.caption(_AUTOBET_CONFIRM_TEXT)
-        confirm = st.checkbox("I understand and want to enable Auto-Bet", key="pm_enable_confirm")
-        if st.button("Enable Auto-Bet", type="primary", disabled=not confirm, key="pm_enable_btn"):
-            ok, message = customer_polymarket.enable_autobet(conn, account_id)
+        st.caption(_AUTOBET_CONFIRM_TEXT_TMPL.format(label=label))
+        confirm = st.checkbox("I understand and want to enable Auto-Bet", key=f"{kp}_enable_confirm")
+        if st.button("Enable Auto-Bet", type="primary", disabled=not confirm, key=f"{kp}_enable_btn"):
+            ok, message = module.enable_autobet(conn, account_id)
             (st.success if ok else st.error)(message)
             st.rerun()
     else:
-        if st.button("⏸ PAUSE AUTO-BET", type="primary", key="pm_disable_btn"):
-            customer_polymarket.disable_autobet(conn, account_id)
+        if st.button("⏸ PAUSE AUTO-BET", type="primary", key=f"{kp}_disable_btn"):
+            module.disable_autobet(conn, account_id)
             st.success("Auto-Bet paused. No new orders will be placed. Existing positions are unaffected.")
             st.rerun()
 
     st.divider()
     live_mode = st.toggle(
-        "LIVE execution (real money)", value=status.live_execution, key="pm_live_toggle",
+        "LIVE execution (real money)", value=status.live_execution, key=f"{kp}_live_toggle",
         help=(
-            "Off = PAPER (simulated, no real orders). On = real Polymarket orders, still "
+            f"Off = PAPER (simulated, no real orders). On = real {label} orders, still "
             "subject to every risk limit above and the platform's own live-trading safeguards."
         ),
     )
     if live_mode != status.live_execution:
         if live_mode:
             st.warning(
-                "Turning this on means Auto-Bet can place REAL Polymarket orders with real "
+                f"Turning this on means Auto-Bet can place REAL {label} orders with real "
                 "money, subject to your limits above."
             )
-        customer_polymarket.set_live_execution(conn, account_id, live_mode)
+        module.set_live_execution(conn, account_id, live_mode)
         st.rerun()
 
 
-def _render_autobet_pending_approvals(conn, config, account_id: str) -> None:
-    pending = live_customer_store.get_ready_prepared_orders_for_account(conn, account_id)
+def _render_autobet_pending_approvals(conn, config, account_id: str, platform: str) -> None:
+    kp = _AUTOBET_PLATFORMS[platform]["key_prefix"]
+    pending = live_customer_store.get_ready_prepared_orders_for_account(conn, account_id, platform=platform)
     if not pending:
         return
     st.subheader(f"Pending your approval ({len(pending)})")
@@ -1012,18 +1045,18 @@ def _render_autobet_pending_approvals(conn, config, account_id: str) -> None:
             )
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✅ Approve & submit", key=f"pm_approve_{order['prepared_order_id']}", type="primary"):
-                    ok, message = approve_pending_order(conn, config, account_id, order["prepared_order_id"])
+                if st.button("✅ Approve & submit", key=f"{kp}_approve_{order['prepared_order_id']}", type="primary"):
+                    ok, message = approve_pending_order(conn, config, account_id, platform, order["prepared_order_id"])
                     (st.success if ok else st.error)(message)
                     st.rerun()
             with c2:
-                if st.button("✖ Reject", key=f"pm_reject_{order['prepared_order_id']}"):
-                    reject_pending_order(conn, account_id, order["prepared_order_id"], reason="customer rejected")
+                if st.button("✖ Reject", key=f"{kp}_reject_{order['prepared_order_id']}"):
+                    reject_pending_order(conn, account_id, platform, order["prepared_order_id"], reason="customer rejected")
                     st.rerun()
 
 
-def _render_autobet_activity(conn, account_id: str) -> None:
-    rows = get_autobet_executions(conn, account_id, limit=50)
+def _render_autobet_activity(conn, account_id: str, platform: str) -> None:
+    rows = get_autobet_executions(conn, account_id, limit=50, platform=platform)
     if not rows:
         st.caption("No Auto-Bet activity yet.")
         return
@@ -1038,24 +1071,40 @@ def _render_autobet_activity(conn, account_id: str) -> None:
     st.dataframe(df[cols], use_container_width=True, hide_index=True)
 
 
+def _render_platform_autobet_card(account: "Account", conn, config, platform: str) -> None:
+    p = _AUTOBET_PLATFORMS[platform]
+    module, label = p["module"], p["label"]
+    status = module.get_status(conn, account.account_id)
+    st.markdown(f"#### {label}")
+    _render_autobet_connection_form(conn, account, platform, status)
+    if status.connected:
+        _render_autobet_risk_settings(conn, account.account_id, platform)
+        status = module.get_status(conn, account.account_id)
+        _render_autobet_controls(conn, account.account_id, platform, status)
+        _render_autobet_pending_approvals(conn, config, account.account_id, platform)
+        _render_autobet_activity(conn, account.account_id, platform)
+
+
 def _render_polymarket_autobet(account: "Account") -> None:
+    """Renders BOTH platform cards (Kalshi + Polymarket) despite the
+    name -- kept for backward compatibility with the one existing call
+    site rather than a pure rename, since nothing else references this
+    function name."""
     conn = get_connection()
     try:
-        status = customer_polymarket.get_status(conn, account.account_id)
         config = load_config()
-        st.subheader("🤖 Polymarket Auto-Bet")
+        st.subheader("🤖 Auto-Bet")
         st.caption(
-            "Connect your own Polymarket US account to let the model automatically size and "
-            "place qualifying bets for you, within limits you control. Auto-Bet defaults OFF "
-            "and connecting never turns it on by itself."
+            "Connect your own Kalshi and/or Polymarket account to let the model automatically "
+            "size and place qualifying bets for you, within limits you control for each "
+            "platform independently. Auto-Bet defaults OFF and connecting never turns it on "
+            "by itself."
         )
-        _render_autobet_connection_form(conn, account, status)
-        if status.connected:
-            _render_autobet_risk_settings(conn, account.account_id)
-            status = customer_polymarket.get_status(conn, account.account_id)
-            _render_autobet_controls(conn, account.account_id, status)
-            _render_autobet_pending_approvals(conn, config, account.account_id)
-            _render_autobet_activity(conn, account.account_id)
+        tab_kalshi, tab_polymarket = st.tabs(["Kalshi", "Polymarket"])
+        with tab_kalshi:
+            _render_platform_autobet_card(account, conn, config, "kalshi")
+        with tab_polymarket:
+            _render_platform_autobet_card(account, conn, config, "polymarket_us")
     finally:
         conn.close()
 
@@ -1669,17 +1718,26 @@ if st.session_state.view_mode is None:
     if current_account is not None:
         with menu_cols[3]:
             with st.container(border=True):
-                st.markdown("### 🤖 Polymarket Auto-Bet")
+                st.markdown("### 🤖 Auto-Bet")
                 st.markdown(
-                    "Connect your own Polymarket account and let qualifying picks size and "
-                    "place themselves, within limits you set."
+                    "Connect your own Kalshi and/or Polymarket account and let qualifying "
+                    "picks size and place themselves, within limits you set."
                 )
-                _pm_conn = get_connection()
+                _ab_conn = get_connection()
                 try:
-                    pm_status = customer_polymarket.get_status(_pm_conn, current_account.account_id)
+                    ks_status = customer_kalshi.get_status(_ab_conn, current_account.account_id)
+                    pm_status = customer_polymarket.get_status(_ab_conn, current_account.account_id)
                 finally:
-                    _pm_conn.close()
-                st.metric("Status", "ON" if pm_status.autobet_enabled else ("Connected" if pm_status.connected else "Not connected"))
+                    _ab_conn.close()
+
+                def _platform_label(s):
+                    return "ON" if s.autobet_enabled else ("Connected" if s.connected else "Not connected")
+
+                mcol1, mcol2 = st.columns(2)
+                with mcol1:
+                    st.metric("Kalshi", _platform_label(ks_status))
+                with mcol2:
+                    st.metric("Polymarket", _platform_label(pm_status))
                 if st.button("Manage Auto-Bet →", key="choose_autobet", use_container_width=True, type="primary"):
                     st.session_state.view_mode = "autobet"
                     st.rerun()
@@ -1919,11 +1977,11 @@ elif st.session_state.view_mode == "middling":
                     _render_graded_middle_card(opp)
 
 # ==================================================================
-# Polymarket Auto-Bet (account required)
+# Auto-Bet -- Kalshi + Polymarket (account required)
 # ==================================================================
 elif st.session_state.view_mode == "autobet":
     if current_account is None:
-        st.warning("Log in to manage Polymarket Auto-Bet.")
+        st.warning("Log in to manage Auto-Bet.")
     else:
         _render_polymarket_autobet(current_account)
 
