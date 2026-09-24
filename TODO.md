@@ -158,6 +158,11 @@
 
 ## Next feature stage
 
+- [ ] **P0 operational (2026-09-24 audit, needs the operator)**: SportsGameOdds quota (2503/2500) and Odds API credits (~1485 < 2000 reserve) block MLB/NFL scans; set `MLB_ADMIN_PASSWORD` on the dashboard; redeploy all three services; rotate the SportsGameOdds key (in history commits f0dfa29/ed7dbbe); verify Render Postgres backups + test a restore; configure SendGrid/`SITE_BASE_URL`/`MLB_SUPPORT_EMAIL`; legal review of Terms/Privacy drafts. See docs/LAUNCH_READINESS_AUDIT.md section 12
+- [ ] Decide NCAAF: finish + commit the CFB work (uncommitted `src/game_settlement.py`, `src/sports/cfb.py`) or remove the NCAAF label from the customer hero/footer
+- [ ] Add a PostgreSQL service to CI so schema/migrations/claims run against a real server (only grammar-validated today)
+- [ ] After deploy, read `PIPELINE_FAILURE` log lines / `scan_runs.metadata_json.failure` and worker `JOB_END` memory deltas for the first day
+- [ ] P2: "SHADOW MODE" dashboard pill is not enforced by any delivery path (label only); paginate the customer `settled` history query if it grows; consider batching Discord alerts
 - [ ] SportsGameOdds monthly entity quota is exhausted (2503/2500, tier amateur, 10 req/min) — operator decision on plan/billing or waiting for the cycle reset; MLB falls back to the Odds API for game markets meanwhile
 - [ ] After the next `morning-run-nfl` exit 3, read the `PIPELINE_FAILURE` log line / `scan_runs.metadata_json.failure` for the real cause (provider, stage, HTTP status, exception class) — do not guess-fix
 - [ ] **Controlled live test (needs the operator, not done)**: with a real Kalshi account and explicit authorization, confirm (a) `autobet_reconcile` turns an `ORDER_LIMIT_PRICE` row into `PLATFORM_FILLS` with real fills/fees (payload field names follow the official SDK/docs but were never exercised against a live authenticated account), (b) Polymarket's `avgPx`/`cumQuantity` synchronous fill report and whether it includes fees. Until then LIVE Kalshi P&L is labeled with limit-price/estimated-fee caveats.

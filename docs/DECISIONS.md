@@ -4,6 +4,13 @@ Entries are dated. New entries are appended.
 
 ---
 
+## Admin dashboard fails closed; official picks are the single recommendation source
+
+- **Date**: 2026-09-24
+- **Decision**: (1) `src/control_panel.py` calls `require_admin()` before rendering anything: password from `MLB_ADMIN_PASSWORD`, constant-time compare, process-wide lockout, and in production (`MLB_ENVIRONMENT=production`) an unset password refuses to render rather than running open. (2) The ACTIVE row of `official_picks` is the only "recommendation" that reaches customers, Discord, Auto-Bet and live-scan; Auto-Bet/live additionally require the game not to have started. (3) Grading is triggered by time (unsettled games started >= 4h ago) as well as by provider-reported "final", because results come from independent free sources (MLB StatsAPI, ESPN). (4) Job scheduling dedup uses local-day UTC windows, never date-string prefixes across timezones; failing league scans have a 60-minute retry cooldown.
+- **Reason**: The dashboard was publicly reachable with scan controls and live-approval; production showed settlement stalled ~46h and ~360 failed morning runs in 3 days, both caused by scheduling that depended on a provider state or compared mismatched date bases.
+- **Consequence**: The dashboard shows "locked" until `MLB_ADMIN_PASSWORD` is set. Discord alerts shrink from every actionable recommendation to official picks only. The read-only `python -m src.production_readiness` is the canonical pre/post-deploy check.
+
 ## Kalshi contracts are matched by exact structured identity, never by fuzzy name
 
 - **Date**: 2026-09-23

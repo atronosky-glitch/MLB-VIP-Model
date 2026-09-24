@@ -2,6 +2,14 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-09-24 — Final production-readiness audit (fixes committed locally, NOT yet pushed)
+
+Read `docs/LAUNCH_READINESS_AUDIT.md` first: it has the system map, every finding with severity, the sports/job/Render/env matrices, the backup runbook, evidence from read-only production queries, and the manual action list. Nothing was pushed by this audit; no real order was placed; live flags untouched; `src/game_settlement.py` and `src/sports/cfb.py` remain unstaged (uncommitted CFB WIP that alone breaks `tests/test_sports_adapters.py::test_market_capability_report_structure` — committed HEAD passes 26/26).
+
+Key new code: `src/admin_auth.py`, `src/runtime_metrics.py` (heartbeat thread, RSS, job outcome), `src/production_readiness.py`, `src/autobet_validation.py`, `src/failure_diagnostics.py` (earlier), `automation.schedule_catchup_grading`, `database/connection.split_sql_statements` + `describe_database_backend`, `customer_accounts` hardening (rate limits, reset, disabled). Tests added: E2E customer/model/Auto-Bet-paper, admin auth, auth hardening, IDOR, Postgres schema (pglast), worker reliability, retry storm, catch-up grading, official-only, validation, Discord failure paths, arb/middle math.
+
+Next session: (1) after the operator deploys, run `python -m src.production_readiness` in the worker shell and read `JOB_END`/`PIPELINE_FAILURE` logs; (2) confirm settlement resumes (`market_settlements` newest `settled_at`); (3) provider quotas are the gating operational issue; (4) controlled live Kalshi test still pending the operator; (5) NCAAF decision.
+
 ## Session: 2026-09-23 — Multi-platform Auto-Bet hardening: Kalshi exact mapping + real-economics My Performance
 
 State at end of session: 4 earlier local commits (`798f3f3` per-user Kalshi Auto-Bet, `cd10cb9` My Performance page, `e671094` server hard caps, `35ed034` platform-failure-isolation tests) plus this Phase E work — NOTHING PUSHED. LIVE execution is OFF everywhere; no real order was ever placed (mocks, paper, public reads only). `src/game_settlement.py` and `src/sports/cfb.py` carry unrelated pre-existing CFB WIP — leave them alone.
