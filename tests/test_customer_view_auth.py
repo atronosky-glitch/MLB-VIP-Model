@@ -43,7 +43,10 @@ class TestAuthorizedRequest:
     check may be added, as an ADDITIONAL way in, checked last."""
 
     def _call(self, monkeypatch, env: dict, query_params: dict, account):
-        import src.customer_view as _unused  # ensure the module is importable at all
+        # customer_view.py executes the whole Streamlit page at import time, so it is NEVER imported in
+        # tests: doing so entered st.form contexts outside a runtime and leaked them into later AppTests
+        # ("Forms cannot be nested in other forms"). Compiling proves the file is valid Python.
+        compile((ROOT / "src" / "customer_view.py").read_text(encoding="utf-8"), "customer_view.py", "exec")
         authorized_request = _load_authorized_request()
         for k, v in env.items():
             monkeypatch.setenv(k, v)
@@ -263,3 +266,18 @@ def test_session_state_checked_before_cookie_for_current_account():
     cookie write having already landed in the browser."""
     source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
     assert 'st.session_state.get("_session_token") or _get_session_token()' in source
+
+
+def test_no_test_imports_the_customer_page_module_directly():
+    """Importing src.customer_view runs the whole page (including its st.form/st.expander contexts)
+    outside a Streamlit runtime and contaminated later AppTests (found 2026-09-24). Use AST extraction
+    or AppTest.from_file instead. (control_panel helper imports are an established, harmless pattern.)"""
+    import re
+    offenders = []
+    for path in (ROOT / "tests").glob("test_*.py"):
+        if path.name == Path(__file__).name:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"^\s*(import src\.customer_view|from src\.customer_view import)", text, re.M):
+            offenders.append(path.name)
+    assert not offenders, offenders

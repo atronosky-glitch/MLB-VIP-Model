@@ -381,6 +381,10 @@ def _send_webhook_raw(webhook_url: str, payload: dict[str, Any]) -> bool:
 
             logger.warning("[DISCORD] HTTP error %d sending webhook (attempt %d)", exc.code, attempt + 1)
             _last_response_statuses.append(exc.code)
+            if exc.code in (400, 401, 403, 404):
+                # Permanent: a malformed payload or a deleted/invalid webhook
+                # will not fix itself in a few seconds -- don't retry.
+                return False
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_DELAY_BASE ** (attempt + 1))
 

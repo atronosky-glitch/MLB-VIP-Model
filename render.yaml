@@ -3,6 +3,8 @@ services:
   - type: web
     name: mlb-vip-dashboard
     runtime: python
+    # Streamlit's built-in liveness endpoint: Render restarts the service if it stops answering.
+    healthCheckPath: /_stcore/health
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: >
@@ -69,6 +71,8 @@ services:
   - type: web
     name: mlb-vip-customer
     runtime: python
+    # Streamlit's built-in liveness endpoint: Render restarts the service if it stops answering.
+    healthCheckPath: /_stcore/health
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: >

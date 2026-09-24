@@ -2252,7 +2252,7 @@ st.caption("This platform does not guarantee profit, place bets, or present Full
 
 # Customer basics (launch audit 2026-09-24): responsible-use / risk disclosure,
 # legal links and a support contact. The Terms/Privacy pages are DRAFTS pending
-# real legal review -- see docs/LAUNCH_RUNBOOK.md.
+# real legal review -- see docs/LAUNCH_READINESS_AUDIT.md.
 _support_email = os.environ.get("MLB_SUPPORT_EMAIL", "").strip()
 _support_line = f" · Support: {_support_email}" if _support_email else ""
 st.caption(

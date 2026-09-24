@@ -314,6 +314,7 @@ class TestScannerRunsTwiceEndToEnd:
                 5.0, 'STRONG_EDGE', 1, '2026-09-10T00:00:00+00:00'
             )
         """)
+        conn.execute("INSERT INTO official_picks (recommendation_id, tier, official_rank) VALUES ('rec-1', 'OFFICIAL_TRACKED', 1)")
         conn.commit()
         conn.close()
 
@@ -350,6 +351,7 @@ class TestDryRunDoesNotLeaveAPermanentClaim:
                 5.0, 'STRONG_EDGE', 1, '2026-09-10T00:00:00+00:00'
             )
         """)
+        conn.execute("INSERT INTO official_picks (recommendation_id, tier, official_rank) VALUES ('rec-1', 'OFFICIAL_TRACKED', 1)")
         conn.commit()
         conn.close()
 
@@ -393,6 +395,7 @@ class TestMessageFormatterReceivesCorrectData:
                 '2026-09-10T00:00:00+00:00', 'Yankees @ Red Sox', 'MLB'
             )
         """)
+        conn.execute("INSERT INTO official_picks (recommendation_id, tier, official_rank) VALUES ('rec-1', 'OFFICIAL_TRACKED', 1)")
         conn.commit()
         conn.close()
 
