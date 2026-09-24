@@ -80,6 +80,11 @@ ARB_MIDDLE_SCAN_INTERVAL_MINUTES = 15
 # time-sensitive than a display-only opportunity list.
 CUSTOMER_AUTOBET_SCAN_INTERVAL_MINUTES = 5
 
+from src.failure_diagnostics import sanitize_message  # noqa: E402
+from src.runtime_metrics import (  # noqa: E402
+    WORKER_STATE, HeartbeatThread, record_job_outcome, rss_mb, sport_for_job, summarize_result,
+)
+
 TZ_NAME = os.environ.get("MLB_SCHEDULER_TIMEZONE", os.environ.get("MLB_TIMEZONE", "America/New_York"))
 
 
@@ -148,33 +153,9 @@ def _release_lock(conn, lock_key: str) -> None:
 
 
 def _write_heartbeat(conn) -> None:
-    """Write a worker heartbeat to the database."""
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS worker_heartbeat (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                last_heartbeat TEXT NOT NULL,
-                worker_pid INTEGER,
-                uptime_seconds REAL
-            )
-        """)
-        ts = datetime.now(timezone.utc).isoformat()
-        pid = os.getpid()
-        if get_connection_dialect_name(conn) == "postgresql":
-            conn.execute("""
-                INSERT INTO worker_heartbeat (id, last_heartbeat, worker_pid)
-                VALUES (1, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET last_heartbeat = EXCLUDED.last_heartbeat,
-                                                worker_pid = EXCLUDED.worker_pid
-            """, (ts, pid))
-        else:
-            conn.execute("""
-                INSERT OR REPLACE INTO worker_heartbeat (id, last_heartbeat, worker_pid)
-                VALUES (1, ?, ?)
-            """, (ts, pid))
-        conn.commit()
-    except Exception as e:
-        logger.warning("Failed to write heartbeat: %s", e)
+    """Write a worker heartbeat to the database (see src/runtime_metrics.py)."""
+    from src.runtime_metrics import write_heartbeat
+    write_heartbeat(conn)
 
 
 def _read_heartbeat(conn) -> dict | None:
@@ -900,11 +881,20 @@ def _process_pending_jobs(conn: DB, config) -> int:
         if not lock_key:
             continue
 
+        sport = sport_for_job(job_type)
+        rss_before = rss_mb()
+        started_mono = time.monotonic()
+        WORKER_STATE.start_job(job_type)
+        logger.info("JOB_START job=%s run_id=%s sport=%s rss_mb=%s", job_type, job_id, sport, rss_before)
+        outcome_status, outcome_summary, outcome_error = "error", {}, None
         try:
             update_job_status(conn, job_id, "running")
-            logger.info("Executing job %s (type=%s)", job_id[:8], job_type)
 
             result = _execute_job(job_type, conn, config, job.get("event_id"))
+            outcome_status = str(result.get("status", "unknown"))
+            outcome_summary = summarize_result(result)
+            if outcome_status != "success":
+                outcome_error = str(result)
 
             ts = datetime.now(timezone.utc).isoformat()
             if result.get("status") == "success":
@@ -926,18 +916,33 @@ def _process_pending_jobs(conn: DB, config) -> int:
             executed += 1
 
         except Exception as e:
-            logger.error("Job %s failed: %s", job_id[:8], e)
+            logger.error("Job %s failed: %s", job_id[:8], type(e).__name__)
+            outcome_status, outcome_error = "error", f"{type(e).__name__}: {e}"
             ts = datetime.now(timezone.utc).isoformat()
+            try:
+                conn.rollback()   # a failed statement leaves a PostgreSQL transaction aborted
+            except Exception:
+                pass
             try:
                 conn.execute(
                     "UPDATE scheduled_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE job_id = ?",
-                    (str(e), ts, job_id),
+                    (sanitize_message(str(e)), ts, job_id),
                 )
                 conn.commit()
             except Exception:
                 pass
         finally:
             _release_lock(conn, lock_key)
+            WORKER_STATE.end_job()
+            rss_after = rss_mb()
+            logger.info(
+                "JOB_END job=%s run_id=%s sport=%s status=%s duration_s=%.1f rss_before_mb=%s rss_after_mb=%s "
+                "rss_delta_mb=%s summary=%s error=%s",
+                job_type, job_id, sport, outcome_status, time.monotonic() - started_mono, rss_before, rss_after,
+                (round(rss_after - rss_before, 1) if rss_before is not None and rss_after is not None else None),
+                outcome_summary, sanitize_message(outcome_error or "", 200) or None,
+            )
+            record_job_outcome(conn, job_type, outcome_status == "success", outcome_error)
 
     return executed
 
@@ -1443,6 +1448,34 @@ def _check_and_schedule_daily_results_summary(conn: DB) -> None:
 # ── Main loop ─────────────────────────────────────────────────────
 
 
+def _recover_connection(conn, config):
+    """After a loop error: roll back (a failed PostgreSQL statement leaves the
+    transaction aborted, failing every later statement) and, if the
+    connection is no longer usable (server restart, idle timeout), open a
+    fresh one. Without this a single dropped connection would fail every
+    iteration until the whole service was restarted. Never raises."""
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        conn.execute("SELECT 1").fetchone()
+        return conn
+    except Exception:
+        logger.warning("Worker DB connection is unusable -- reconnecting")
+    try:
+        conn.close()
+    except Exception:
+        pass
+    try:
+        fresh = get_connection(config.database_path)
+        logger.info("Worker DB connection re-established")
+        return fresh
+    except Exception as exc:
+        logger.error("Worker could not reconnect to the database: %s", type(exc).__name__)
+        return conn
+
+
 def run_worker_persistent(config) -> None:
     """Run the worker as a persistent background process."""
     logger.info("Starting persistent worker (pid=%d, tz=%s)", os.getpid(), TZ_NAME)
@@ -1455,6 +1488,12 @@ def run_worker_persistent(config) -> None:
 
     _running = True
     _run_catchup_grading(conn)
+
+    # Independent heartbeat (own connection per beat) so a long-running job
+    # cannot make a live worker look dead; also carries current job / RSS /
+    # last success / last failure for the admin dashboard.
+    heartbeat_thread = HeartbeatThread(lambda: get_connection(config.database_path), interval_seconds=30.0)
+    heartbeat_thread.start()
 
     def _handle_signal(signum, frame):
         nonlocal _running
@@ -1607,10 +1646,16 @@ def run_worker_persistent(config) -> None:
         except KeyboardInterrupt:
             break
         except Exception as e:
-            logger.error("Worker loop error: %s\n%s", e, traceback.format_exc())
+            logger.error("Worker loop error: %s: %s\n%s", type(e).__name__, sanitize_message(str(e)),
+                         traceback.format_exc())
+            conn = _recover_connection(conn, config)
             time.sleep(30)
 
-    conn.close()
+    heartbeat_thread.stop()
+    try:
+        conn.close()
+    except Exception:
+        pass
     logger.info("Worker stopped")
 
 

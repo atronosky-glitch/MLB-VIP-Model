@@ -522,9 +522,8 @@ def _check_worker_heartbeat(db_path: str | Path) -> HealthCheck:
                     uptime_seconds REAL
                 )
             """)
-            row = conn.execute(
-                "SELECT last_heartbeat, worker_pid FROM worker_heartbeat WHERE id = 1"
-            ).fetchone()
+            row = conn.execute("SELECT * FROM worker_heartbeat WHERE id = 1").fetchone()
+            row = dict(row) if row else None
         finally:
             conn.close()
 
@@ -541,18 +540,27 @@ def _check_worker_heartbeat(db_path: str | Path) -> HealthCheck:
             hb_time = hb_time.replace(tzinfo=timezone.utc)
         age_seconds = (datetime.now(timezone.utc) - hb_time).total_seconds()
 
+        # Extra fields written by src/runtime_metrics.py (None on older rows).
+        extra = {
+            k: row.get(k) for k in (
+                "current_job", "current_job_seconds", "rss_mb", "uptime_seconds",
+                "last_success_at", "last_success_job", "last_failure_at", "last_failure_job",
+                "last_failure_message",
+            ) if row.get(k) is not None
+        }
         if age_seconds > 300:  # 5 minutes
             return HealthCheck(
                 name="worker_heartbeat",
                 status="error",
                 message=f"Worker heartbeat stale: {age_seconds / 60:.0f}m ago (pid={row['worker_pid']})",
-                details={"age_seconds": round(age_seconds), "worker_pid": row["worker_pid"]},
+                details={"age_seconds": round(age_seconds), "worker_pid": row["worker_pid"], **extra},
             )
+        busy = f", running {row['current_job']}" if row.get("current_job") else ""
         return HealthCheck(
             name="worker_heartbeat",
             status="ok",
-            message=f"Worker active: heartbeat {age_seconds:.0f}s ago (pid={row['worker_pid']})",
-            details={"age_seconds": round(age_seconds), "worker_pid": row["worker_pid"]},
+            message=f"Worker active: heartbeat {age_seconds:.0f}s ago (pid={row['worker_pid']}){busy}",
+            details={"age_seconds": round(age_seconds), "worker_pid": row["worker_pid"], **extra},
         )
     except Exception as e:
         return HealthCheck(
