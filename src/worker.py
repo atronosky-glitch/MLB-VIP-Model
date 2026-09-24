@@ -62,6 +62,8 @@ PREGAME_CHECK_INTERVAL_MINUTES = 10
 # discovery calls (NFL: rate-limited API; WNBA: free but still a network
 # call) from firing every worker tick.
 NFL_SCHEDULE_CHECK_INTERVAL_MINUTES = 30
+# A failed league scan is not re-queued for this long (persistent provider failures).
+FAILED_SCAN_RETRY_COOLDOWN_MINUTES = 60
 CFB_SCHEDULE_CHECK_INTERVAL_MINUTES = 30
 WNBA_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
 # MLB's supplemental props check (added 2026-08-22) reads the local
@@ -1104,16 +1106,36 @@ def _get_last_completed_job_at(conn: DB, job_type: str):
         return None
 
 
-def _create_job_if_not_queued(conn: DB, job_type: str) -> str | None:
+def _create_job_if_not_queued(conn: DB, job_type: str, failure_cooldown_minutes: int = 0) -> str | None:
     """Create *job_type* unless one is already pending or running —
     prevents a scheduling check that fires every loop tick from queuing
-    the same job repeatedly while the prior one is still in flight."""
+    the same job repeatedly while the prior one is still in flight.
+
+    *failure_cooldown_minutes* > 0 additionally refuses to queue a new job
+    while the MOST RECENT job of this type FAILED less than that long ago
+    (launch audit 2026-09-24): without it a scan failing for a persistent
+    reason (e.g. an exhausted provider quota) is re-queued on every
+    scheduling check forever, burning provider requests."""
     existing = conn.execute(
         "SELECT 1 FROM scheduled_jobs WHERE job_type = ? AND status IN ('pending','running') LIMIT 1",
         (job_type,),
     ).fetchone()
     if existing:
         return None
+    if failure_cooldown_minutes > 0:
+        latest = conn.execute(
+            "SELECT status, completed_at FROM scheduled_jobs WHERE job_type = ? ORDER BY created_at DESC LIMIT 1",
+            (job_type,),
+        ).fetchone()
+        if latest and latest["status"] == "failed" and latest["completed_at"]:
+            try:
+                done = datetime.fromisoformat(str(latest["completed_at"]).replace("Z", "+00:00"))
+                if done.tzinfo is None:
+                    done = done.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - done) < timedelta(minutes=failure_cooldown_minutes):
+                    return None
+            except ValueError:
+                pass
     from src.automation import create_job
     return create_job(conn, job_type=job_type, scheduled_at=datetime.now(timezone.utc).isoformat())
 
@@ -1137,13 +1159,13 @@ def _check_and_schedule_nfl(conn: DB) -> None:
     )
     scan_decision = nfl_should_run_daily_scan(now, game_times, already_ran_today)
     if scan_decision.should_run:
-        job_id = _create_job_if_not_queued(conn, "morning-run-nfl")
+        job_id = _create_job_if_not_queued(conn, "morning-run-nfl", failure_cooldown_minutes=FAILED_SCAN_RETRY_COOLDOWN_MINUTES)
         if job_id:
             logger.info("[NFL] Scheduled daily scan: %s (%s)", job_id[:8], scan_decision.reason)
 
     pregame_decision = nfl_should_run_pregame_check(now, game_times)
     if pregame_decision.should_run:
-        job_id = _create_job_if_not_queued(conn, "pregame-check-nfl")
+        job_id = _create_job_if_not_queued(conn, "pregame-check-nfl", failure_cooldown_minutes=FAILED_SCAN_RETRY_COOLDOWN_MINUTES)
         if job_id:
             logger.info("[NFL] Scheduled pregame check: %s (%s)", job_id[:8], pregame_decision.reason)
 
@@ -1184,13 +1206,13 @@ def _check_and_schedule_cfb(conn: DB) -> None:
     )
     scan_decision = cfb_should_run_daily_scan(now, game_times, already_ran_today)
     if scan_decision.should_run:
-        job_id = _create_job_if_not_queued(conn, "morning-run-cfb")
+        job_id = _create_job_if_not_queued(conn, "morning-run-cfb", failure_cooldown_minutes=FAILED_SCAN_RETRY_COOLDOWN_MINUTES)
         if job_id:
             logger.info("[CFB] Scheduled daily scan: %s (%s)", job_id[:8], scan_decision.reason)
 
     pregame_decision = cfb_should_run_pregame_check(now, game_times)
     if pregame_decision.should_run:
-        job_id = _create_job_if_not_queued(conn, "pregame-check-cfb")
+        job_id = _create_job_if_not_queued(conn, "pregame-check-cfb", failure_cooldown_minutes=FAILED_SCAN_RETRY_COOLDOWN_MINUTES)
         if job_id:
             logger.info("[CFB] Scheduled pregame check: %s (%s)", job_id[:8], pregame_decision.reason)
 
@@ -1291,10 +1313,15 @@ def _check_and_schedule_pregame(conn: DB) -> None:
 def _check_and_schedule_grading(conn: DB) -> None:
     """Check if grading needs scheduling (after games complete)."""
     # Final games can complete after 2 AM ET, so catch-up must run all day.
-    from src.automation import schedule_grading
+    from src.automation import schedule_catchup_grading, schedule_grading
     count = schedule_grading(conn)
     if count:
         logger.info("Scheduled %d grading job(s)", count)
+    # Provider-independent trigger (see schedule_catchup_grading): settlement
+    # must not depend on the odds provider still marking games final.
+    catchup_job = schedule_catchup_grading(conn)
+    if catchup_job:
+        logger.info("Scheduled catch-up grading job %s (unsettled games past their start)", catchup_job[:8])
 
 
 def _is_backup_time(now: datetime) -> bool:
@@ -1334,12 +1361,22 @@ def _check_and_schedule_morning_run(conn: DB) -> None:
     now = _now_local()
     if now.hour < 8 or (now.hour == 8 and now.minute < 30):
         return
-    today = now.strftime("%Y-%m-%d")
+    # Dedup by a local-day UTC WINDOW, never a date-string prefix: scheduled_at
+    # is stored in UTC, and from 8 PM ET onward the UTC calendar date has
+    # already rolled over, so a LIKE '<local date>%' match can no longer find
+    # the job this function created earlier the same ET day. Production
+    # evidence (2026-09-23/24): that mismatch queued a NEW morning-run every
+    # minute from 8 PM to midnight ET (~50 jobs/hour, ~360 failed runs in 3
+    # days) once runs started failing. Same window technique as
+    # _check_and_schedule_daily_results_summary.
+    local_midnight_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_start = local_midnight_today.astimezone(timezone.utc).isoformat()
+    window_end = (local_midnight_today + timedelta(days=1)).astimezone(timezone.utc).isoformat()
     latest = conn.execute(
         "SELECT status, completed_at FROM scheduled_jobs "
-        "WHERE job_type = 'morning-run' AND scheduled_at LIKE ? "
-        "ORDER BY created_at DESC LIMIT 1",
-        (f"{today}%",),
+        "WHERE job_type = 'morning-run' AND scheduled_at >= ? AND scheduled_at < ? "
+        "ORDER BY created_at DESC, scheduled_at DESC LIMIT 1",
+        (window_start, window_end),
     ).fetchone()
 
     should_schedule = True

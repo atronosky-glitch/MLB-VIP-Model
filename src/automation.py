@@ -175,6 +175,71 @@ def schedule_grading(
     return count
 
 
+def _parse_ts(value) -> datetime | None:
+    """Parse either ISO-8601 ('T', optional offset) or SQLite's 'YYYY-MM-DD HH:MM:SS'."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def schedule_catchup_grading(
+    conn,
+    *,
+    min_interval_minutes: int = 60,
+    min_event_age_hours: float = 4.0,
+    max_event_age_days: int = 7,
+) -> str | None:
+    """Queue ONE catch-up grading job when settleable work exists, independent
+    of whether the odds provider still reports games as final.
+
+    Launch audit 2026-09-24 (P0): schedule_grading() above only queues a job
+    for games the SportsGameOdds ingest has marked final. While SportsGameOdds
+    was out of quota (~2026-09-20 onward) no game ever became "final", so NO
+    grading job was created for days -- settlement only ran at worker restarts
+    -- and customer history / performance silently went stale. Results come
+    from independent free sources (MLB StatsAPI, ESPN), so grading is also
+    triggered on TIME: if any recommendation's game started at least
+    *min_event_age_hours* ago (and no more than *max_event_age_days* ago) and
+    is still unsettled, queue a grading job -- at most one pending/running at a
+    time and at most one per *min_interval_minutes*.
+
+    Returns the new job id, or None if nothing was queued.
+    """
+    now = datetime.now(timezone.utc)
+
+    open_job = conn.execute(
+        "SELECT 1 FROM scheduled_jobs WHERE job_type = 'grading' AND status IN ('pending', 'running') LIMIT 1"
+    ).fetchone()
+    if open_job:
+        return None
+    last = conn.execute(
+        "SELECT MAX(created_at) AS t FROM scheduled_jobs WHERE job_type = 'grading'"
+    ).fetchone()
+    last_created = _parse_ts(dict(last).get("t")) if last else None
+    if last_created and (now - last_created) < timedelta(minutes=min_interval_minutes):
+        return None
+
+    newest_started = (now - timedelta(hours=min_event_age_hours)).isoformat()
+    oldest_started = (now - timedelta(days=max_event_age_days)).isoformat()
+    backlog = conn.execute(
+        """SELECT 1
+           FROM historical_recommendations hr
+           LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
+           WHERE (ms.recommendation_id IS NULL OR ms.settlement_status IN ('UNRESOLVED', 'ungraded'))
+             AND hr.event_start_time IS NOT NULL
+             AND hr.event_start_time < ? AND hr.event_start_time > ?
+           LIMIT 1""",
+        (newest_started, oldest_started),
+    ).fetchone()
+    if not backlog:
+        return None
+    return create_job(conn, job_type="grading", metadata="catch-up (time-based, provider-independent)")
+
+
 # ── Manual triggers ────────────────────────────────────────────────
 
 
