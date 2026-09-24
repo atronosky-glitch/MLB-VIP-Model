@@ -2,6 +2,16 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-09-23 — Multi-platform Auto-Bet hardening: Kalshi exact mapping + real-economics My Performance
+
+State at end of session: 4 earlier local commits (`798f3f3` per-user Kalshi Auto-Bet, `cd10cb9` My Performance page, `e671094` server hard caps, `35ed034` platform-failure-isolation tests) plus this Phase E work — NOTHING PUSHED. LIVE execution is OFF everywhere; no real order was ever placed (mocks, paper, public reads only). `src/game_settlement.py` and `src/sports/cfb.py` carry unrelated pre-existing CFB WIP — leave them alone.
+
+What changed in Phase E (details in PROJECT_STATUS.md / DECISIONS.md): Kalshi exact contract mapping (`kalshi_mapping.py`, `team_codes.py`, `matching.resolve_strict_side`, `KalshiProvider.get_game_markets`), evaluator YES-probability fix, real-economics `customer_performance.py`, additive execution columns, paper fills sized from the approved stake, read-only Kalshi fill reconciliation (`autobet_reconcile.py`, called from `run_customer_autobet_pass` so the worker keeps exactly one execution-package import), honest UI labels, real-payload fixture `tests/fixtures/kalshi_game_markets.json`.
+
+Open / for the next session: (1) controlled live test with the operator's own authorization — confirm reconciliation against a real Kalshi order and Polymarket's fill report; (2) Render service rename (operator renames in the dashboard first, then update `render.yaml`); (3) env vars still to set on Render: `KALSHI_AUTOBET_SERVER_MAX_ORDER_USD`, `POLYMARKET_US_AUTOBET_SERVER_MAX_ORDER_USD` (optional, default $100), `POLYMARKET_CREDENTIAL_ENCRYPTION_KEY` (already set on customer + worker); (4) deferred: 56-section production-readiness audit, MLB `morning-run` SportsGameOdds 429 (billing), `morning-run-nfl` intermittent exit 3 (needs Render logs; `scan_runs.error_message` not populated on early exits); (5) a production DB read was blocked by the auto-mode classifier this session, so the real distribution of `raw_line`/`line` in production game rows was inferred from `grading.grade_spread` / `game_settlement.grade_spread` (signed `raw_line`, favorite negative) rather than queried — verify with one read-only query when convenient.
+
+Lessons: inspect `git diff` of every file before staging (an earlier commit swept in WIP that caused a Postgres crash-loop: a literal semicolon inside an SQL comment breaks the naive Postgres statement splitter); tests that touch `run_customer_autobet_pass` must patch `get_connection` (in-memory sqlite connections are per-connection).
+
 ## Session: 2026-08-23 — Pinnacle wired in for all 3 leagues (props + game markets), plus the LOO book-count floor
 
 Operator's business goal, stated directly: "i want all the picks that

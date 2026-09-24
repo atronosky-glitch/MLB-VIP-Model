@@ -4,6 +4,20 @@ Entries are dated. New entries are appended.
 
 ---
 
+## Kalshi contracts are matched by exact structured identity, never by fuzzy name
+
+- **Date**: 2026-09-23
+- **Decision**: A recommendation maps to a Kalshi contract only via `matching.resolve_strict_side()` over a parse (`src/execution/kalshi_mapping.py`) of the structured ticker/strike/label fields and the exact team tables in `src/execution/team_codes.py`. League, market type, Eastern event date (+ MLB start time), both teams, line and side semantics must all match; the result carries `provider_side` (YES/NO) which the evaluator uses directly. Anything unverified (period/team totals, player props, combos, NCAAF, whole-number lines, pick'em) is unsupported, not approximated. Competing exact matches are ambiguous, so no match.
+- **Reason**: Live payloads showed Kalshi moneyline is one market per team (YES = that team wins), spread is "team wins by over x.5", total is "over x.5", and team labels are non-unique ("Chicago", "Los Angeles") and inconsistent between series ("ATL Falcons" vs "Atlanta"). The earlier title-separator guess could not parse any real title, and a fuzzy team match could pair Cubs with White Sox.
+- **Consequence**: Kalshi coverage is intentionally narrow but exact. `compute_ev` and every downstream consumer take `opportunity.model_probability` as the YES-contract probability, so the evaluator converts `fair_prob` (probability of the recommended side) once (`1 - fair_prob` when buying NO) — this also corrects the legacy Polymarket HOME-to-NO path. New Kalshi series or leagues require live verification and a team-code table before being added.
+
+## My Performance is computed from actual fills, with honest gross/net labeling
+
+- **Date**: 2026-09-23
+- **Decision**: Customer P&L uses cost = `filled_quantity x avg_fill_price` (+ fees when known), never the intended stake or recommendation price. Unfilled orders are not wagers; partial fills count only the filled part; open positions are unrealized; PUSH/VOID/CANCELLED are excluded (`refund_pending`) rather than booked as zero; the headline is NET only if every settled fee is platform-reported, "fees estimated" if any is a formula estimate, GROSS if any is missing. Kalshi order responses carry only the limit price, so LIVE Kalshi rows are tagged `ORDER_LIMIT_PRICE` until a read-only worker reconciliation against Kalshi's own fills replaces them (`PLATFORM_FILLS`).
+- **Reason**: The previous version subtracted the approved stake from `filled_quantity x $1`, which mis-states P&L for partial fills, price improvement, fees and unfilled orders, and paper rows stored the analysis-stake quantity next to the customer's stake.
+- **Consequence**: Additive columns on `customer_autobet_executions`; fee/fill provenance is always visible in the UI. Reconciliation payload shapes are SDK/docs-based and must be confirmed in the first controlled live test.
+
 ## Pinnacle staleness safeguard: 900s threshold, evidence-based
 
 - **Date**: 2026-08-23

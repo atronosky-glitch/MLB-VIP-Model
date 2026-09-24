@@ -2,6 +2,7 @@
 
 ## Completed
 
+- [x] Kalshi exact contract mapping (real-payload verified, fail-closed), evaluator YES-probability fix, and real-execution-economics My Performance (fills/fees/partial/unfilled/open/refund-pending, gross-vs-net labeling) + read-only Kalshi fill reconciliation (2026-09-23) — see PROJECT_STATUS.md
 - [x] Permanent AI onboarding context — added `AI_CONTEXT.md` and required the ordered onboarding read sequence in `AGENTS.md`; no runtime or model logic changed
 - [x] Refactor threshold configuration to use module import (no longer importing by name)
 - [x] Add regression test (`test_config_changes_do_not_leak`) proving config changes propagate
@@ -157,6 +158,11 @@
 
 ## Next feature stage
 
+- [ ] **Controlled live test (needs the operator, not done)**: with a real Kalshi account and explicit authorization, confirm (a) `autobet_reconcile` turns an `ORDER_LIMIT_PRICE` row into `PLATFORM_FILLS` with real fills/fees (payload field names follow the official SDK/docs but were never exercised against a live authenticated account), (b) Polymarket's `avgPx`/`cumQuantity` synchronous fill report and whether it includes fees. Until then LIVE Kalshi P&L is labeled with limit-price/estimated-fee caveats.
+- [ ] Decide PUSH/VOID/CANCELLED refund handling per venue (currently excluded from realized P&L as `refund_pending`); Kalshi NFL moneyline tie behavior is unverified
+- [ ] Kalshi coverage gaps (deliberately unsupported; add one at a time with live verification): NCAAF (no verified team-code table), period/team totals, player props (NFL has KXNFL*YDS series), whole-number lines
+- [ ] Rename Render services off the "mlb-" prefix (waiting on the operator to rename in the Render dashboard first, then update `render.yaml` `name:` fields — do NOT change names in render.yaml first)
+- [ ] Deferred: the 56-section production-readiness audit; MLB `morning-run` HTTP 429 (SportsGameOdds quota — billing decision); `morning-run-nfl` intermittent exit 3 (exception text only in Render logs; `scan_runs.error_message` is not populated on early-exit failures)
 - [x] ~~Operator action required, urgent: confirm SportsGameOdds key/tier~~ **Resolved 2026-08-20**: the "stale 2024 data" finding was a real code bug (`get_events()` sent a nonexistent `date` param; `_parse_status()` looked for a `"state"` key the real API never has), not an account/tier issue. Both fixed and live-verified — MLB (34 real recs) and NFL (25 real recs) both confirmed generating real current-game recommendations end-to-end. See `docs/SESSION_HANDOFF.md` → "SportsGameOdds investigation".
 - [x] ~~Operator action required: set `THE_ODDS_API_KEY` in Render's dashboard for `mlb-vip-worker`~~ **Resolved 2026-08-20/21**: set on `mlb-vip-worker`, then also needed and set on `mlb-vip-dashboard` (the WNBA schedule-discovery display runs inside that process too — a real "0 games" bug traced to this specific gap, see the 2026-08-21 entry below).
 - [x] ~~Reconcile the local `THE_ODDS_API_KEY` discrepancy~~ **Resolved 2026-08-23**: two separate causes, both closed. (1) Local `.env` genuinely had a different, non-upgraded key than Render's — operator provided the real production key, `.env` updated (gitignored, never committed). (2) Even after fixing `.env`, live calls kept showing the old 500-credit numbers — root cause was a `THE_ODDS_API_KEY` environment variable already exported at the OS/shell level (outside `.env`, outside this repo), which `load_dotenv()` never overrides. **Any local testing session must pass `THE_ODDS_API_KEY=$(grep THE_ODDS_API_KEY .env | cut -d= -f2)` as a command prefix** (or otherwise ensure the shell-level export doesn't shadow `.env`) — confirmed the real key correctly shows 18,934/20,000 remaining once the shell override is bypassed. Not a code bug in this repo.
