@@ -343,9 +343,9 @@ def performance_summary(
     settled = wins + losses + pushes + voids + cancelled
 
     # Risked/won = only WIN and LOSS (pushes/voids/cancelled get 0 risk)
-    risked = sum(r.get("risk_units", 0) for r in recs
+    risked = sum((r.get("risk_units") or 0) for r in recs
                  if r.get("settlement_status") in (SETTLEMENT_WIN, SETTLEMENT_LOSS))
-    won = sum(r.get("profit_units", 0) for r in recs
+    won = sum((r.get("profit_units") or 0) for r in recs
               if r.get("settlement_status") in (SETTLEMENT_WIN, SETTLEMENT_LOSS))
 
     win_rate = wins / settled if settled > 0 else 0.0

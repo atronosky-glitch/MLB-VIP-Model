@@ -303,7 +303,8 @@ def _get_session_token() -> str | None:
     returned None even with a real cookie already sitting in the
     browser) -- it's kept only for SETTING a cookie, since
     st.context.cookies is read-only."""
-    return st.context.cookies.get(SESSION_COOKIE_NAME)
+    token = st.context.cookies.get(SESSION_COOKIE_NAME)
+    return token if isinstance(token, str) and 0 < len(token) <= 512 else None   # only a plausible string
 
 
 def _set_session_cookie(token: str) -> None:
@@ -1342,6 +1343,17 @@ def _render_policy_page(page: str) -> bool:
         st.markdown(_TERMS_OF_SERVICE_DRAFT)
         return True
     return False
+
+
+@st.cache_resource(show_spinner=False)
+def _log_backend_once() -> bool:
+    """Log (once per process) which database this service points at."""
+    from database.connection import describe_database_backend
+    logger.info("DATABASE_BACKEND service=customer %s", describe_database_backend())
+    return True
+
+
+_log_backend_once()
 
 
 @st.cache_data(ttl=30, show_spinner=False)

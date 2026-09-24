@@ -260,8 +260,10 @@ def _run_morning_scan(config, league: str = "MLB") -> dict:
 
 def _initialize_worker_schema(config) -> None:
     """Initialize the complete schema before any worker database activity."""
+    from database.connection import describe_database_backend
     from database.db_manager import init_db
 
+    logger.info("DATABASE_BACKEND service=worker %s", describe_database_backend())
     try:
         init_db(config.database_path)
     except Exception as exc:

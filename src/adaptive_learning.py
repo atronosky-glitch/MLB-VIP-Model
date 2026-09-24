@@ -358,9 +358,9 @@ def _compute_segment_performance(recs: list[dict]) -> SegmentPerformance:
 
     win_rate = wins / settled if settled > 0 else 0.0
 
-    risked = sum(r.get("risk_units", 0) for r in recs
+    risked = sum((r.get("risk_units") or 0) for r in recs
                  if r.get("settlement_status") in ("WIN", "LOSS"))
-    won = sum(r.get("profit_units", 0) for r in recs
+    won = sum((r.get("profit_units") or 0) for r in recs
               if r.get("settlement_status") in ("WIN", "LOSS"))
     roi = won / risked if risked > 0 else 0.0
 
@@ -377,7 +377,7 @@ def _compute_segment_performance(recs: list[dict]) -> SegmentPerformance:
 
     # Max drawdown
     profits = sorted(
-        [r.get("profit_units", 0) for r in recs if r.get("settlement_status") in ("WIN", "LOSS")],
+        [(r.get("profit_units") or 0) for r in recs if r.get("settlement_status") in ("WIN", "LOSS")],
         key=lambda x: 0,
     )
     max_dd = _compute_max_drawdown(profits)
@@ -666,9 +666,9 @@ def compute_score_calibration(conn) -> dict:
 
         win_rate = wins / settled if settled > 0 else 0.0
 
-        risked = sum(r.get("risk_units", 0) for r in bucket_recs
+        risked = sum((r.get("risk_units") or 0) for r in bucket_recs
                      if r.get("settlement_status") in ("WIN", "LOSS"))
-        won = sum(r.get("profit_units", 0) for r in bucket_recs
+        won = sum((r.get("profit_units") or 0) for r in bucket_recs
                   if r.get("settlement_status") in ("WIN", "LOSS"))
         roi = won / risked if risked > 0 else 0.0
 
