@@ -349,6 +349,16 @@ def score_match(rec: RecommendationEvent, prov: ProviderEvent) -> MatchResult:
 
 _START_TIME_TOLERANCE = timedelta(minutes=60)
 
+# Leagues where a game can END TIED, so a moneyline contract's settlement on
+# a tie (both "wins" contracts NO? a refund? a void?) matters. Neither
+# Kalshi's nor Polymarket US's tie handling has been verified from contract
+# rules or settlement data, and it must not be inferred from sportsbook
+# grading (where a tie is a PUSH). Moneyline for these leagues is therefore
+# UNSUPPORTED for prediction-market execution until verified. Spread/total
+# markets are unaffected: their lines are x.5 (verified) so a tie cannot push.
+# MLB (extra innings) and WNBA (overtime) cannot tie.
+TIE_POSSIBLE_MONEYLINE_LEAGUES = frozenset({"NFL"})
+
 
 def _is_half_integer(value: float) -> bool:
     doubled = value * 2
@@ -404,6 +414,9 @@ def resolve_strict_side(rec: RecommendationEvent, prov: ProviderEvent) -> tuple[
     if side not in ("HOME", "AWAY"):
         return None, "side_unrecognized"
     rec_team, opp_team = (home, away) if side == "HOME" else (away, home)
+
+    if logical == "moneyline" and prov.league.upper() in TIE_POSSIBLE_MONEYLINE_LEAGUES:
+        return None, "tie_settlement_unverified"
 
     if logical == "moneyline":
         # YES only when the contract's YES team IS the rec-side team. A

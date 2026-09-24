@@ -75,6 +75,13 @@ def _match(provider, rec, raws=None):
     return find_best_match(rec, _candidates(provider, raws), 0.98)
 
 
+def _lift_tie_guard(monkeypatch):
+    """The NFL fixtures exercise the mapping LOGIC; the tie guard that makes
+    NFL moneyline unsupported by default is tested separately below."""
+    import src.execution.matching as matching
+    monkeypatch.setattr(matching, "TIE_POSSIBLE_MONEYLINE_LEAGUES", frozenset())
+
+
 # ── real payload structure ───────────────────────────────────────────
 
 
@@ -182,12 +189,14 @@ class TestUnsupportedShapesFailClosed:
 
 
 class TestMoneylineExactMapping:
-    def test_away_pick_maps_to_the_away_teams_yes_contract(self, provider):
+    def test_away_pick_maps_to_the_away_teams_yes_contract(self, provider, monkeypatch):
+        _lift_tie_guard(monkeypatch)
         rec = _rec("game_moneyline", NFL_ATL_NO[0], "AWAY", NFL_ATL_NO[1], "NFL")
         m = _match(provider, rec)
         assert (m.provider_market_id, m.provider_side) == ("KXNFLGAME-26OCT05ATLNO-ATL", "YES")
 
-    def test_home_pick_maps_to_the_home_teams_yes_contract(self, provider):
+    def test_home_pick_maps_to_the_home_teams_yes_contract(self, provider, monkeypatch):
+        _lift_tie_guard(monkeypatch)
         rec = _rec("game_moneyline", NFL_ATL_NO[0], "HOME", NFL_ATL_NO[1], "NFL")
         m = _match(provider, rec)
         assert (m.provider_market_id, m.provider_side) == ("KXNFLGAME-26OCT05ATLNO-NO", "YES")
@@ -406,3 +415,30 @@ class TestGetGameMarkets:
             provider.get_game_markets()
         post.assert_not_called()
         delete.assert_not_called()
+
+
+class TestTieCapableMoneylineFailsClosed:
+    """Kalshi's settlement of an NFL tie is unverified and must not be
+    inferred from sportsbook grading (where a tie is a push)."""
+
+    def test_nfl_moneyline_is_unsupported_by_default_for_both_sides(self, provider):
+        for side in ("AWAY", "HOME"):
+            rec = _rec("game_moneyline", NFL_ATL_NO[0], side, NFL_ATL_NO[1], "NFL")
+            assert _match(provider, rec) is None
+
+    def test_reason_is_explicit(self, provider):
+        from src.execution.matching import resolve_strict_side
+        rec = _rec("game_moneyline", NFL_ATL_NO[0], "AWAY", NFL_ATL_NO[1], "NFL")
+        ev = next(c for c in _candidates(provider) if c.market_id.endswith("ATLNO-ATL"))
+        assert resolve_strict_side(rec, ev) == (None, "tie_settlement_unverified")
+
+    def test_nfl_spread_and_total_are_unaffected_because_half_point_lines_cannot_push(self, provider):
+        spread = _rec("game_spread_ou", NFL_PHI_CHI[0], "AWAY", NFL_PHI_CHI[1], "NFL", line=7.5, raw_line=-7.5)
+        total = _rec("game_total_ou", NFL_PHI_CHI[0], "OVER", NFL_PHI_CHI[1], "NFL", line=65.5)
+        assert _match(provider, spread) is not None
+        assert _match(provider, total) is not None
+
+    def test_mlb_and_wnba_moneyline_cannot_tie_and_stay_supported(self, provider):
+        assert _match(provider, _rec("game_moneyline", MLB_AZ_SD[0], "AWAY", MLB_AZ_SD[1], "MLB")) is not None
+        wnba = _rec("game_moneyline", "Las Vegas Aces @ Phoenix Mercury", "HOME", "2026-09-25T00:00:00+00:00", "WNBA")
+        assert _match(provider, wnba) is not None

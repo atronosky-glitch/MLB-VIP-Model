@@ -64,6 +64,13 @@ def _match(provider, rec, raws):
     return find_best_match(rec, events, 0.98)
 
 
+def _lift_tie_guard(monkeypatch):
+    """The NFL fixtures exercise the mapping LOGIC; the tie guard that makes
+    NFL moneyline unsupported by default is tested in TestTieCapableMoneyline."""
+    import src.execution.matching as matching
+    monkeypatch.setattr(matching, "TIE_POSSIBLE_MONEYLINE_LEAGUES", frozenset())
+
+
 class TestParsing:
     def test_real_payloads_parse_when_open(self):
         for raw in (LAC_TEN, CAR_GB):
@@ -118,13 +125,15 @@ class TestParsing:
 
 
 class TestExactMapping:
-    def test_away_pick_is_yes_and_home_pick_is_no_on_the_single_market(self, provider):
+    def test_away_pick_is_yes_and_home_pick_is_no_on_the_single_market(self, provider, monkeypatch):
+        _lift_tie_guard(monkeypatch)
         away = _match(provider, _rec("AWAY"), [LAC_TEN, CAR_GB])
         home = _match(provider, _rec("HOME"), [LAC_TEN, CAR_GB])
         assert (away.provider_market_id, away.provider_side) == ("aec-nfl-lac-ten-2025-11-02", "YES")
         assert (home.provider_market_id, home.provider_side) == ("aec-nfl-lac-ten-2025-11-02", "NO")
 
-    def test_mapping_follows_the_payloads_long_side_not_an_away_assumption(self, provider):
+    def test_mapping_follows_the_payloads_long_side_not_an_away_assumption(self, provider, monkeypatch):
+        _lift_tie_guard(monkeypatch)
         flipped = copy.deepcopy(LAC_TEN)                   # synthetic mutation of a real payload
         flipped["marketSides"][0]["long"], flipped["marketSides"][1]["long"] = False, True
         away = _match(provider, _rec("AWAY"), [flipped])
@@ -175,3 +184,9 @@ class TestGetGameMarkets:
              mock.patch.object(provider.session, "post") as post:
             provider.get_game_markets()
         post.assert_not_called()
+
+
+class TestTieCapableMoneylineFailsClosed:
+    def test_nfl_moneyline_is_unsupported_by_default_on_both_sides(self, provider):
+        assert _match(provider, _rec("AWAY"), [LAC_TEN]) is None
+        assert _match(provider, _rec("HOME"), [LAC_TEN]) is None
