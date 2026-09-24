@@ -464,6 +464,24 @@ def get_connection(
     return DB(conn, dialect="sqlite")
 
 
+def describe_database_backend() -> str:
+    """Credential-free one-line description of the configured backend, for
+    startup logs and the readiness report: proves which database a service
+    actually points at (production must be PostgreSQL, the same host on the
+    customer site, worker and dashboard) without ever exposing the user or
+    password."""
+    url = os.environ.get("DATABASE_URL", "")
+    if not url:
+        return "sqlite (local file; DATABASE_URL not set)"
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or "unknown").split("+")[0]
+        return f"{scheme} host={parsed.hostname or '?'} db={(parsed.path or '/').lstrip('/') or '?'}"
+    except Exception:
+        return "postgresql (DATABASE_URL set; could not parse)"
+
+
 def get_database_url() -> str | None:
     """Return the DATABASE_URL from environment, or None for SQLite mode."""
     return os.environ.get("DATABASE_URL", "")
