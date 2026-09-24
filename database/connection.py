@@ -182,6 +182,79 @@ def _convert_sql_with_or_ignore(sql: str, dialect: str) -> str:
 # ── Result wrapper ────────────────────────────────────────────────
 
 
+def split_sql_statements(script: str) -> list[str]:
+    """Split a multi-statement SQL script on top-level semicolons only.
+
+    Replaces a naive ``script.split(";")`` that caused a production outage
+    (2026-09-22: a literal semicolon inside an SQL COMMENT produced a
+    comment-only fragment, which PostgreSQL rejects with "can't execute an
+    empty query"). This tokenizer ignores semicolons inside:
+      * -- line comments and /* block comments */ (comments are dropped)
+      * 'single-quoted strings' (with '' escapes)
+      * "double-quoted identifiers"
+      * $$dollar-quoted$$ / $tag$...$tag$ bodies
+    and never returns an empty or comment-only statement. Pure function.
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(script)
+    while i < n:
+        c = script[i]
+        nxt = script[i + 1] if i + 1 < n else ""
+        if c == "-" and nxt == "-":                      # line comment
+            j = script.find("\n", i)
+            i = n if j == -1 else j
+            continue
+        if c == "/" and nxt == "*":                      # block comment (nestable in PG)
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if script.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif script.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            buf.append(" ")
+            continue
+        if c == "'" or c == '"':                          # quoted string / identifier
+            quote, j = c, i + 1
+            while j < n:
+                if script[j] == quote:
+                    if j + 1 < n and script[j + 1] == quote:   # doubled quote escape
+                        j += 2
+                        continue
+                    break
+                j += 1
+            buf.append(script[i:j + 1])
+            i = j + 1
+            continue
+        if c == "$":                                      # dollar-quoted body
+            j = i + 1
+            while j < n and (script[j].isalnum() or script[j] == "_"):
+                j += 1
+            if j < n and script[j] == "$":
+                tag = script[i:j + 1]
+                end = script.find(tag, j + 1)
+                end = n if end == -1 else end + len(tag)
+                buf.append(script[i:end])
+                i = end
+                continue
+        if c == ";":
+            stmt = "".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
+
 class DBResult:
     """Uniform result set for both SQLite and PostgreSQL cursors."""
 
@@ -264,20 +337,18 @@ class DB:
         if self.dialect == "sqlite":
             self._conn.executescript(sql_script)
         else:
-            # Split on semicolons and execute each statement
-            for statement_number, statement in enumerate(sql_script.split(";"), 1):
-                statement = statement.strip()
-                if statement:
-                    converted = _convert_sql(statement, "postgresql")
-                    try:
-                        cursor = self._conn.cursor()
-                        cursor.execute(converted)
-                    except Exception as exc:
-                        self._conn.rollback()
-                        raise RuntimeError(
-                            f"PostgreSQL schema statement {statement_number} failed: "
-                            f"{exc}; SQL={statement[:240]}"
-                        ) from exc
+            # Execute each top-level statement (comment/string/dollar-quote aware)
+            for statement_number, statement in enumerate(split_sql_statements(sql_script), 1):
+                converted = _convert_sql(statement, "postgresql")
+                try:
+                    cursor = self._conn.cursor()
+                    cursor.execute(converted)
+                except Exception as exc:
+                    self._conn.rollback()
+                    raise RuntimeError(
+                        f"PostgreSQL schema statement {statement_number} failed: "
+                        f"{exc}; SQL={statement[:240]}"
+                    ) from exc
 
 
     def executemany(self, sql: str, params_list: list[tuple]) -> DBResult:
