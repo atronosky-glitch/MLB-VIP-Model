@@ -158,6 +158,8 @@
 
 ## Next feature stage
 
+- [ ] SportsGameOdds monthly entity quota is exhausted (2503/2500, tier amateur, 10 req/min) — operator decision on plan/billing or waiting for the cycle reset; MLB falls back to the Odds API for game markets meanwhile
+- [ ] After the next `morning-run-nfl` exit 3, read the `PIPELINE_FAILURE` log line / `scan_runs.metadata_json.failure` for the real cause (provider, stage, HTTP status, exception class) — do not guess-fix
 - [ ] **Controlled live test (needs the operator, not done)**: with a real Kalshi account and explicit authorization, confirm (a) `autobet_reconcile` turns an `ORDER_LIMIT_PRICE` row into `PLATFORM_FILLS` with real fills/fees (payload field names follow the official SDK/docs but were never exercised against a live authenticated account), (b) Polymarket's `avgPx`/`cumQuantity` synchronous fill report and whether it includes fees. Until then LIVE Kalshi P&L is labeled with limit-price/estimated-fee caveats.
 - [ ] Decide PUSH/VOID/CANCELLED refund handling per venue (currently excluded from realized P&L as `refund_pending`); Kalshi NFL moneyline tie behavior is unverified
 - [ ] Kalshi coverage gaps (deliberately unsupported; add one at a time with live verification): NCAAF (no verified team-code table), period/team totals, player props (NFL has KXNFL*YDS series), whole-number lines
