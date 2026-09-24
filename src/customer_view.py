@@ -2249,3 +2249,15 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 st.caption("This platform does not guarantee profit, place bets, or present Full Board signals as Top Picks.")
+
+# Customer basics (launch audit 2026-09-24): responsible-use / risk disclosure,
+# legal links and a support contact. The Terms/Privacy pages are DRAFTS pending
+# real legal review -- see docs/LAUNCH_RUNBOOK.md.
+_support_email = os.environ.get("MLB_SUPPORT_EMAIL", "").strip()
+_support_line = f" · Support: {_support_email}" if _support_email else ""
+st.caption(
+    "For informational and educational purposes only — not financial or betting advice. Sports betting "
+    "involves real risk of loss; never wager more than you can afford to lose, and only where it is legal "
+    "and you are of legal age (21+ in most US states). If gambling is a problem, call 1-800-GAMBLER. "
+    f"[Privacy Policy](?page=privacy) · [Terms of Service](?page=terms){_support_line}"
+)

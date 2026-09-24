@@ -106,6 +106,9 @@ services:
         sync: false
       - key: SITE_BASE_URL
         sync: false
+      # Shown in the customer-site footer as the support contact (optional).
+      - key: MLB_SUPPORT_EMAIL
+        sync: false
       # Per-customer Polymarket Auto-Bet (src/customer_polymarket.py,
       # src/credential_encryption.py) -- the Fernet master key used to
       # encrypt every customer's Polymarket API Key/Private Key at
