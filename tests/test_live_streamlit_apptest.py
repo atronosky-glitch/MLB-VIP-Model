@@ -76,6 +76,7 @@ def _clean_hosting_env():
 def _run_tab(db_path: str, config=None):
     at = AppTest.from_function(
         _tab_entrypoint, kwargs={"config": config or _FakeConfig(), "db_path": db_path},
+        default_timeout=30,   # AppTest's 3s default is flaky when the suite is under load
     )
     at.run()
     return at

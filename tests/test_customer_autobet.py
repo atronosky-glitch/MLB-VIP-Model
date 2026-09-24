@@ -8,7 +8,7 @@ provider network calls are mocked."""
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest import mock
 
@@ -145,7 +145,7 @@ def _signal(**overrides) -> ExecutionSignal:
     defaults = dict(
         recommendation_id="rec-1", league="MLB", market_type="moneyline",
         home_team="Toronto Blue Jays", away_team="Athletics", side="AWAY", line=None,
-        event_start_time=None, model_probability=Decimal("0.72"), sportsbook_ev_pct=6.0,
+        event_start_time=datetime.now(timezone.utc) + timedelta(hours=3), model_probability=Decimal("0.72"), sportsbook_ev_pct=6.0,
         rec_status="STRONG_EDGE", signal_timestamp=datetime.now(timezone.utc),
     )
     defaults.update(overrides)
@@ -679,12 +679,12 @@ class TestLiveModeGatingAndHybridApproval:
     def test_server_hard_cap_blocks_auto_approval_even_under_the_customers_own_cap(self, db_conn):
         """The operator's server-side ceiling is a genuine ADDITIONAL
         gate, not a re-statement of the customer's own cap: a customer
-        could set a generous $10,000 auto_approve_max_usd, but the
+        could set the maximum allowed $5,000 auto_approve_max_usd, but the
         server-wide config.polymarket_us_autobet_server_max_order_usd
         still caps what can auto-execute unattended. No customer
         setting can override it."""
         account = self._live_account(
-            db_conn, auto_approve_max_usd=10000.0, unit_size_usd=10.0, max_bet_usd=10.0,
+            db_conn, auto_approve_max_usd=5000.0, unit_size_usd=10.0, max_bet_usd=10.0,
         )
         config = _FakeRiskConfig()
         config.polymarket_us_autobet_server_max_order_usd = 1.0  # far below the $10 stake
@@ -1014,3 +1014,40 @@ class TestRecordedExecutionEconomics:
         assert row["filled_quantity"] == 0.0
         assert row["avg_fill_price"] is None
         assert row["fill_source"] is None and row["fees_usd"] is None
+
+
+class TestLiveGameSafety:
+    """Auto-Bet must never place or queue an order for a game that has
+    started, is about to start, or has an unknown start time."""
+
+    @pytest.mark.parametrize("delta", [timedelta(minutes=-30), timedelta(seconds=30), timedelta(minutes=1)])
+    def test_started_or_imminent_game_is_skipped_without_a_claim_or_record(self, db_conn, delta):
+        _connect_polymarket(db_conn, "acct-1")
+        _enable_autobet(db_conn, "acct-1")
+        account = _account_row(db_conn, "acct-1")
+        status = autobet.process_recommendation_for_account(
+            db_conn, _FakeRiskConfig(), account, "polymarket_us", _opportunity(),
+            _signal(event_start_time=datetime.now(timezone.utc) + delta),
+        )
+        assert status == "SKIPPED"
+        assert db_conn.execute("SELECT COUNT(*) AS n FROM customer_autobet_executions").fetchone()["n"] == 0
+        assert db_conn.execute("SELECT COUNT(*) AS n FROM customer_autobet_platform_claims").fetchone()["n"] == 0
+
+    def test_unknown_start_time_fails_closed(self, db_conn):
+        _connect_polymarket(db_conn, "acct-1")
+        _enable_autobet(db_conn, "acct-1")
+        account = _account_row(db_conn, "acct-1")
+        status = autobet.process_recommendation_for_account(
+            db_conn, _FakeRiskConfig(), account, "polymarket_us", _opportunity(), _signal(event_start_time=None),
+        )
+        assert status == "SKIPPED"
+        assert db_conn.execute("SELECT COUNT(*) AS n FROM customer_autobet_executions").fetchone()["n"] == 0
+
+    def test_a_game_hours_away_still_executes(self, db_conn):
+        _connect_polymarket(db_conn, "acct-1")
+        _enable_autobet(db_conn, "acct-1")
+        account = _account_row(db_conn, "acct-1")
+        status = autobet.process_recommendation_for_account(
+            db_conn, _FakeRiskConfig(), account, "polymarket_us", _opportunity(), _signal(),
+        )
+        assert status == "EXECUTED"

@@ -47,7 +47,7 @@ def live_scan(
         print("No providers enabled -- nothing to scan.")
         return 0
 
-    rows = _load_actionable_rows(config)
+    rows = _load_actionable_rows(config, official_only=True)
     gathered = _gather_qualified_signals(config, providers, rows, league, limit)
 
     conn = get_connection(config.database_path)

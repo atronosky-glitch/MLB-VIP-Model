@@ -11,34 +11,41 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _seed_rec(conn, rec_id, *, player="Judge", ev=5.0, adv=None, status="STRONG_EDGE", official=True,
+              start_delta_hours=3, pick_status="ACTIVE"):
+    """Insert a REAL-schema recommendation (and, if *official*, its ACTIVE
+    official_picks row). The Discord loader reads official picks only."""
+    from datetime import datetime, timedelta, timezone
+    start = (datetime.now(timezone.utc) + timedelta(hours=start_delta_hours)).isoformat()
+    conn.execute(
+        """INSERT INTO historical_recommendations (
+               recommendation_id, fingerprint, event_id, player_id, player_name, market_type, market_form,
+               period, line, side, sportsbook, offered_american_odds, offered_decimal_odds,
+               offered_implied_prob, ev_pct, yn_implied_prob_adv, rec_status, rec_eligible, scan_timestamp,
+               event_start_time)
+           VALUES (?, ?, ?, ?, ?, 'strikeouts', 'ou', 'full_game', 6.5, 'OVER', 'DK', -110, 1.909, 0.524,
+                   ?, ?, ?, 1, ?, ?)""",
+        (rec_id, f"fp-{rec_id}", f"E-{rec_id}", f"P-{rec_id}", player, ev, adv, status,
+         datetime.now(timezone.utc).isoformat(), start),
+    )
+    if official:
+        conn.execute(
+            "INSERT INTO official_picks (recommendation_id, tier, official_rank, pick_status) "
+            "VALUES (?, 'OFFICIAL_TRACKED', 1, ?)", (rec_id, pick_status),
+        )
+    conn.commit()
+
+
+
 class TestDiscordDelivery:
 
     def _make_db_with_recs(self, tmp_path: Path) -> Path:
+        from database.db_manager import init_db
         db_path = tmp_path / "test.db"
+        init_db(str(db_path))
         conn = sqlite3.connect(str(db_path))
-        conn.execute("""
-            CREATE TABLE historical_recommendations (
-                id INTEGER PRIMARY KEY,
-                player_name TEXT,
-                event_id TEXT,
-                market_type TEXT,
-                sportsbook TEXT,
-                offered_american_odds INTEGER,
-                ev_pct REAL,
-                yn_implied_prob_adv REAL,
-                rec_status TEXT,
-                fingerprint TEXT
-            )
-        """)
-        conn.execute(
-            "INSERT INTO historical_recommendations VALUES (1, 'Judge', 'NYY-BOS', 'strikeouts', "
-            "'DK', -110, 0.05, NULL, 'STRONG_EDGE', 'fp_abc123')"
-        )
-        conn.execute(
-            "INSERT INTO historical_recommendations VALUES (2, 'Ohtani', 'LAD-SF', 'home_runs', "
-            "'FD', 350, NULL, 0.06, 'POSITIVE_EDGE', 'fp_def456')"
-        )
-        conn.commit()
+        _seed_rec(conn, "rec-1", player="Judge", ev=5.0, status="STRONG_EDGE")
+        _seed_rec(conn, "rec-2", player="Ohtani", ev=None, adv=6.0, status="POSITIVE_EDGE")
         conn.close()
         return db_path
 
@@ -80,28 +87,12 @@ class TestDiscordDelivery:
             assert result["sent"] >= 2
 
     def test_deliver_filters_by_min_ev(self, tmp_path):
+        from database.db_manager import init_db
         from src.discord_delivery import deliver_recommendations
         db_path = tmp_path / "low_ev.db"
+        init_db(str(db_path))
         conn = sqlite3.connect(str(db_path))
-        conn.execute("""
-            CREATE TABLE historical_recommendations (
-                id INTEGER PRIMARY KEY,
-                player_name TEXT,
-                event_id TEXT,
-                market_type TEXT,
-                sportsbook TEXT,
-                offered_american_odds INTEGER,
-                ev_pct REAL,
-                yn_implied_prob_adv REAL,
-                rec_status TEXT,
-                fingerprint TEXT
-            )
-        """)
-        conn.execute(
-            "INSERT INTO historical_recommendations VALUES (1, 'Judge', 'E1', 'strikeouts', "
-            "'DK', -110, 0.01, 0.01, 'STRONG_EDGE', 'fp_abc')"
-        )
-        conn.commit()
+        _seed_rec(conn, "rec-low", ev=0.01, adv=0.01)
         conn.close()
         with patch("src.discord_delivery._send_webhook_raw", return_value=True):
             result = deliver_recommendations(
@@ -239,6 +230,8 @@ class TestNewRecommendationAlerts:
                 5.0, 'STRONG_EDGE', 1, '2026-09-10T00:00:00+00:00'
             )
         """)
+        conn.execute("INSERT INTO official_picks (recommendation_id, tier, official_rank) "
+                     "VALUES ('rec-1', 'OFFICIAL_TRACKED', 1)")
         conn.commit()
         conn.close()
         return db_path
@@ -331,3 +324,61 @@ class TestDeliverNoRecsInDb:
             db_path, ["https://discord.com/api/webhooks/test"]
         )
         assert result["sent"] == 0
+
+
+class TestDiscordConsumesOfficialPicksOnly:
+    """Launch audit 2026-09-24: the customer site, history, stats and Auto-Bet
+    all treat the ACTIVE row of official_picks as THE recommendation; Discord
+    must too."""
+
+    def _db(self, tmp_path):
+        from database.db_manager import init_db
+        path = tmp_path / "official.db"
+        init_db(str(path))
+        return path, sqlite3.connect(str(path))
+
+    def test_research_and_unofficial_recommendations_are_never_alerted(self, tmp_path):
+        from src.discord_delivery import _load_actionable_recommendations
+        path, conn = self._db(tmp_path)
+        _seed_rec(conn, "official-1", official=True)
+        _seed_rec(conn, "research-1", official=False)                     # actionable EV but not official
+        conn.close()
+        ids = {r["recommendation_id"] for r in _load_actionable_recommendations(path)}
+        assert ids == {"official-1"}
+
+    def test_superseded_official_picks_are_not_alerted(self, tmp_path):
+        from src.discord_delivery import _load_actionable_recommendations
+        path, conn = self._db(tmp_path)
+        _seed_rec(conn, "old-pick", pick_status="SUPERSEDED")
+        _seed_rec(conn, "new-pick", pick_status="ACTIVE")
+        conn.close()
+        assert {r["recommendation_id"] for r in _load_actionable_recommendations(path)} == {"new-pick"}
+
+    def test_a_game_that_already_started_is_not_alerted(self, tmp_path):
+        from src.discord_delivery import _load_actionable_recommendations
+        path, conn = self._db(tmp_path)
+        _seed_rec(conn, "started", start_delta_hours=-1)
+        _seed_rec(conn, "upcoming", start_delta_hours=2)
+        conn.close()
+        assert {r["recommendation_id"] for r in _load_actionable_recommendations(path)} == {"upcoming"}
+
+    def test_non_actionable_status_of_an_official_pick_is_not_alerted(self, tmp_path):
+        from src.discord_delivery import _load_actionable_recommendations
+        path, conn = self._db(tmp_path)
+        _seed_rec(conn, "no-edge", status="NO_EDGE")
+        conn.close()
+        assert _load_actionable_recommendations(path) == []
+
+    def test_end_to_end_only_the_official_pick_reaches_the_webhook_and_only_once(self, tmp_path):
+        from src.discord_delivery import deliver_new_recommendation_alerts
+        path, conn = self._db(tmp_path)
+        _seed_rec(conn, "official-1", player="Official Guy")
+        _seed_rec(conn, "research-1", player="Research Guy", official=False)
+        conn.close()
+        sent = []
+        with patch("src.discord_delivery._send_webhook_raw", side_effect=lambda url, payload, *a, **k: sent.append(str(payload)) or True):
+            first = deliver_new_recommendation_alerts(path, ["https://discord.com/api/webhooks/1/x"])
+            second = deliver_new_recommendation_alerts(path, ["https://discord.com/api/webhooks/1/x"])
+        blob = " ".join(sent)
+        assert "Official Guy" in blob and "Research Guy" not in blob
+        assert first["sent"] == 1 and second["sent"] == 0             # dedup: the same pick is never re-sent

@@ -490,21 +490,31 @@ def _load_actionable_recommendations(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        if "historical_recommendations" not in tables:
+        if "historical_recommendations" not in tables or "official_picks" not in tables:
             return []
 
         # rec_status values actually written by src/prop_config.py's
         # classification (see BET_STATUS_*/YN_STATUS_* there) -- 'BET'/
         # 'LEAN' never existed in this schema, so this query previously
         # matched zero rows in production, silently.
+        # OFFICIAL picks only (2026-09-24 launch audit): the customer site,
+        # history and stats all treat the ACTIVE row in official_picks as the
+        # one true recommendation, so alerts must too -- research/discovery
+        # tier rows never reach a customer Discord channel. Games that have
+        # already started are excluded (a late retry must not announce a
+        # pregame pick after first pitch).
+        now_iso = datetime.now(timezone.utc).isoformat()
         cursor = conn.execute("""
-            SELECT *
-            FROM historical_recommendations
-            WHERE rec_status IN ('STRONG_EDGE', 'POSITIVE_EDGE', 'STRONG_PRICE_OUTLIER', 'PRICE_OUTLIER')
-              AND (ev_pct >= ? OR yn_implied_prob_adv >= ? OR ev_pct IS NULL)
-            ORDER BY ev_pct DESC
+            SELECT hr.*
+            FROM historical_recommendations hr
+            JOIN official_picks op ON op.recommendation_id = hr.recommendation_id
+            WHERE op.pick_status = 'ACTIVE'
+              AND hr.rec_status IN ('STRONG_EDGE', 'POSITIVE_EDGE', 'STRONG_PRICE_OUTLIER', 'PRICE_OUTLIER')
+              AND (hr.ev_pct >= ? OR hr.yn_implied_prob_adv >= ? OR hr.ev_pct IS NULL)
+              AND (hr.event_start_time IS NULL OR hr.event_start_time > ?)
+            ORDER BY hr.ev_pct DESC
             LIMIT 50
-        """, (min_ev_pct, min_ev_pct))
+        """, (min_ev_pct, min_ev_pct, now_iso))
 
         return [dict(row) for row in cursor.fetchall()]
     finally:

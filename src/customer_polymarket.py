@@ -40,6 +40,9 @@ from src.credential_encryption import (
 from src.execution.credentials import CredentialLoadError
 from src.execution.polymarket_us import PolymarketUSProvider
 
+from src.autobet_validation import validate_credential_inputs, validate_risk_settings
+from src.customer_accounts import allow_rate_limited_action
+
 logger = logging.getLogger(__name__)
 
 # Conservative starting defaults for a customer who hasn't configured
@@ -140,6 +143,12 @@ def connect_account(conn, account_id: str, api_key_id: str, private_key_b64: str
     Replace-Credentials call -- rotating credentials never carries
     forward a prior enabled state, so the customer must deliberately
     re-enable Auto-Bet after confirming the new credentials work."""
+    shape_error = validate_credential_inputs(api_key_id, private_key_b64)
+    if shape_error:
+        return False, shape_error
+    # Each attempt is a live authenticated call to the provider: bound them.
+    if not allow_rate_limited_action(conn, "cred_verify", account_id, 5, 600):
+        return False, "Too many connection attempts. Please wait a few minutes and try again."
     ok, message = verify_credentials(api_key_id, private_key_b64)
     now = datetime.now(timezone.utc).isoformat()
 
@@ -312,6 +321,7 @@ def save_risk_settings(conn, account_id: str, **settings) -> None:
     if existing is None:
         raise ValueError("connect a Polymarket account before saving risk settings")
 
+    settings = validate_risk_settings(settings)   # server-side bounds: NaN/inf/negative/absurd rejected
     set_clause = ", ".join(f"{f} = ?" for f in settings)
     values = [settings[f] for f in settings]
     conn.execute(

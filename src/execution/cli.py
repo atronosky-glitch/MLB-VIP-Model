@@ -16,6 +16,7 @@ signatures, or private keys.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import copy
 import sys
 from decimal import Decimal
@@ -243,15 +244,34 @@ def candidate_game_markets(provider: Any) -> list:
     return provider.get_markets(limit=200)
 
 
-def _load_actionable_rows(config: Any) -> list[dict]:
+def _load_actionable_rows(config: Any, official_only: bool = False) -> list[dict]:
+    """Recommendation rows the execution layer may consider.
+
+    *official_only=True* (REQUIRED for every path that can place a real order:
+    customer Auto-Bet and live-scan) restricts to recommendations that are
+    the ACTIVE row in ``official_picks`` -- the one true "official
+    recommendation" source the customer site, history and stats already use --
+    and whose game has not started. The default (False) keeps the broader
+    analysis view used by the read-only scan-opportunities / paper-scan CLIs.
+    """
     conn = get_connection(config.database_path)
     try:
         statuses = config.execution_allowed_rec_statuses_list()
         placeholders = ",".join("?" * len(statuses))
-        rows = conn.execute(
-            f"SELECT * FROM historical_recommendations WHERE rec_status IN ({placeholders})",
-            statuses,
-        ).fetchall()
+        if official_only:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            rows = conn.execute(
+                f"""SELECT hr.* FROM historical_recommendations hr
+                    JOIN official_picks op ON op.recommendation_id = hr.recommendation_id
+                    WHERE op.pick_status = 'ACTIVE' AND hr.rec_status IN ({placeholders})
+                      AND hr.event_start_time IS NOT NULL AND hr.event_start_time > ?""",
+                (*statuses, now_iso),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT * FROM historical_recommendations WHERE rec_status IN ({placeholders})",
+                statuses,
+            ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

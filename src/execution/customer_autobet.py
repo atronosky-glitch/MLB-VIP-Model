@@ -556,6 +556,10 @@ def approve_pending_order(
     under-cap check. Every existing safety gate (config gates, kill
     switch, revalidation) still applies unchanged inside
     execute_authorized() -- this function does not bypass any of them."""
+    from src.customer_accounts import allow_rate_limited_action
+
+    if not allow_rate_limited_action(conn, "approve_order", account_id, 30, 600):
+        return False, "Too many approval attempts. Please wait a few minutes."
     prepared = live_store.get_prepared_order(conn, prepared_order_id)
     if prepared is None or prepared["status"] != "READY":
         return False, "This order is no longer awaiting approval."
@@ -656,6 +660,12 @@ def process_recommendation_for_account(
     if opportunity is None or opportunity.provider != platform:
         return "SKIPPED"
 
+    # Live-game safety: never place (or even queue) an order for a game that
+    # has started or whose start time is unknown/imminent. Fails closed.
+    start = signal.event_start_time
+    if start is None or start <= datetime.now(timezone.utc) + timedelta(minutes=2):
+        return "SKIPPED"
+
     sport_filter = (account.get("sport_filter") or "").strip()
     if sport_filter:
         allowed = {s.strip().upper() for s in sport_filter.split(",") if s.strip()}
@@ -741,7 +751,7 @@ def _scan_and_dispatch(config: Any) -> dict:
                 "error": "PROVIDER_INIT_FAILED",
             }
 
-        rows = _load_actionable_rows(config)
+        rows = _load_actionable_rows(config, official_only=True)
         gathered = _gather_qualified_signals(config, providers, rows, None, None)
 
         counts = {"executed": 0, "skipped": 0, "failed": 0}

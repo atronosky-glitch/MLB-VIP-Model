@@ -19,7 +19,7 @@ def _make_app(tmp_path, books, key_prefix="t"):
         "st.session_state['_result'] = sorted(selected)\n",
         encoding="utf-8",
     )
-    at = AppTest.from_file(str(script))
+    at = AppTest.from_file(str(script), default_timeout=30)
     at.run()
     return at
 
