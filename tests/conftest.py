@@ -934,6 +934,11 @@ def db_conn():
             mode                                             TEXT NOT NULL,
             approval_mode                                     TEXT,
             platform                                             TEXT,
+            requested_quantity                                    REAL,
+            fees_usd                                                REAL,
+            fees_source                                               TEXT,
+            fill_source                                                 TEXT,
+            reconciled_at                                                 TEXT,
             created_at                                          TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_cae_account ON customer_autobet_executions(account_id, created_at);

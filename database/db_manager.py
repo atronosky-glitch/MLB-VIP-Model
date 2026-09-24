@@ -1986,6 +1986,19 @@ def init_db(db_path: str | None = None) -> None:
     # has_executed_autobet_for_recommendation) rather than backfilling
     # historical rows.
     _add_columns_if_missing(conn, "customer_autobet_executions", [("platform", "TEXT")])
+    # Additive (2026-09-23): real execution economics. requested_quantity =
+    # contracts the order asked for (so unfilled = requested - filled);
+    # fees_usd NULL means "no fee figure at all" (P&L is then labeled
+    # GROSS); fees_source PLATFORM (reported by the venue's own fills) or
+    # ESTIMATED (documented fee formula); fill_source says how much to
+    # trust filled_quantity/avg_fill_price: PLATFORM_FILLS (venue fills
+    # endpoint), ORDER_RESPONSE (the venue's synchronous execution
+    # report), ORDER_LIMIT_PRICE (only the order's limit price is known --
+    # an upper bound, awaiting reconciliation) or SIMULATED (paper).
+    _add_columns_if_missing(conn, "customer_autobet_executions", [
+        ("requested_quantity", "REAL"), ("fees_usd", "REAL"), ("fees_source", "TEXT"),
+        ("fill_source", "TEXT"), ("reconciled_at", "TEXT"),
+    ])
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cae_platform ON customer_autobet_executions(account_id, platform, created_at)"
     )
@@ -2341,8 +2354,9 @@ def save_autobet_execution(conn: DB, execution: dict) -> str:
                execution_id, account_id, recommendation_id, market_type, matchup, side,
                model_ev_pct, price_at_detection, price_at_execution, stake_usd,
                filled_quantity, avg_fill_price, status, skip_reason, provider_order_id,
-               mode, approval_mode, platform
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               mode, approval_mode, platform,
+               requested_quantity, fees_usd, fees_source, fill_source, reconciled_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             execution_id, execution["account_id"], execution.get("recommendation_id"),
             execution.get("market_type"), execution.get("matchup"), execution.get("side"),
@@ -2351,6 +2365,8 @@ def save_autobet_execution(conn: DB, execution: dict) -> str:
             execution.get("filled_quantity"), execution.get("avg_fill_price"),
             execution["status"], execution.get("skip_reason"), execution.get("provider_order_id"),
             execution["mode"], execution.get("approval_mode"), execution.get("platform"),
+            execution.get("requested_quantity"), execution.get("fees_usd"), execution.get("fees_source"),
+            execution.get("fill_source"), execution.get("reconciled_at"),
         ),
     )
     conn.commit()

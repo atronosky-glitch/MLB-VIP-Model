@@ -62,7 +62,7 @@ from __future__ import annotations
 import copy
 import logging
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 from typing import Any
 
 import src.customer_kalshi as customer_kalshi
@@ -219,6 +219,53 @@ def _record(conn: Any, **fields: Any) -> None:
     save_autobet_execution(conn, fields)
 
 
+def _estimate_fee_usd(provider: Any, side: str, price: Decimal, quantity: Decimal) -> float | None:
+    """The provider's documented taker-fee estimate for what was actually
+    filled, or None if it can't be computed (an unknown fee is recorded
+    as unknown -- P&L is then labeled GROSS -- never as zero)."""
+    if provider is None or quantity <= 0 or price <= 0:
+        return None
+    try:
+        return float(provider.estimate_fees(side, price, quantity).fee)
+    except Exception:
+        logger.exception("Could not estimate fees for an Auto-Bet execution")
+        return None
+
+
+def _live_economics(provider: Any, platform: str, side: str | None, live_order: dict | None) -> dict:
+    """Execution-economics fields for a LIVE row, from what the venue
+    actually reported for the order -- never from the recommendation or
+    the intended stake.
+
+    * quantity/avg price: exactly what the order record holds. A
+      quantity with no average price is left with fill_source None (the
+      fill is unconfirmed), and an average price that is only the order's
+      LIMIT price (Kalshi's synchronous response carries no average) is
+      tagged ORDER_LIMIT_PRICE -- an upper bound on cost, awaiting
+      reconciliation against the venue's fills.
+    * fees: the documented estimate re-computed for the FILLED quantity
+      (not the requested one), tagged ESTIMATED.
+    """
+    if not live_order:
+        return {}
+    filled = Decimal(str(live_order.get("quantity_filled") or 0))
+    avg_raw = live_order.get("average_fill_price")
+    avg = Decimal(str(avg_raw)) if avg_raw else None
+    requested = live_order.get("quantity_requested")
+    out: dict = {
+        "requested_quantity": float(requested) if requested is not None else None,
+        "filled_quantity": float(filled),
+        "avg_fill_price": float(avg) if avg is not None else None,
+    }
+    if filled > 0 and avg is not None:
+        out["fill_source"] = "ORDER_LIMIT_PRICE" if platform == "kalshi" else "ORDER_RESPONSE"
+        fee = _estimate_fee_usd(provider, side or live_order.get("side") or "", avg, filled)
+        if fee is not None:
+            out["fees_usd"] = fee
+            out["fees_source"] = "ESTIMATED"
+    return out
+
+
 def _paper_risk_context(conn: Any, account_id: str, platform: str, recommendation_id: str) -> RiskContext:
     """PAPER-mode equivalent of build_live_risk_context, computed
     entirely from this customer's OWN customer_autobet_executions
@@ -259,7 +306,7 @@ def _paper_risk_context(conn: Any, account_id: str, platform: str, recommendatio
 
 def _execute_paper(
     conn: Any, config: Any, account: dict, platform: str,
-    opportunity: ExecutionOpportunity, signal: ExecutionSignal,
+    opportunity: ExecutionOpportunity, signal: ExecutionSignal, provider: Any = None,
 ) -> str:
     account_id = account["account_id"]
     cfg = _customer_risk_config(config, account)
@@ -284,13 +331,39 @@ def _execute_paper(
         )
         return "SKIPPED"
 
+    # Simulated fill sized from the customer's APPROVED stake (not the
+    # analysis stake the opportunity was priced with): whole contracts at
+    # the opportunity's expected fill price, cost + estimated fee never
+    # above the approved stake. Recorded quantity/price/fees are what P&L
+    # is later computed from, so paper results follow the same rules as
+    # live ones.
+    price = Decimal(str(opportunity.expected_fill_price))
+    contracts = (
+        (decision.approved_stake_usd / price).to_integral_value(rounding=ROUND_FLOOR)
+        if price > 0 else Decimal("0")
+    )
+    fee = _estimate_fee_usd(provider, opportunity.side, price, contracts)
+    while contracts > 0 and contracts * price + Decimal(str(fee or 0)) > decision.approved_stake_usd:
+        contracts -= 1
+        fee = _estimate_fee_usd(provider, opportunity.side, price, contracts)
+    if contracts <= 0:
+        _record(
+            conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
+            market_type=signal.market_type, matchup=matchup, side=opportunity.side,
+            model_ev_pct=float(opportunity.net_ev_pct), price_at_detection=float(opportunity.best_ask or 0),
+            stake_usd=float(decision.approved_stake_usd), status="SKIPPED",
+            skip_reason="STAKE_BELOW_ONE_CONTRACT", mode="PAPER", platform=platform,
+        )
+        return "SKIPPED"
+
     _record(
         conn, account_id=account_id, recommendation_id=opportunity.recommendation_id,
         market_type=signal.market_type, matchup=matchup, side=opportunity.side,
         model_ev_pct=float(opportunity.net_ev_pct), price_at_detection=float(opportunity.best_ask or 0),
-        price_at_execution=float(opportunity.expected_fill_price),
+        price_at_execution=float(price),
         stake_usd=float(decision.approved_stake_usd),
-        filled_quantity=float(opportunity.quantity_analyzed), avg_fill_price=float(opportunity.expected_fill_price),
+        requested_quantity=float(contracts), filled_quantity=float(contracts), avg_fill_price=float(price),
+        fees_usd=fee, fees_source="ESTIMATED" if fee is not None else None, fill_source="SIMULATED",
         status="EXECUTED", mode="PAPER", approval_mode="AUTO", platform=platform,
     )
     return "EXECUTED"
@@ -456,10 +529,9 @@ def _execute_live(
             model_ev_pct=float(opportunity.net_ev_pct), price_at_detection=float(opportunity.best_ask or 0),
             price_at_execution=float(live_order.get("average_fill_price") or opportunity.expected_fill_price) if live_order else None,
             stake_usd=float(decision.approved_stake_usd),
-            filled_quantity=float(live_order.get("quantity_filled") or 0) if live_order else None,
-            avg_fill_price=float(live_order.get("average_fill_price") or 0) if live_order else None,
             provider_order_id=live_order.get("provider_order_id") if live_order else None,
             status=status, mode="LIVE", approval_mode="AUTO", platform=platform,
+            **_live_economics(provider, platform, side, live_order),
         )
         return status
 
@@ -524,10 +596,9 @@ def approve_pending_order(
             matchup=matchup, side=prepared.get("side"),
             price_at_execution=float(live_order.get("average_fill_price") or 0) if live_order else None,
             stake_usd=float(prepared.get("risk_approved_stake") or 0),
-            filled_quantity=float(live_order.get("quantity_filled") or 0) if live_order else None,
-            avg_fill_price=float(live_order.get("average_fill_price") or 0) if live_order else None,
             provider_order_id=live_order.get("provider_order_id") if live_order else None,
             status=status, mode="LIVE", approval_mode="MANUAL", platform=platform,
+            **_live_economics(provider, platform, prepared.get("side"), live_order),
         )
         return True, f"Order {status.lower()}."
 
@@ -612,7 +683,7 @@ def process_recommendation_for_account(
         if account.get("live_execution"):
             status = _execute_live(conn, config, account, platform, opportunity, signal, provider)
         else:
-            status = _execute_paper(conn, config, account, platform, opportunity, signal)
+            status = _execute_paper(conn, config, account, platform, opportunity, signal, provider)
 
         if status not in ("EXECUTED", "PARTIALLY_FILLED"):
             # AWAITING_MANUAL_APPROVAL deliberately keeps its claim
@@ -636,7 +707,7 @@ def process_recommendation_for_account(
         return "FAILED"
 
 
-def run_customer_autobet_pass(config: Any) -> dict:
+def _scan_and_dispatch(config: Any) -> dict:
     """The top-level entry point src/worker.py calls. Gathers today's
     qualified Stage 2B opportunities ONCE (reused across every customer
     and both platforms, not re-fetched per customer), then attempts
@@ -701,3 +772,25 @@ def run_customer_autobet_pass(config: Any) -> dict:
         return {"accounts_considered": total_accounts, **counts}
     finally:
         conn.close()
+
+
+
+def run_customer_autobet_pass(config: Any) -> dict:
+    """Worker entry point: dispatch new qualified recommendations, then
+    reconcile LIVE Kalshi executions against the venue's own fills
+    (read-only, src/execution/autobet_reconcile.py). The two are
+    independent: a reconciliation problem never fails or hides the
+    dispatch result, and unreconciled rows stay labeled as estimates in
+    My Performance until reconciliation succeeds."""
+    result = _scan_and_dispatch(config)
+    from src.execution.autobet_reconcile import reconcile_customer_fills
+
+    conn = get_connection(config.database_path)
+    try:
+        result["reconciliation"] = reconcile_customer_fills(conn)
+    except Exception:
+        logger.exception("Customer fill reconciliation failed")
+        result["reconciliation"] = {"error": True}
+    finally:
+        conn.close()
+    return result

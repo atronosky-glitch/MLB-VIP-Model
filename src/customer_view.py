@@ -1066,7 +1066,8 @@ def _render_autobet_activity(conn, account_id: str, platform: str) -> None:
     cols = [
         c for c in (
             "created_at", "matchup", "side", "mode", "status", "skip_reason",
-            "stake_usd", "avg_fill_price", "model_ev_pct",
+            "stake_usd", "requested_quantity", "filled_quantity", "avg_fill_price", "fees_usd",
+            "fill_source", "model_ev_pct",
         ) if c in df.columns
     ]
     st.dataframe(df[cols], use_container_width=True, hide_index=True)
@@ -1173,24 +1174,58 @@ def _render_my_performance(account: "Account") -> None:
 
     m1, m2, m3, m4 = st.columns(4)
     pnl = perf["realized_pnl_usd"]
+    pnl_basis = perf["pnl_basis"]
+    pnl_title = "Realized Gross P&L" if pnl_basis == "GROSS" else "Realized Net P&L"
     with m1:
-        st.metric("Realized P&L", f"${pnl:+,.2f}")
+        st.metric(pnl_title, f"${pnl:+,.2f}")
     with m2:
         st.metric("ROI", f"{perf['roi_pct']:+.1f}%" if perf["roi_pct"] is not None else "—")
     with m3:
-        st.metric("Total Wagered", f"${perf['total_wagered_usd']:,.2f}")
+        st.metric("Total Wagered (filled)", f"${perf['total_wagered_usd']:,.2f}")
     with m4:
         st.metric("Win Rate", f"{perf['win_rate_pct']:.1f}%" if perf["win_rate_pct"] is not None else "—")
 
     m5, m6, m7, m8 = st.columns(4)
     with m5:
-        st.metric("Total Bets", perf["total_bets"])
+        st.metric("Filled Bets", perf["total_bets"])
     with m6:
         st.metric("Wins / Losses", f"{perf['wins']} / {perf['losses']}")
     with m7:
         st.metric("Open Positions", perf["open_positions"])
     with m8:
         st.metric("Open Exposure", f"${perf['open_exposure_usd']:,.2f}")
+
+    # Plain-language basis: what the headline number is and is not. Never
+    # let a gross figure pass as net, an estimate as confirmed, or an
+    # unfilled/open/refund-pending order as a result.
+    basis_note = {
+        "NET": "Net of platform-reported fees.",
+        "NET_ESTIMATED_FEES": "Net of fees, but some fees are estimated from the platform's published fee formula.",
+        "GROSS": "Gross — fees are not available for every settled bet, so none are deducted.",
+    }[pnl_basis]
+    st.caption(
+        f"{perf['pnl_label']}. {basis_note} Calculated from the contracts actually filled at the price "
+        f"actually paid — not the recommended price or the intended stake."
+    )
+    if mode == "LIVE" and not perf["fills_confirmed"]:
+        st.caption(
+            f"⏳ {perf['unreconciled_orders']} order(s) still use the order's limit price and an estimated fee; "
+            "they are confirmed against your platform's own fills automatically."
+        )
+    notes = []
+    if perf["unfilled_orders"]:
+        notes.append(f"{perf['unfilled_orders']} order(s) didn't fill (not counted as bets)")
+    if perf["partial_fills"]:
+        notes.append(f"{perf['partial_fills']} partial fill(s) — only the filled part counts")
+    if perf["pushes_voids"]:
+        notes.append(
+            f"{perf['pushes_voids']} push/void bet(s) (${perf['refund_pending_usd']:,.2f}) — "
+            "excluded until the platform refund is confirmed"
+        )
+    if perf["unconfirmed_fill_orders"]:
+        notes.append(f"{perf['unconfirmed_fill_orders']} order(s) with an unconfirmed fill price (not counted)")
+    if notes:
+        st.caption("ℹ️ " + " · ".join(notes) + ".")
 
     _performance_cumulative_chart(perf["cumulative_pnl_series"])
 

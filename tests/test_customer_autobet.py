@@ -908,3 +908,109 @@ class TestExceptionSafety:
         with mock.patch("src.execution.customer_autobet.get_connection", return_value=db_conn):
             result = autobet.run_customer_autobet_pass(config)
         assert result["accounts_considered"] == 0
+
+
+class TestRecordedExecutionEconomics:
+    """What gets written to customer_autobet_executions is what My
+    Performance later computes P&L from, so it must describe the ACTUAL
+    (or, in paper, faithfully simulated) execution -- not the analysis
+    quantity or the intended stake."""
+
+    @staticmethod
+    def _live_account(db_conn, platform="polymarket_us", **overrides):
+        _CONNECT_FN[platform](db_conn, "acct-1")
+        _enable_autobet(db_conn, "acct-1", platform=platform, auto_approve_max_usd=100.0,
+                        unit_size_usd=10.0, max_bet_usd=10.0, **overrides)
+        _MODULE[platform].set_live_execution(db_conn, "acct-1", True)
+        return _account_row(db_conn, "acct-1", platform)
+
+    @staticmethod
+    def _run_live(db_conn, account, platform, live_order):
+        from src.execution.live.service import ExecutionResult
+        with mock.patch.object(autobet, "_build_customer_provider", return_value=_FakeLiveProvider()), \
+             mock.patch.object(autobet, "execute_authorized") as mocked_exec, \
+             mock.patch.object(autobet.live_store, "get_live_order", return_value=live_order):
+            mocked_exec.return_value = ExecutionResult(
+                outcome="SUBMITTED", reason=None, detail="ok", live_order_id=1,
+            )
+            autobet.process_recommendation_for_account(
+                db_conn, _FakeRiskConfig(), account, platform, _opportunity(provider=platform), _signal(),
+            )
+        return dict(db_conn.execute("SELECT * FROM customer_autobet_executions").fetchone())
+
+    def test_paper_fill_is_sized_from_the_approved_stake_not_the_analysis_quantity(self, db_conn):
+        _connect_polymarket(db_conn, "acct-1")
+        _enable_autobet(db_conn, "acct-1", unit_size_usd=5.0, max_bet_usd=5.0)
+        account = _account_row(db_conn, "acct-1")
+        # opportunity.quantity_analyzed=14 belongs to the $10 analysis stake -- must not leak
+        autobet.process_recommendation_for_account(
+            db_conn, _FakeRiskConfig(), account, "polymarket_us", _opportunity(), _signal(),
+        )
+        row = dict(db_conn.execute("SELECT * FROM customer_autobet_executions").fetchone())
+        assert row["filled_quantity"] == 7.0 and row["requested_quantity"] == 7.0   # floor(5 / 0.68)
+        assert row["avg_fill_price"] == pytest.approx(0.68)
+        assert row["fill_source"] == "SIMULATED"
+        assert row["fees_source"] == "ESTIMATED" and row["fees_usd"] > 0
+        assert 7 * 0.68 + row["fees_usd"] <= row["stake_usd"] + 1e-9
+
+    def test_paper_fill_never_exceeds_the_approved_stake_once_fees_are_added(self, db_conn):
+        _connect_polymarket(db_conn, "acct-1")
+        _enable_autobet(db_conn, "acct-1", unit_size_usd=4.8, max_bet_usd=4.8)
+        account = _account_row(db_conn, "acct-1")
+        autobet.process_recommendation_for_account(
+            db_conn, _FakeRiskConfig(), account, "polymarket_us", _opportunity(), _signal(),
+        )
+        row = dict(db_conn.execute("SELECT * FROM customer_autobet_executions").fetchone())
+        # 7 contracts would cost 4.76 + fee > 4.80, so it must step down to 6
+        assert row["filled_quantity"] == 6.0
+        assert row["filled_quantity"] * row["avg_fill_price"] + row["fees_usd"] <= 4.8 + 1e-9
+
+    def test_paper_result_flows_through_to_my_performance_on_the_recorded_fill(self, db_conn):
+        from src.customer_performance import get_customer_performance
+        _connect_polymarket(db_conn, "acct-1")
+        _enable_autobet(db_conn, "acct-1", unit_size_usd=5.0, max_bet_usd=5.0)
+        account = _account_row(db_conn, "acct-1")
+        autobet.process_recommendation_for_account(
+            db_conn, _FakeRiskConfig(), account, "polymarket_us", _opportunity(), _signal(),
+        )
+        row = dict(db_conn.execute("SELECT * FROM customer_autobet_executions").fetchone())
+        db_conn.execute(
+            "INSERT INTO market_settlements (settlement_id, recommendation_id, settlement_status, settled_at) "
+            "VALUES ('s1', 'rec-1', 'WIN', '2026-09-20T00:00:00+00:00')"
+        )
+        db_conn.commit()
+        perf = get_customer_performance(db_conn, "acct-1", mode="PAPER")
+        assert perf["realized_pnl_usd"] == pytest.approx(7 * 1.0 - 7 * 0.68 - row["fees_usd"])
+        assert perf["pnl_basis"] == "NET_ESTIMATED_FEES"
+
+    def test_live_partial_fill_records_filled_and_requested_and_reestimates_fees(self, db_conn):
+        account = self._live_account(db_conn)
+        row = self._run_live(db_conn, account, "polymarket_us", {
+            "status": "PARTIALLY_FILLED", "average_fill_price": 0.66, "quantity_filled": 9,
+            "quantity_requested": 14, "provider_order_id": "ORDER-1", "side": "YES",
+        })
+        assert row["status"] == "PARTIALLY_FILLED"
+        assert row["filled_quantity"] == 9.0 and row["requested_quantity"] == 14.0
+        assert row["avg_fill_price"] == pytest.approx(0.66)
+        assert row["fill_source"] == "ORDER_RESPONSE"
+        # fee for the 9 FILLED contracts (0.06 * 9 * 0.66 * 0.34), not the 14 requested
+        assert row["fees_usd"] == pytest.approx(0.06 * 9 * 0.66 * 0.34)
+        assert row["fees_source"] == "ESTIMATED"
+
+    def test_live_kalshi_limit_price_is_tagged_unconfirmed_until_reconciled(self, db_conn):
+        account = self._live_account(db_conn, platform="kalshi")
+        row = self._run_live(db_conn, account, "kalshi", {
+            "status": "FILLED", "average_fill_price": 0.68, "quantity_filled": 14,
+            "quantity_requested": 14, "provider_order_id": "K-1", "side": "YES",
+        })
+        assert row["fill_source"] == "ORDER_LIMIT_PRICE"
+
+    def test_live_order_with_no_fill_records_zero_and_never_a_price(self, db_conn):
+        account = self._live_account(db_conn)
+        row = self._run_live(db_conn, account, "polymarket_us", {
+            "status": "CANCELED", "average_fill_price": None, "quantity_filled": 0,
+            "quantity_requested": 14, "provider_order_id": "ORDER-2", "side": "YES",
+        })
+        assert row["filled_quantity"] == 0.0
+        assert row["avg_fill_price"] is None
+        assert row["fill_source"] is None and row["fees_usd"] is None
