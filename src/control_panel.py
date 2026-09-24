@@ -36,6 +36,14 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ── Admin authentication (P0 audit fix 2026-09-24) ─────────────────
+# This dashboard exposes scan controls, model overrides and the live
+# execution approval panel; it must never render for an unauthenticated
+# visitor. Fails closed in production if MLB_ADMIN_PASSWORD is unset.
+from src.admin_auth import require_admin  # noqa: E402
+
+require_admin()
+
 # ── Signature theme: "Sharp Market Intelligence" ─────────────────────
 # Near-black navy with a soft radial glow, vivid lime for positive EV,
 # cyan secondary, amber leans, red risk. Panels read like glass cards.

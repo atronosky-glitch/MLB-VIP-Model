@@ -53,6 +53,12 @@ services:
         value: "true"
       - key: MLB_SHADOW_MODE
         value: "true"
+      # Admin login for this dashboard (src/admin_auth.py). REQUIRED: with
+      # MLB_ENVIRONMENT=production and this unset the dashboard refuses to
+      # render (fails closed). Set a long random value in the Render
+      # dashboard -- never commit it.
+      - key: MLB_ADMIN_PASSWORD
+        sync: false
     disk:
       name: mlb-data
       mountPath: /data
