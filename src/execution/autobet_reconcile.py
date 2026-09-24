@@ -14,6 +14,30 @@ Fail-closed parsing: a fill whose side/action/price/count can't be read
 unambiguously leaves the execution UNRECONCILED (still labeled as an
 estimate in My Performance) -- a guessed number is never written.
 
+FIELD CONTRACT (checked 2026-09-23 against kalshi-python 2.1.4, the newest
+release, whose models are generated from Kalshi's own OpenAPI document):
+  filled quantity     Fill.count (int) summed per order; cross-checked against
+                      Order.count - Order.remaining_count, which must agree
+  execution price     Fill.yes_price / Fill.no_price (integer cents 1..99) for
+                      the order's own side, or *_price_dollars; the SDK Fill's
+                      bare ``price`` (side/unit unspecified) is NOT read --
+                      such a fill is unreconcilable, never guessed
+  fees                Fill.fee_cost (dollars) ONLY if every fill carries it
+                      (not in the 2.1.4 Fill model -> normally absent, so fees
+                      stay the documented ESTIMATE, tagged ESTIMATED). The
+                      Position model's fees_paid is per-ticker aggregate and
+                      cannot be attributed to one order, so it is not used
+  order status        Order.status; reconciliation requires a terminal status
+                      (executed / canceled) so a resting order that may still
+                      fill is never finalized
+  settlement          NOT used for P&L: settlement comes from the internal
+                      graded result (market_settlements). Kalshi exposes
+                      Settlement.result / Settlement.revenue (cents) and
+                      Position.market_result / realized_pnl (cents), which
+                      could later cross-check it
+Any missing/unreadable/inconsistent field leaves the row unreconciled (still
+labeled as an estimate in My Performance); a wrong P&L is never written.
+
 Payload-shape note: field names follow Kalshi's official Python SDK
 (``kalshi-python`` 2.1.4 ``Fill``/``Order`` models: order_id, side,
 action, count, yes_price/no_price in cents, remaining_count) plus the
@@ -66,11 +90,14 @@ def _fill_price(fill: dict, side: str) -> Decimal | None:
     return (cents / 100) if Decimal("1") <= cents <= Decimal("99") else None
 
 
-def summarize_kalshi_fills(fills: list[dict], side: str) -> FillSummary | None:
+def summarize_kalshi_fills(fills: list[dict], side: str, order_id: str | None = None) -> FillSummary | None:
     """Aggregate the fills of ONE order into (quantity, VWAP, fees).
 
-    Returns None (unreconcilable) if any fill is not a buy of *side*, or
-    has an unreadable count/price. An empty list is a valid summary of
+    Returns None (unreconcilable) if any fill is not a buy of *side*, belongs
+    to a different order (when *order_id* is given and the fill names one),
+    or has an unreadable count/price. A fill carrying only the SDK's bare
+    ``price`` field (unit/side unspecified) is deliberately NOT read: it is
+    unreconcilable rather than guessed. An empty list is a valid summary of
     zero contracts (the caller decides whether zero is confirmed)."""
     side = (side or "").lower()
     if side not in ("yes", "no"):
@@ -82,6 +109,8 @@ def summarize_kalshi_fills(fills: list[dict], side: str) -> FillSummary | None:
         if not isinstance(fill, dict):
             return None
         if (fill.get("side") or "").lower() != side or (fill.get("action") or "buy").lower() != "buy":
+            return None
+        if order_id and fill.get("order_id") not in (None, order_id):
             return None
         count = _to_decimal(fill.get("count") if fill.get("count") is not None else fill.get("count_fp"))
         if count is None or count <= 0 or count != count.to_integral_value():
@@ -110,14 +139,25 @@ def reconcile_execution(conn: Any, execution: dict, provider: Any) -> str:
         fills = provider.get_fills(order_id=order_id)
         if fills is None:
             return "ERROR"
-        summary = summarize_kalshi_fills(fills, side)
+        summary = summarize_kalshi_fills(fills, side, order_id)
         if summary is None:
             logger.warning("Kalshi fills for an order could not be parsed unambiguously; leaving unreconciled")
             return "ERROR"
-        if summary.quantity == 0:
-            order = provider.get_order_by_id(order_id)
-            if not order or (order.get("status") or "").lower() not in _TERMINAL_ORDER_STATUSES:
-                return "PENDING"   # zero fills but the order isn't terminal (or unreadable) -- not conclusive
+        # The order itself must be readable and TERMINAL: a resting order can
+        # still fill, and a truncated fills page would under-count. Its
+        # count - remaining_count is the venue's own filled quantity and must
+        # agree with the fills before any number is written.
+        order = provider.get_order_by_id(order_id)
+        if not order or (order.get("status") or "").lower() not in _TERMINAL_ORDER_STATUSES:
+            return "PENDING"
+        count, remaining = _to_decimal(order.get("count")), _to_decimal(order.get("remaining_count"))
+        if count is not None and remaining is not None and count - remaining != summary.quantity:
+            logger.warning("Kalshi fills disagree with the order's own filled quantity; leaving unreconciled")
+            return "ERROR"
+        requested_check = _to_decimal(execution.get("requested_quantity"))
+        if requested_check is not None and summary.quantity > requested_check:
+            logger.warning("Kalshi fills exceed the requested quantity; leaving unreconciled")
+            return "ERROR"
     except Exception:
         logger.exception("Kalshi reconciliation failed for one execution")
         return "ERROR"

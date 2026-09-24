@@ -73,6 +73,10 @@ class TestSummarizeKalshiFills:
         assert summarize_kalshi_fills([_fill()], "maybe") is None
 
 
+def _order(count=40, remaining=0, status="executed"):
+    return {"order_id": "O-1", "status": status, "count": count, "remaining_count": remaining}
+
+
 class _FakeKalshi:
     """Read-only provider double. Any other attribute access raises, so a
     write call (place/cancel/post) would fail the test."""
@@ -118,7 +122,7 @@ class TestReconcileExecution:
     def test_real_fills_replace_the_limit_price_and_estimated_fee(self, db_conn):
         seeded = _seed(db_conn)
         provider = _FakeKalshi(fills=[_fill(count=10, price_cents=40, fee_cost="0.09"),
-                                      _fill(count=30, price_cents=42, fee_cost="0.27")])
+                                      _fill(count=30, price_cents=42, fee_cost="0.27")], order=_order())
         assert reconcile_execution(db_conn, seeded, provider) == "RECONCILED"
         row = _row(db_conn, seeded["execution_id"])
         assert row["filled_quantity"] == 40.0
@@ -129,14 +133,14 @@ class TestReconcileExecution:
 
     def test_partial_fill_is_detected_against_the_requested_quantity(self, db_conn):
         seeded = _seed(db_conn)
-        provider = _FakeKalshi(fills=[_fill(count=15, price_cents=41)])
+        provider = _FakeKalshi(fills=[_fill(count=15, price_cents=41)], order=_order(40, 25, "canceled"))
         reconcile_execution(db_conn, seeded, provider)
         row = _row(db_conn, seeded["execution_id"])
         assert row["status"] == "PARTIALLY_FILLED" and row["filled_quantity"] == 15.0
 
     def test_missing_platform_fees_fall_back_to_an_estimate_for_the_real_fill(self, db_conn):
         seeded = _seed(db_conn)
-        provider = _FakeKalshi(fills=[_fill(count=40, price_cents=41)], estimate="0.62")
+        provider = _FakeKalshi(fills=[_fill(count=40, price_cents=41)], order=_order(), estimate="0.62")
         reconcile_execution(db_conn, seeded, provider)
         row = _row(db_conn, seeded["execution_id"])
         assert row["fees_usd"] == pytest.approx(0.62) and row["fees_source"] == "ESTIMATED"
@@ -163,6 +167,35 @@ class TestReconcileExecution:
         row = _row(db_conn, seeded["execution_id"])
         assert row["avg_fill_price"] == 0.45 and row["fill_source"] == "ORDER_LIMIT_PRICE"
 
+    def test_order_that_is_still_resting_is_pending_even_with_fills(self, db_conn):
+        seeded = _seed(db_conn)
+        provider = _FakeKalshi(fills=[_fill(count=10, price_cents=41)], order=_order(40, 30, "resting"))
+        assert reconcile_execution(db_conn, seeded, provider) == "PENDING"
+        assert _row(db_conn, seeded["execution_id"])["fill_source"] == "ORDER_LIMIT_PRICE"
+
+    def test_fills_that_disagree_with_the_orders_own_filled_quantity_are_rejected(self, db_conn):
+        seeded = _seed(db_conn)          # e.g. a truncated fills page: 10 seen, order says 40 filled
+        provider = _FakeKalshi(fills=[_fill(count=10, price_cents=41)], order=_order(40, 0))
+        assert reconcile_execution(db_conn, seeded, provider) == "ERROR"
+        assert _row(db_conn, seeded["execution_id"])["filled_quantity"] == 40.0
+
+    def test_a_fill_belonging_to_another_order_is_rejected(self, db_conn):
+        seeded = _seed(db_conn)
+        provider = _FakeKalshi(fills=[_fill(count=40, price_cents=41, order_id="SOMEONE-ELSES")], order=_order())
+        assert reconcile_execution(db_conn, seeded, provider) == "ERROR"
+
+    def test_fills_exceeding_the_requested_quantity_are_rejected(self, db_conn):
+        seeded = _seed(db_conn, requested_quantity=20.0)
+        provider = _FakeKalshi(fills=[_fill(count=40, price_cents=41)], order=_order(40, 0))
+        assert reconcile_execution(db_conn, seeded, provider) == "ERROR"
+
+    def test_sdk_shape_fill_with_only_a_bare_price_is_never_guessed(self, db_conn):
+        seeded = _seed(db_conn)
+        bare = {"fill_id": "f", "order_id": "O-1", "ticker": "T", "side": "yes", "action": "buy",
+                "count": 40, "price": 41, "is_taker": True}
+        assert reconcile_execution(db_conn, seeded, _FakeKalshi(fills=[bare], order=_order())) == "ERROR"
+        assert _row(db_conn, seeded["execution_id"])["avg_fill_price"] == 0.45
+
     def test_provider_exception_never_propagates(self, db_conn):
         seeded = _seed(db_conn)
         provider = mock.Mock()
@@ -171,14 +204,14 @@ class TestReconcileExecution:
 
     def test_only_read_endpoints_are_used(self, db_conn):
         seeded = _seed(db_conn)
-        provider = _FakeKalshi(fills=[_fill(count=40, price_cents=41, fee_cost="0.3")])
+        provider = _FakeKalshi(fills=[_fill(count=40, price_cents=41, fee_cost="0.3")], order=_order())
         reconcile_execution(db_conn, seeded, provider)
         assert {c[0] for c in provider.calls} <= {"get_fills", "get_order_by_id"}
 
     def test_reconciled_numbers_drive_settled_performance(self, db_conn):
         seeded = _seed(db_conn)
         reconcile_execution(db_conn, seeded, _FakeKalshi(
-            fills=[_fill(count=40, price_cents=40, fee_cost="0.40")]))
+            fills=[_fill(count=40, price_cents=40, fee_cost="0.40")], order=_order()))
         db_conn.execute(
             "INSERT INTO market_settlements (settlement_id, recommendation_id, settlement_status, settled_at) "
             "VALUES ('s', 'rec-1', 'WIN', '2026-09-20T00:00:00+00:00')")
@@ -193,8 +226,8 @@ class TestReconcileCustomerFills:
         a = _seed(db_conn, account_id="acct-A", provider_order_id="O-A", recommendation_id="rec-a")
         b = _seed(db_conn, account_id="acct-B", provider_order_id="O-B", recommendation_id="rec-b")
         providers = {
-            "acct-A": _FakeKalshi(fills=[_fill(count=40, price_cents=40, fee_cost="0.1")]),
-            "acct-B": _FakeKalshi(fills=[_fill(count=40, price_cents=30, fee_cost="0.1")]),
+            "acct-A": _FakeKalshi(fills=[_fill(count=40, price_cents=40, fee_cost="0.1", order_id="O-A")], order=_order()),
+            "acct-B": _FakeKalshi(fills=[_fill(count=40, price_cents=30, fee_cost="0.1", order_id="O-B")], order=_order()),
         }
         for acct in ("acct-A", "acct-B"):
             db_conn.execute(
@@ -230,7 +263,7 @@ class TestReconcileCustomerFills:
             db_conn.execute("INSERT INTO customer_kalshi_accounts (account_id, kalshi_connected, autobet_enabled) "
                             "VALUES (?, 1, 1)", (acct,))
         db_conn.commit()
-        ok = _FakeKalshi(fills=[_fill(count=40, price_cents=40, fee_cost="0.1")])
+        ok = _FakeKalshi(fills=[_fill(count=40, price_cents=40, fee_cost="0.1", order_id="O-2")], order=_order())
         with mock.patch.object(autobet, "_build_customer_provider",
                                side_effect=lambda acct, plat: None if acct["account_id"] == "acct-bad" else ok):
             counts = reconcile_customer_fills(db_conn)
