@@ -2431,6 +2431,24 @@ def has_executed_autobet_for_recommendation(conn: DB, account_id: str, recommend
 # Run tracking
 # ==================================================================
 
+def _load_run_metadata(raw) -> dict:
+    """Parse a scan_runs.metadata_json value into a dict. Tolerates rows
+    written double-encoded (a JSON string containing JSON -- the pipeline's
+    run row was created that way until 2026-09-23) and anything unparseable
+    (treated as empty rather than raising)."""
+    import json
+    for _ in range(2):
+        if isinstance(raw, dict):
+            return raw
+        if not isinstance(raw, (str, bytes)) or not raw:
+            return {}
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def create_run(
     conn: DB,
     run_type: str = "scan",
@@ -2484,12 +2502,7 @@ def finish_run(
         existing = conn.execute(
             "SELECT metadata_json FROM scan_runs WHERE run_id = ?", (run_id,)
         ).fetchone()
-        existing_meta = {}
-        if existing and existing["metadata_json"]:
-            try:
-                existing_meta = json.loads(existing["metadata_json"])
-            except (TypeError, ValueError):
-                existing_meta = {}
+        existing_meta = _load_run_metadata(existing["metadata_json"]) if existing else {}
         existing_meta.update(metadata)
         merged_metadata = json.dumps(existing_meta, default=str)
 
@@ -2537,12 +2550,7 @@ def update_run_metadata(conn: DB, run_id: str, metadata: dict) -> None:
     existing = conn.execute(
         "SELECT metadata_json FROM scan_runs WHERE run_id = ?", (run_id,)
     ).fetchone()
-    existing_meta = {}
-    if existing and existing["metadata_json"]:
-        try:
-            existing_meta = json.loads(existing["metadata_json"])
-        except (TypeError, ValueError):
-            existing_meta = {}
+    existing_meta = _load_run_metadata(existing["metadata_json"]) if existing else {}
     existing_meta.update(metadata)
     conn.execute(
         "UPDATE scan_runs SET metadata_json = ? WHERE run_id = ?",

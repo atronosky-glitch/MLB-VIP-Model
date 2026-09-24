@@ -39,6 +39,7 @@ from typing import Any
 import requests
 
 from src.api_client import SportsGameOddsClient
+from src.failure_diagnostics import build_failure_detail, format_failure
 from src.player_prop_scanner import run_scan
 from src.odds_parser import parse_odds
 from src.market_analysis import american_to_probability, probability_to_american
@@ -187,6 +188,10 @@ class PipelineState:
     n_errors: int = 0
     n_warnings: int = 0
     errors: list[str] = field(default_factory=list)
+    # Stage currently executing and the structured, sanitized detail of the
+    # failure that ended the run (see src/failure_diagnostics.py).
+    current_stage: str = "validate_config"
+    failure_detail: dict | None = None
     warnings: list[str] = field(default_factory=list)
     scan_result: dict = field(default_factory=dict)
     ingestion_run_id: str = ""
@@ -308,11 +313,11 @@ def _stage_create_run(config: PipelineConfig, state: PipelineState) -> bool:
                 mode=state.execution_mode,
                 market_filter=config.market,
                 form_filter=config.market_form,
-                metadata=json.dumps({
+                metadata={  # a dict: create_run serializes it (a pre-dumped string was double-encoded)
                     "pipeline_run_id": state.pipeline_run_id,
                     "version": state.version,
                     "config": state.config_summary,
-                }),
+                },
             )
             state.pipeline_run_id = run_id
             print(f"  Run created: {run_id[:8]}...")
@@ -355,6 +360,8 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
         state.stage_timings["fetch_events"] = round(time.monotonic() - t0, 3)
         return True
 
+    client = None
+    failing_provider = "sportsgameodds"
     try:
         # Live runs must never analyze a previous day's slate, so bound the
         # cache TTL; research runs may reuse a recent snapshot (1 hour).
@@ -398,6 +405,7 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
             # than needing its own fallback branch.
             print(f"  SportsGameOdds returned 429 (quota/rate-limit) — "
                   f"falling back to The Odds API for game markets only")
+            failing_provider = "the-odds-api (fallback after SportsGameOdds 429)"
             _fb_conn = get_connection()
             try:
                 _odds_rows, _audit_rows, fb_events, from_cache = fallback_fn(
@@ -466,10 +474,18 @@ def _stage_fetch_events(config: PipelineConfig, state: PipelineState) -> bool:
                   f"real game(s) already saved via The Odds API fallback)")
 
     except Exception as exc:
-        state.errors.append(f"API fetch failed: {exc}")
+        stats = getattr(client, "last_request_stats", None) or {}
+        detail = build_failure_detail(
+            exc, provider=failing_provider, stage="fetch_events",
+            sport=config.league,
+            retried=stats.get("retried") if stats else None, attempts=stats.get("attempts") if stats else None,
+        )
+        state.failure_detail = detail
+        state.errors.append(f"API fetch failed: {detail['exception_class']}: {detail['message']}")
         state.n_errors += 1
         state.status = "API_FAILURE"
-        print(f"  ERROR: {exc}", file=sys.stderr)
+        logger.error("PIPELINE_FAILURE %s", format_failure(detail))
+        print(f"  ERROR: {format_failure(detail)}", file=sys.stderr)
         state.stage_timings["fetch_events"] = round(time.monotonic() - t0, 3)
         return False
 
@@ -1520,6 +1536,34 @@ def _write_completion_flag(config: PipelineConfig, state: PipelineState) -> None
 # Main pipeline
 # ==================================================================
 
+def _record_failure(config: PipelineConfig, state: PipelineState, exit_code: int) -> None:
+    """Persist the sanitized failure detail onto this run's scan_runs row
+    (error_message + metadata) so a failed run is diagnosable from the
+    database, not only from Render logs. Best-effort: never raises, never
+    runs for dry runs or when no run row exists."""
+    try:
+        detail = dict(state.failure_detail or {})
+        detail.setdefault("stage", state.current_stage)
+        detail.setdefault("sport", config.league)
+        detail["exit_code"] = exit_code
+        if config.dry_run or not state.pipeline_run_id:
+            return
+        from database.db_manager import update_run_metadata
+        message = state.errors[-1] if state.errors else format_failure(detail)
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE scan_runs SET finished_at = COALESCE(finished_at, ?), error_message = ? WHERE run_id = ?",
+                (datetime.now(timezone.utc).isoformat(), message[:500], state.pipeline_run_id),
+            )
+            conn.commit()
+            update_run_metadata(conn, state.pipeline_run_id, {"failure": detail})
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("Could not persist failure detail for the run", exc_info=True)
+
+
 def run_pipeline(config: PipelineConfig) -> int:
     """Execute the full pipeline. Returns exit code."""
     from src.sports import get_league, supported_leagues
@@ -1556,23 +1600,33 @@ def run_pipeline(config: PipelineConfig) -> int:
         _stage_create_run(config, state)
 
         # Stage 3: Fetch
+        state.current_stage = "fetch_events"
         if not _stage_fetch_events(config, state):
+            _record_failure(config, state, EXIT_API_FAILURE)
             return EXIT_API_FAILURE
 
         # Stage 4: Ingest
+        state.current_stage = "ingest"
         if not _stage_ingest(config, state):
+            _record_failure(config, state, EXIT_DB_FAILURE)
             return EXIT_DB_FAILURE
 
         # Stage 5: Validate
+        state.current_stage = "validate"
         if not _stage_validate(config, state):
+            _record_failure(config, state, EXIT_VALIDATION_FAILURE)
             return EXIT_VALIDATION_FAILURE
 
         # Stage 6: Scan
+        state.current_stage = "scan"
         if not _stage_scan(config, state):
+            _record_failure(config, state, EXIT_DB_FAILURE)
             return EXIT_DB_FAILURE
 
         # Stage 7: Freeze
+        state.current_stage = "freeze"
         if not _stage_freeze(config, state):
+            _record_failure(config, state, EXIT_DB_FAILURE)
             return EXIT_DB_FAILURE
 
         # Validate: fail if live-game recommendations slipped through

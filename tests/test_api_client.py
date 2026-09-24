@@ -159,7 +159,7 @@ class TestRetryBehaviour:
             _FakeResp(429, "Too Many Requests"),
             _FakeResp(200, "ok"),
         ]
-        with mock.patch.object(client.session, "get", side_effect=responses) as mg:
+        with mock.patch.object(client, "_monthly_quota_exhausted", return_value=False),              mock.patch.object(client.session, "get", side_effect=responses) as mg:
             with mock.patch("src.api_client.time.sleep"):
                 resp = client._request_with_retry("https://api.example/x", max_retries=3)
         assert mg.call_count == 2
@@ -182,3 +182,48 @@ class TestRetryBehaviour:
                 with pytest.raises(requests.exceptions.Timeout):
                     client._request_with_retry("https://api.example/x", max_retries=2)
         assert mg.call_count == 3  # max_retries + 1 attempts
+
+
+class TestQuota429IsNotRetried:
+    """Verified live 2026-09-23: SportsGameOdds answers an exhausted MONTHLY
+    entity quota and a per-minute rate limit with the identical 429 + body,
+    so the account usage endpoint decides whether waiting can help."""
+
+    @staticmethod
+    def _usage(limit, used, status=200):
+        return _FakeResp(status, payload={"data": {"rateLimits": {"per-month": {
+            "max-entities": limit, "current-entities": used}}}})
+
+    def test_quota_exhausted_429_returns_immediately_without_retries(self, client):
+        responses = [_FakeResp(429, "Rate limit exceeded"), self._usage(2500, 2503)]
+        with mock.patch.object(client.session, "get", side_effect=responses) as mg,              mock.patch("src.api_client.time.sleep") as sleep:
+            resp = client._request_with_retry("https://api.example/x", max_retries=3)
+        assert resp.status_code == 429
+        assert mg.call_count == 2          # the request + one usage check, no retry storm
+        sleep.assert_not_called()
+
+    def test_rate_limit_429_with_quota_remaining_still_backs_off_and_retries(self, client):
+        responses = [_FakeResp(429, "Rate limit exceeded"), self._usage(2500, 100), _FakeResp(200, "ok")]
+        with mock.patch.object(client.session, "get", side_effect=responses),              mock.patch("src.api_client.time.sleep") as sleep:
+            resp = client._request_with_retry("https://api.example/x", max_retries=3)
+        assert resp.status_code == 200
+        sleep.assert_called_once_with(1)
+
+    def test_unreadable_usage_falls_back_to_the_existing_retry_behavior(self, client):
+        responses = [_FakeResp(429, "x"), self._usage(None, None, status=500), _FakeResp(200, "ok")]
+        with mock.patch.object(client.session, "get", side_effect=responses),              mock.patch("src.api_client.time.sleep"):
+            resp = client._request_with_retry("https://api.example/x", max_retries=3)
+        assert resp.status_code == 200
+
+    def test_quota_verdict_is_cached_so_a_429_storm_makes_one_usage_call(self, client):
+        responses = [_FakeResp(429, "x"), self._usage(2500, 2600), _FakeResp(429, "x")]
+        with mock.patch.object(client.session, "get", side_effect=responses) as mg,              mock.patch("src.api_client.time.sleep"):
+            client._request_with_retry("https://api.example/a", max_retries=3)
+            client._request_with_retry("https://api.example/b", max_retries=3)
+        assert mg.call_count == 3          # a, usage, b -- no second usage lookup
+
+    def test_the_429_still_surfaces_as_http_error_so_the_odds_api_fallback_triggers(self, client, tmp_path):
+        responses = [_FakeResp(429, "Rate limit exceeded"), self._usage(2500, 2503)]
+        with mock.patch.object(client.session, "get", side_effect=responses),              mock.patch("src.api_client.time.sleep"):
+            with pytest.raises(requests.exceptions.HTTPError):
+                client._get("/events", {"leagueID": "MLB", "quota-test": "1"})

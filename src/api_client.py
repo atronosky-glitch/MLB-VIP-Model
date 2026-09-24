@@ -110,6 +110,40 @@ class SportsGameOddsClient:
         self._last_api_call: float = 0.0
         # Max age of cache files in seconds; None = use cached regardless of age
         self.max_cache_age = max_cache_age
+        self._quota_exhausted_at: float | None = None
+        # Diagnostics for the most recent request: HTTP attempts made and
+        # whether any retry happened (read by the pipeline's failure logging).
+        self.last_request_stats: dict = {"attempts": 0, "retried": False}
+
+    def _monthly_quota_exhausted(self) -> bool | None:
+        """True if SportsGameOdds reports the monthly entity quota used up,
+        False if it does not, None if that can't be determined.
+
+        Why this exists (verified live 2026-09-23): the API answers BOTH a
+        per-minute rate limit and an exhausted monthly entity quota with the
+        same HTTP 429 and the same generic body ({"error": "Rate limit
+        exceeded"}), so the status alone can't say whether waiting helps. The
+        account usage endpoint can: per-month max-entities vs current-entities.
+        A quota 429 will not clear in seconds, so retrying it only spends more
+        requests against the per-minute cap. The answer is cached briefly so a
+        429 storm makes one extra call, not one per retry."""
+        now = time.monotonic()
+        if self._quota_exhausted_at is not None and now - self._quota_exhausted_at < 300:
+            return True
+        try:
+            resp = self.session.get(f"{BASE_URL}/account/usage", timeout=15)
+            if resp.status_code != 200:
+                return None
+            month = (resp.json().get("data") or {}).get("rateLimits", {}).get("per-month", {})
+            limit, used = month.get("max-entities"), month.get("current-entities")
+            if isinstance(limit, (int, float)) and isinstance(used, (int, float)):
+                exhausted = used >= limit
+                if exhausted:
+                    self._quota_exhausted_at = now
+                return exhausted
+        except Exception:
+            logger.debug("Could not read SportsGameOdds usage while classifying a 429", exc_info=True)
+        return None
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -237,6 +271,7 @@ class SportsGameOddsClient:
         last_exc: Exception | None = None
 
         for attempt in range(max_retries + 1):
+            self.last_request_stats = {"attempts": attempt + 1, "retried": attempt > 0}
             try:
                 resp = self.session.get(url, params=params, timeout=timeout)
                 if _is_auth_failure(resp.status_code, resp.text):
@@ -246,6 +281,13 @@ class SportsGameOddsClient:
                         _mask_key(API_KEY),
                     )
                     raise APIKeyError(_api_key_error_message())
+                if resp.status_code == 429 and attempt < max_retries and self._monthly_quota_exhausted():
+                    logger.error(
+                        "SportsGameOdds HTTP 429 is the MONTHLY ENTITY QUOTA being exhausted "
+                        "(not a per-minute rate limit) -- not retrying; quota resets on the account's "
+                        "billing cycle or needs a plan change"
+                    )
+                    return resp
                 if resp.status_code in retry_statuses and attempt < max_retries:
                     wait = 2 ** attempt
                     logger.warning(
