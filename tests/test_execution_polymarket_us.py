@@ -260,26 +260,34 @@ class TestNeverIssuesWriteRequests:
 
 
 class TestParseGameEvent:
-    """Slug grammar confirmed live 2026-09-12 (see polymarket_us.py's
-    parse_game_event docstring): "{prefix}-{league}-{away}-{home}-{date}"."""
+    """Exact moneyline identity from the payload's marketSides (real-payload
+    fixture: tests/fixtures/polymarket_us_moneyline_markets.json). The
+    exhaustive mapping/fail-closed suite is tests/test_polymarket_mapping.py."""
 
-    def test_parses_the_real_confirmed_slug_shape(self, provider):
+    @staticmethod
+    def _open_market(group="away_is_yes", index=0):
+        import copy, json
+        from pathlib import Path
+        raw = copy.deepcopy(json.loads(
+            (Path(__file__).parent / "fixtures" / "polymarket_us_moneyline_markets.json").read_text(encoding="utf-8")
+        )[group][index])
+        raw["closed"] = False   # the captured games are historical; open state is set explicitly
+        return Market(id=raw["slug"], title=raw["question"], status="active", raw=raw)
+
+    def test_real_nfl_payload_parses_with_the_payloads_own_yes_team(self, provider):
+        event = provider.parse_game_event(self._open_market())   # LAC (long/YES) at TEN
+        assert event.strict_identity is True
+        assert event.market_type == "moneyline" and event.league == "NFL"
+        assert event.yes_team == "Los Angeles Chargers" and event.no_team == "Tennessee Titans"
+        assert event.event_start_time.isoformat() == "2025-11-02T18:00:00+00:00"
+
+    def test_slug_only_market_without_a_payload_no_longer_parses(self, provider):
         market = Market(id="aec-nfl-lac-ten-2025-11-02", title="Los Angeles vs. Tennessee", status="active")
-        event = provider.parse_game_event(market)
-        assert event.away_team == "lac"
-        assert event.home_team == "ten"
-        assert event.market_type == "moneyline"
-        assert event.event_start_time.year == 2025
-        assert event.event_start_time.month == 11
-        assert event.event_start_time.day == 2
-
-    def test_malformed_slug_returns_none(self, provider):
-        market = Market(id="not-enough-parts", title="x", status="active")
         assert provider.parse_game_event(market) is None
 
-    def test_slug_with_invalid_date_returns_none(self, provider):
-        market = Market(id="aec-nfl-lac-ten-2025-13-99", title="x", status="active")
-        assert provider.parse_game_event(market) is None
+    def test_malformed_or_non_game_markets_return_none(self, provider):
+        assert provider.parse_game_event(Market(id="not-enough-parts", title="x", status="active")) is None
+        assert provider.parse_game_event(Market(id="aec-nfl-lac-ten-2025-13-99", title="x", status="active")) is None
 
 
 class TestEstimateFees:

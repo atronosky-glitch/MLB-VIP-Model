@@ -1,0 +1,147 @@
+{
+ "_source": "Real live Polymarket US public GET gateway.polymarket.us/v1/markets?sportsMarketType=moneyline, captured 2026-09-23 (no auth, no orders). Values unmodified; only structure-relevant keys kept. All listed markets were already closed (historical Nov 2025 NFL games) -- there were no open game-level markets on 2026-09-23.",
+ "away_is_yes": [
+  {
+   "active": true,
+   "category": "sports",
+   "closed": true,
+   "gameStartTime": "2025-11-02T18:00:00Z",
+   "id": "1",
+   "marketSides": [
+    {
+     "description": "Chargers",
+     "identifier": "aec-nfl-lac-ten-2025-11-02",
+     "long": true,
+     "team": {
+      "abbreviation": "lac",
+      "league": "nfl",
+      "name": "Los Angeles Chargers",
+      "ordering": "away"
+     }
+    },
+    {
+     "description": "Titans",
+     "identifier": "aec-nfl-lac-ten-2025-11-02",
+     "long": false,
+     "team": {
+      "abbreviation": "ten",
+      "league": "nfl",
+      "name": "Tennessee Titans",
+      "ordering": "home"
+     }
+    }
+   ],
+   "marketType": "moneyline",
+   "question": "Los Angeles vs. Tennessee",
+   "slug": "aec-nfl-lac-ten-2025-11-02",
+   "sportsMarketType": "moneyline"
+  },
+  {
+   "active": true,
+   "category": "sports",
+   "closed": true,
+   "gameStartTime": "2025-11-02T18:00:00Z",
+   "id": "2",
+   "marketSides": [
+    {
+     "description": "Panthers",
+     "identifier": "aec-nfl-car-gb-2025-11-02",
+     "long": true,
+     "team": {
+      "abbreviation": "car",
+      "league": "nfl",
+      "name": "Carolina Panthers",
+      "ordering": "away"
+     }
+    },
+    {
+     "description": "Packers",
+     "identifier": "aec-nfl-car-gb-2025-11-02",
+     "long": false,
+     "team": {
+      "abbreviation": "gb",
+      "league": "nfl",
+      "name": "Green Bay Packers",
+      "ordering": "home"
+     }
+    }
+   ],
+   "marketType": "moneyline",
+   "question": "Carolina vs. Green Bay",
+   "slug": "aec-nfl-car-gb-2025-11-02",
+   "sportsMarketType": "moneyline"
+  }
+ ],
+ "home_is_yes": [
+  {
+   "active": false,
+   "category": "sports",
+   "closed": true,
+   "gameStartTime": "2025-12-14T00:00:00Z",
+   "id": "810",
+   "marketSides": [
+    {
+     "description": "Kennedy Nzechukwu",
+     "identifier": "aec-ufc-kennze-marbuc-2025-12-13",
+     "long": true,
+     "team": {
+      "abbreviation": "kennze",
+      "league": "ufc",
+      "name": "Kennedy Nzechukwu",
+      "ordering": "home"
+     }
+    },
+    {
+     "description": "Marcus Buchecha",
+     "identifier": "aec-ufc-kennze-marbuc-2025-12-13",
+     "long": false,
+     "team": {
+      "abbreviation": "marbuc",
+      "league": "ufc",
+      "name": "Marcus Buchecha",
+      "ordering": "away"
+     }
+    }
+   ],
+   "marketType": "moneyline",
+   "question": "Kennedy Nzechukwu vs. Marcus Buchecha",
+   "slug": "aec-ufc-kennze-marbuc-2025-12-13",
+   "sportsMarketType": "moneyline"
+  },
+  {
+   "active": false,
+   "category": "sports",
+   "closed": true,
+   "gameStartTime": "2025-12-14T00:00:00Z",
+   "id": "811",
+   "marketSides": [
+    {
+     "description": "Giga Chikadze",
+     "identifier": "aec-ufc-gigchi-kevval-2025-12-13",
+     "long": true,
+     "team": {
+      "abbreviation": "gigchi",
+      "league": "ufc",
+      "name": "Giga Chikadze",
+      "ordering": "home"
+     }
+    },
+    {
+     "description": "Kevin Vallejos",
+     "identifier": "aec-ufc-gigchi-kevval-2025-12-13",
+     "long": false,
+     "team": {
+      "abbreviation": "kevval",
+      "league": "ufc",
+      "name": "Kevin Vallejos",
+      "ordering": "away"
+     }
+    }
+   ],
+   "marketType": "moneyline",
+   "question": "Giga Chikadze vs. Kevin Vallejos",
+   "slug": "aec-ufc-gigchi-kevval-2025-12-13",
+   "sportsMarketType": "moneyline"
+  }
+ ]
+}

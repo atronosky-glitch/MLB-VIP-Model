@@ -1,12 +1,19 @@
 """Game-level market matching: does a recommendation have an equivalent
 contract on a prediction-market provider, and how confident are we?
 
-Scope (2026-09-12): moneyline only for now. game_spread_ou/game_runline_ou/
-game_total_ou rows are recognized but always score 0.0 on the line
-dimension until line-matching is implemented as the next unit of work in
-this same stage -- see the Stage 2 plan. Player-prop market types are out
-of scope entirely (neither provider has meaningful player-prop coverage
-for this model's leagues today).
+Scope: game-level markets only (moneyline / spread / total). Player-prop
+market types are out of scope entirely.
+
+Two matching paths:
+  * Legacy fuzzy scoring (score_match) for providers with only a
+    best-effort parse (Polymarket US): moneyline only, confidence-gated.
+  * EXACT resolution (resolve_strict_side) for providers whose contracts
+    carry verified structure (Kalshi, 2026-09-23): league, market type,
+    Eastern event date (+ start time when known), both teams by exact
+    canonical identity (src/execution/team_codes.py), line, and side
+    semantics must all match, and the result says which side (YES/NO) of
+    the contract equals the recommendation. No fuzzy tier; any doubt is
+    "no match", and competing exact matches are ambiguous -> no match.
 
 Pure, DB-free, network-free module -- persistence lives in
 src/execution/market_match_store.py, provider-specific market parsing
@@ -19,10 +26,12 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from src.execution.base import Market, RawGameEvent
+from src.execution.kalshi_mapping import EASTERN
+from src.execution.team_codes import canonical_team_name
 
 GAME_LEVEL_MARKET_TYPES = frozenset({
     "game_moneyline", "game_spread_ou", "game_runline_ou", "game_total_ou",
@@ -69,6 +78,10 @@ class RecommendationEvent:
     side: str
     line: float | None
     event_start_time: datetime | None
+    # SIGNED line for the recommended side (favorite negative). Only
+    # meaningful for spread/run-line rows; historical_recommendations.line
+    # is not guaranteed signed, raw_line is (see grading.grade_spread).
+    raw_line: float | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +95,14 @@ class ProviderEvent:
     line: float | None
     event_start_time: datetime | None
     raw_market: Market
+    # Exact-identity fields (see base.RawGameEvent); strict_identity=False
+    # keeps the legacy fuzzy scoring path for providers without them.
+    league: str | None = None
+    yes_team: str | None = None
+    no_team: str | None = None
+    event_id: str | None = None
+    event_date: date | None = None
+    strict_identity: bool = False
 
 
 @dataclass(frozen=True)
@@ -95,6 +116,10 @@ class MatchResult:
     line_score: float
     date_score: float
     provider_title: str
+    # "YES"/"NO": which side of the provider's contract is the exact
+    # equivalent of the recommendation. Set only by strict-identity
+    # matching; None means "legacy provider, evaluator decides".
+    provider_side: str | None = None
 
 
 def build_recommendation_event(row: dict[str, Any]) -> RecommendationEvent | None:
@@ -121,6 +146,7 @@ def build_recommendation_event(row: dict[str, Any]) -> RecommendationEvent | Non
         side=row.get("side") or "",
         line=row.get("line"),
         event_start_time=_parse_timestamp(row.get("event_start_time")),
+        raw_line=row.get("raw_line"),
     )
 
 
@@ -142,6 +168,12 @@ def provider_event_from_market(
         line=parsed.line,
         event_start_time=parsed.event_start_time,
         raw_market=market,
+        league=parsed.league,
+        yes_team=parsed.yes_team,
+        no_team=parsed.no_team,
+        event_id=parsed.event_id,
+        event_date=parsed.event_date,
+        strict_identity=parsed.strict_identity,
     )
 
 
@@ -307,6 +339,106 @@ def score_match(rec: RecommendationEvent, prov: ProviderEvent) -> MatchResult:
     )
 
 
+# ── Exact (strict-identity) contract resolution ─────────────────────
+#
+# For providers whose contracts carry verified structure (Kalshi), a
+# recommendation maps to a contract only if EVERY dimension matches
+# exactly -- league, market type, event date (and start time where the
+# provider gives one), both teams, line, and side semantics. There is no
+# fuzzy tier here: anything that does not match exactly is "no match".
+
+_START_TIME_TOLERANCE = timedelta(minutes=60)
+
+
+def _is_half_integer(value: float) -> bool:
+    doubled = value * 2
+    return abs(doubled - round(doubled)) < 1e-9 and round(doubled) % 2 == 1
+
+
+def _eastern_date(dt: datetime) -> date | None:
+    if EASTERN is None:
+        return None
+    return dt.astimezone(EASTERN).date()
+
+
+def resolve_strict_side(rec: RecommendationEvent, prov: ProviderEvent) -> tuple[str | None, str]:
+    """Which side (YES/NO) of *prov*'s contract exactly equals *rec*, or
+    (None, reason). Reasons are stable short codes (used by tests and
+    diagnostics)."""
+    logical = _LOGICAL_MARKET_TYPE.get(rec.market_type)
+    if logical is None or logical != prov.market_type:
+        return None, "market_type_mismatch"
+    if not prov.league or (rec.league or "").upper() != prov.league.upper():
+        return None, "league_mismatch"
+
+    # Event identity: the same Eastern calendar day, and for providers
+    # that expose a scheduled start, the same start (guards doubleheaders).
+    if rec.event_start_time is None or prov.event_date is None:
+        return None, "date_unknown"
+    if _eastern_date(rec.event_start_time) != prov.event_date:
+        return None, "date_mismatch"
+    if prov.event_start_time is not None:
+        if abs(rec.event_start_time - prov.event_start_time) > _START_TIME_TOLERANCE:
+            return None, "start_time_mismatch"
+
+    home = canonical_team_name(rec.league, rec.home_team)
+    away = canonical_team_name(rec.league, rec.away_team)
+    if home is None or away is None or home == away:
+        return None, "unknown_team"
+    if {home, away} != {prov.home_team, prov.away_team}:
+        return None, "teams_mismatch"
+
+    side = (rec.side or "").upper()
+
+    if logical == "total":
+        if prov.line is None or rec.line is None or abs(rec.line - prov.line) > 1e-9:
+            return None, "line_mismatch"
+        if not _is_half_integer(prov.line):
+            return None, "line_not_half_point"
+        if side == "OVER":
+            return "YES", "ok"
+        if side == "UNDER":
+            return "NO", "ok"
+        return None, "side_unrecognized"
+
+    if side not in ("HOME", "AWAY"):
+        return None, "side_unrecognized"
+    rec_team, opp_team = (home, away) if side == "HOME" else (away, home)
+
+    if logical == "moneyline":
+        # YES only when the contract's YES team IS the rec-side team. A
+        # venue with one two-outcome market per game (Polymarket US)
+        # states its NO side's team explicitly (no_team) -- that is a
+        # first-class outcome, so NO is exact there. Venues with one
+        # market PER TEAM (Kalshi) leave no_team None: the opposing
+        # team's market is deliberately NOT used via NO (a tie would make
+        # it a different bet), and every event lists both teams' markets.
+        if prov.yes_team == rec_team:
+            return "YES", "ok"
+        if prov.no_team is not None and prov.no_team == rec_team:
+            return "NO", "ok"
+        return None, "wrong_team_market"
+
+    # spread: rec_team covers iff margin(rec_team) + raw_line > 0
+    raw_line = rec.raw_line
+    if raw_line is None or prov.line is None:
+        return None, "line_unknown"
+    if raw_line == 0 or not _is_half_integer(raw_line):
+        return None, "line_not_half_point"   # pick'em / whole numbers can push
+    if abs(raw_line) != prov.line:
+        return None, "line_mismatch"
+    if raw_line < 0:
+        # laying points: covers iff wins by MORE than |line|
+        if prov.yes_team == rec_team:
+            return "YES", "ok"
+        return None, "wrong_team_market"
+    # getting points: covers iff the OPPONENT does NOT win by more than
+    # line (exact complement, safe only because the line is x.5)
+    if prov.yes_team == opp_team:
+        return "NO", "ok"
+    return None, "wrong_team_market"
+
+
 def find_best_match(
     rec: RecommendationEvent,
     candidates: list[ProviderEvent],
@@ -315,11 +447,43 @@ def find_best_match(
     """The best-scoring candidate, or None if there are no candidates or
     none clears *min_confidence*. Never returns a MatchResult below the
     threshold -- there is no "low confidence match" value to fall back
-    on by mistake."""
+    on by mistake.
+
+    Strict-identity candidates (Kalshi) are resolved exactly: they either
+    resolve to a YES/NO side (confidence 1.0) or are dropped. If exact
+    resolution finds more than one distinct contract or event the result
+    is ambiguous and NO match is returned."""
     if not candidates:
         return None
-    results = [score_match(rec, prov) for prov in candidates]
-    best = max(results, key=lambda r: r.confidence)
+
+    strict_hits: list[tuple[MatchResult, ProviderEvent]] = []
+    legacy_results: list[MatchResult] = []
+    for prov in candidates:
+        if prov.strict_identity:
+            side, _reason = resolve_strict_side(rec, prov)
+            if side is None:
+                continue
+            strict_hits.append((MatchResult(
+                recommendation_id=rec.recommendation_id,
+                provider=prov.provider,
+                provider_market_id=prov.market_id,
+                confidence=1.0,
+                team_score=1.0, market_type_score=1.0, line_score=1.0, date_score=1.0,
+                provider_title=prov.raw_market.title,
+                provider_side=side,
+            ), prov))
+        else:
+            legacy_results.append(score_match(rec, prov))
+
+    if strict_hits:
+        if len({p.market_id for _r, p in strict_hits}) > 1 or len({p.event_id for _r, p in strict_hits}) > 1:
+            return None  # ambiguous: never pick between competing exact matches
+        best = strict_hits[0][0]
+        return best if best.confidence >= min_confidence else None
+
+    if not legacy_results:
+        return None
+    best = max(legacy_results, key=lambda r: r.confidence)
     if best.confidence < min_confidence:
         return None
     return best

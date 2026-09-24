@@ -5,15 +5,22 @@ recommendation, on this provider, actually worth executing right now" --
 producing an ExecutionOpportunity or an explicit ExecutionRejection.
 No order placement anywhere in this pipeline.
 
-UNCONFIRMED simplifying assumption (flagged loudly, same posture as
-Kalshi's guessed title format -- Polymarket's book structure was
-confirmed 2026-09-14, see normalize_orderbook's docstring):
-neither provider's parsed game event currently indicates which team
-corresponds to the market's YES side. This module assumes **YES = the
-away team, NO = the home team** -- matching the away-first convention
-already used throughout matching.py (matchup strings, Polymarket's
-slug order). Verify via `inspect-markets --raw` against real data
-before trusting this for anything beyond structural testing.
+Which contract side to buy:
+  * Providers with exact contract identity (Kalshi -- see
+    src/execution/matching.py resolve_strict_side) tell us: the
+    MatchResult carries provider_side ("YES"/"NO"), the side that is the
+    exact equivalent of the recommendation. The evaluator uses it as-is.
+  * Legacy providers (Polymarket US today) have no such identity, so the
+    older UNCONFIRMED assumption still applies: **YES = the away team,
+    NO = the home team**, moneyline only. Verify via `inspect-markets
+    --raw` before trusting it beyond structural testing.
+
+Probability convention: signal.model_probability is the model's
+probability that the RECOMMENDED side wins (fair_prob). The opportunity
+carries the YES-contract probability instead (1 - fair_prob when the
+side to buy is NO) because compute_ev, sizing, risk and the paper/live
+approval + revalidation code all take a YES probability and apply 1 - p
+for NO -- converting once here keeps them all consistent.
 """
 
 from __future__ import annotations
@@ -251,14 +258,29 @@ class OpportunityEvaluator:
         trigger through the stake-based path."""
         event_label = f"{signal.away_team} @ {signal.home_team}"
 
-        if signal.market_type not in _SUPPORTED_MARKET_TYPES:
+        # spread/total are supported only when the provider resolved an
+        # EXACT contract (match.provider_side set by strict-identity
+        # matching, e.g. Kalshi); the legacy fuzzy path stays moneyline-only.
+        exact_contract = match.provider_side in ("YES", "NO")
+        if signal.market_type not in _SUPPORTED_MARKET_TYPES and not exact_contract:
             return self._reject(
                 signal, match.provider, event_label,
                 RejectionReason.UNSUPPORTED_MARKET_TYPE,
                 f"market_type={signal.market_type!r} is not yet supported for execution analysis",
             )
 
-        side = _provider_side_for_signal(signal)
+        side = match.provider_side if exact_contract else _provider_side_for_signal(signal)
+
+        # signal.model_probability is the model's probability that the
+        # RECOMMENDED side wins (fair_prob). Everything downstream (compute_ev,
+        # sizing, risk, paper/live approval + revalidation) treats the value
+        # carried on the opportunity as the YES-contract probability and
+        # applies 1-p for NO. Convert once, here, so buying the contract
+        # side that IS the recommendation always uses fair_prob.
+        yes_probability = (
+            signal.model_probability if side == "YES"
+            else Decimal("1") - signal.model_probability
+        )
 
         # Polymarket US's NO-side book (2026-09-14 verification): CONFIRMED
         # via real, live, unauthenticated /v1/markets and /v1/markets/{slug}/book
@@ -357,7 +379,7 @@ class OpportunityEvaluator:
 
         min_net_ev_pct = Decimal(str(self.config.min_net_ev_pct))
         ev = compute_ev(
-            signal.model_probability, side, quote, min_net_ev_pct,
+            yes_probability, side, quote, min_net_ev_pct,
             provider.estimate_fees,
         )
 
@@ -381,7 +403,7 @@ class OpportunityEvaluator:
             event=event_label,
             market=signal.market_type,
             side=side,
-            model_probability=signal.model_probability,
+            model_probability=yes_probability,
             provider=match.provider,
             provider_market_id=match.provider_market_id,
             match_confidence=match.confidence,

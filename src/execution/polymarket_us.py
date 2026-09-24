@@ -36,6 +36,7 @@ from src.execution.base import (
     NormalizedOrderBook, Orderbook, OrderLevel,
     PredictionMarketProvider, ProviderCapabilities, RawGameEvent, mask_secret,
 )
+from src.execution.polymarket_mapping import parse_polymarket_moneyline
 from src.execution.credentials import load_ed25519_private_key, parse_ed25519_private_key_material
 from src.execution.signing import build_signed_message, sign_ed25519
 
@@ -315,32 +316,43 @@ class PolymarketUSProvider(PredictionMarketProvider):
     # -- Stage 2A: game-level market matching ---------------------------
 
     def parse_game_event(self, market: Market) -> RawGameEvent | None:
-        """Polymarket US's slug grammar, confirmed live 2026-09-12:
-        "{prefix}-{league}-{away_abbr}-{home_abbr}-{YYYY}-{MM}-{DD}"
-        (e.g. "aec-nfl-lac-ten-2025-11-02" for "Los Angeles vs. Tennessee",
-        away-then-home matching this repo's own matchup convention).
-
-        market_type/side are NOT confirmed against real non-moneyline
-        data yet -- this always reports "moneyline", matching Stage 2's
-        deliberately narrow scope (see src/execution/matching.py's module
-        docstring). Revisit once spread/total markets are verified live.
-        """
-        parts = (market.id or "").split("-")
-        if len(parts) < 7:
-            return None
-        _prefix, _league_token, away_abbr, home_abbr, year, month, day = parts[:7]
-        try:
-            event_date = datetime(int(year), int(month), int(day), tzinfo=timezone.utc)
-        except ValueError:
+        """Exact moneyline identity from the payload (2026-09-23): the
+        market's two ``marketSides`` state which TEAM is the YES ("long")
+        side and which is NO, replacing the earlier slug-abbreviation guess
+        plus the "YES = away team" assumption. MLB/NFL/WNBA moneyline only
+        (see src/execution/polymarket_mapping.py); anything else -- other
+        leagues, spread/total (no shape observed yet), futures, closed
+        markets -- returns None and is UNSUPPORTED, never guessed."""
+        contract, _reason = parse_polymarket_moneyline(market.raw)
+        if contract is None:
             return None
         return RawGameEvent(
-            home_team=home_abbr,
-            away_team=away_abbr,
-            market_type="moneyline",
-            side=None,
-            line=None,
-            event_start_time=event_date,
+            home_team=contract.team_b, away_team=contract.team_a,   # payload order; not asserted
+            market_type="moneyline", side=None, line=None,
+            event_start_time=contract.event_start_time,
+            league=contract.league, yes_team=contract.yes_team, no_team=contract.no_team,
+            event_id=contract.slug, event_date=contract.event_date, strict_identity=True,
         )
+
+    _GAME_MARKET_MAX_PAGES = 5
+
+    def get_game_markets(self, leagues: list[str] | None = None) -> list[Market]:
+        """Open moneyline markets only. The default open-markets listing is
+        dominated by futures (confirmed 2026-09-23: none of the first 1,200
+        rows was a game market), so a plain first page would contain no
+        usable candidates; ``sportsMarketType=moneyline`` returns game
+        markets directly."""
+        markets: list[Market] = []
+        seen: set[str] = set()
+        for page in range(self._GAME_MARKET_MAX_PAGES):
+            batch = self.get_markets(sportsMarketType="moneyline", limit=100, offset=page * 100)
+            for market in batch:
+                if market.id and market.id not in seen:
+                    seen.add(market.id)
+                    markets.append(market)
+            if len(batch) < 100:
+                break
+        return markets
 
     # -- Stage 4: live execution -----------------------------------------
     #

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, NamedTuple
 
@@ -92,6 +92,19 @@ class RawGameEvent:
     side: str | None
     line: float | None
     event_start_time: datetime | None
+    # Exact contract identity (None for providers that only offer a
+    # best-effort parse, e.g. Polymarket US today). When strict_identity is
+    # True the parse came from a verified, code-based structure (see
+    # src/execution/kalshi_mapping.py) and matching uses exact comparison
+    # of these fields instead of fuzzy name scoring:
+    #   yes_team  canonical team whose win (moneyline) / win-by-over-line
+    #             (spread) resolves YES; None for totals (YES = over).
+    league: str | None = None
+    yes_team: str | None = None
+    no_team: str | None = None      # team the NO side stands for (single-market venues)
+    event_id: str | None = None
+    event_date: date | None = None
+    strict_identity: bool = False
 
 
 class OrderLevel(NamedTuple):
@@ -245,6 +258,13 @@ class PredictionMarketProvider(ABC):
         rather than every subclass needing a stub. Must never raise --
         anything unparseable is None, not a match candidate."""
         return None
+
+    def get_game_markets(self, leagues: list[str] | None = None) -> list[Market]:
+        """Markets to consider as game-level match candidates. Concrete
+        default = a plain get_markets() page; a provider whose generic
+        listing is dominated by non-game markets (Kalshi) overrides this
+        to fetch only the relevant series."""
+        return self.get_markets(limit=200)
 
     def place_order(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(

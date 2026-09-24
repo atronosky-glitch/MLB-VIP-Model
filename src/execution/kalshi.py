@@ -44,6 +44,7 @@ from typing import Any
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
+from src.execution.kalshi_mapping import parse_kalshi_contract, series_for_leagues
 from src.execution.base import (
     BestBidAsk, Balance, FeeEstimate, HealthCheckResult, Market,
     NormalizedOrderBook, Orderbook, OrderLevel,
@@ -306,46 +307,75 @@ class KalshiProvider(PredictionMarketProvider):
             timestamp=datetime.now(timezone.utc),
         )
 
-    # -- Stage 2A: game-level market matching ---------------------------
-
-    _TITLE_SEPARATORS = (" vs. ", " vs ", " @ ")
+    # -- Game-level market mapping (verified against real Kalshi data) ----
+    #
+    # 2026-09-23: rewritten from the earlier title-separator guess, which
+    # could not parse a single real Kalshi title ("New Orleans wins",
+    # "PHI Eagles wins by over 7.5 points?") . Identity now comes from the
+    # structured ticker/strike fields -- see src/execution/kalshi_mapping.py
+    # for the observed payload structure and the fail-closed rules. Anything
+    # that is not one of the nine verified game-level series (period/team
+    # totals, player props, combo markets, NCAAF, all-star teams) returns
+    # None and is therefore UNSUPPORTED for Kalshi, never guessed.
 
     def parse_game_event(self, market: Market) -> RawGameEvent | None:
-        """UNCONFIRMED against real Kalshi data (their /markets endpoint
-        needs signed auth not available in a research context) -- this
-        is a narrow first pass over likely title separators, returning
-        None for anything that doesn't match rather than guessing
-        further. Verify against a real demo-account market before
-        trusting this provider's matching (see the Stage 2 plan)."""
-        title = market.title or ""
-        away = home = None
-        for sep in self._TITLE_SEPARATORS:
-            if sep in title:
-                away, _, home = title.partition(sep)
-                break
-        if away is None or home is None:
+        contract, _reason = parse_kalshi_contract(market.raw)
+        if contract is None:
             return None
-        away, home = away.strip(), home.strip()
-        if not away or not home:
-            return None
-
-        event_start_time = None
-        raw = market.raw or {}
-        for key in ("close_time", "expiration_time", "expected_expiration_time"):
-            value = raw.get(key)
-            if value:
-                event_start_time = _parse_kalshi_timestamp(value)
-                if event_start_time:
-                    break
-
         return RawGameEvent(
-            home_team=home,
-            away_team=away,
-            market_type="moneyline",
+            home_team=contract.team_b,   # ticker order only; matching is
+            away_team=contract.team_a,   # orientation-independent for Kalshi
+            market_type=contract.kind,
             side=None,
-            line=None,
-            event_start_time=event_start_time,
+            line=contract.line,
+            event_start_time=contract.event_start_time,
+            league=contract.league,
+            yes_team=contract.yes_team,
+            event_id=contract.event_ticker,
+            event_date=contract.event_date,
+            strict_identity=True,
         )
+
+    _GAME_MARKET_MAX_PAGES = 5
+
+    def get_game_markets(self, leagues: list[str] | None = None) -> list[Market]:
+        """Open markets of the verified game-level series only (public
+        GET /markets?series_ticker=...&status=open, paginated). The
+        unfiltered /markets listing is dominated by non-game markets, so
+        a plain first page would silently contain no usable candidates."""
+        markets: list[Market] = []
+        seen: set[str] = set()
+        last_exc: Exception | None = None
+        failures = 0
+        series_list = series_for_leagues(leagues)
+        for series in series_list:
+            cursor = None
+            try:
+                for _page in range(self._GAME_MARKET_MAX_PAGES):
+                    params: dict[str, Any] = {"series_ticker": series, "status": "open", "limit": 1000}
+                    if cursor:
+                        params["cursor"] = cursor
+                    body = self._get("/markets", params=params)
+                    for m in body.get("markets", []):
+                        ticker = m.get("ticker", "")
+                        if ticker and ticker not in seen:
+                            seen.add(ticker)
+                            markets.append(Market(
+                                id=ticker,
+                                title=m.get("yes_sub_title") or m.get("title") or "",
+                                status=m.get("status", ""),
+                                raw=m,
+                            ))
+                    cursor = body.get("cursor")
+                    if not cursor:
+                        break
+            except Exception as exc:  # one series failing must not hide the rest
+                failures += 1
+                last_exc = exc
+                logger.warning("Kalshi series %s fetch failed: %s", series, type(exc).__name__)
+        if failures and failures == len(series_list) and last_exc is not None:
+            raise last_exc
+        return markets
 
     # -- Stage 4.1: live execution -- schema verified from the official SDK --
     #

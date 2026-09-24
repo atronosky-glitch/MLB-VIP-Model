@@ -365,3 +365,75 @@ class TestCrossVenueComparison:
         best = comparison.best
         assert best is not None
         assert best.provider == "real"
+
+
+class TestExactContractSideAndProbability:
+    """A recommendation's fair_prob is the probability of the RECOMMENDED
+    side. The evaluator must always price the contract side that IS that
+    recommendation using fair_prob (never 1 - fair_prob), and carry the
+    YES-contract probability on the opportunity for downstream consumers
+    (sizing/risk/approval/revalidation all apply 1-p for NO)."""
+
+    @staticmethod
+    def _provider():
+        book = _book(
+            yes_bids=[("0.58", 500)], yes_asks=[("0.60", 500)],
+            no_bids=[("0.38", 500)], no_asks=[("0.40", 500)],
+        )
+        return _FakeProvider(book)
+
+    @staticmethod
+    def _exact_match(side):
+        return MatchResult(
+            recommendation_id="rec-1", provider="fake", provider_market_id="M1",
+            confidence=1.0, team_score=1.0, market_type_score=1.0,
+            line_score=1.0, date_score=1.0, provider_title="t", provider_side=side,
+        )
+
+    def test_home_pick_on_the_yes_contract_uses_fair_prob_directly(self):
+        # HOME rec resolved to YES on the home team's own market: old
+        # assumption (HOME -> NO) would have bought the WRONG contract.
+        result = OpportunityEvaluator(_FakeConfig()).evaluate(
+            _signal(side="HOME", model_probability="0.70"), self._exact_match("YES"), self._provider())
+        assert isinstance(result, ExecutionOpportunity)
+        assert result.side == "YES"
+        assert result.model_probability == Decimal("0.70")
+        assert result.expected_fill_price == pytest.approx(Decimal("0.60"), abs=Decimal("0.0001"))
+        assert result.raw_ev_pct == pytest.approx(Decimal("16.6667"), abs=Decimal("0.01"))
+
+    def test_no_side_contract_prices_with_fair_prob_and_carries_yes_probability(self):
+        # e.g. "team +6.5" == NO on the opponent's wins-by-over-6.5 market
+        result = OpportunityEvaluator(_FakeConfig()).evaluate(
+            _signal(market_type="spread", side="HOME", model_probability="0.70"),
+            self._exact_match("NO"), self._provider())
+        assert isinstance(result, ExecutionOpportunity)
+        assert result.side == "NO"
+        assert result.expected_fill_price == pytest.approx(Decimal("0.40"), abs=Decimal("0.0001"))
+        assert result.model_probability == Decimal("0.30")          # YES probability
+        # q for the held NO side is fair_prob 0.70: (0.70-0.40)/0.40 = 75%
+        assert result.raw_ev_pct == pytest.approx(Decimal("75"), abs=Decimal("0.01"))
+
+    def test_downstream_side_transform_recovers_fair_prob(self):
+        # exactly what sizing/paper broker/approval do with the opportunity
+        result = OpportunityEvaluator(_FakeConfig()).evaluate(
+            _signal(market_type="total", side="UNDER", model_probability="0.70"),
+            self._exact_match("NO"), self._provider())
+        q = result.model_probability if result.side == "YES" else Decimal("1") - result.model_probability
+        assert q == Decimal("0.70")
+
+    def test_spread_and_total_are_supported_only_with_an_exact_contract(self):
+        legacy = OpportunityEvaluator(_FakeConfig()).evaluate(
+            _signal(market_type="spread"), _match(), self._provider())
+        assert isinstance(legacy, ExecutionRejection)
+        assert legacy.reason == RejectionReason.UNSUPPORTED_MARKET_TYPE
+        exact = OpportunityEvaluator(_FakeConfig()).evaluate(
+            _signal(market_type="spread"), self._exact_match("YES"), self._provider())
+        assert isinstance(exact, ExecutionOpportunity)
+
+    def test_legacy_home_pick_still_buys_no_but_prices_it_with_fair_prob(self):
+        result = OpportunityEvaluator(_FakeConfig()).evaluate(
+            _signal(side="HOME", model_probability="0.70"), _match(), self._provider())
+        assert isinstance(result, ExecutionOpportunity)
+        assert result.side == "NO"
+        assert result.model_probability == Decimal("0.30")
+        assert result.raw_ev_pct == pytest.approx(Decimal("75"), abs=Decimal("0.01"))

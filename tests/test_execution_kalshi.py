@@ -187,39 +187,40 @@ class TestNeverIssuesWriteRequests:
 
 
 class TestParseGameEvent:
-    """UNCONFIRMED against real Kalshi data -- see kalshi.py's
-    parse_game_event docstring. These tests only prove the guessed
-    separator patterns behave as intended, not that they match reality."""
+    """Real-payload behavior (fixture = unmodified live Kalshi public
+    market payloads, 2026-09-23). The exhaustive mapping/fail-closed
+    suite lives in tests/test_kalshi_mapping.py."""
 
-    def test_parses_a_vs_separated_title(self, provider):
-        market = Market(id="T1", title="Toronto Blue Jays vs Athletics", status="open")
-        event = provider.parse_game_event(market)
-        assert event.away_team == "Toronto Blue Jays"
-        assert event.home_team == "Athletics"
+    @staticmethod
+    def _market(series, index=0):
+        import json
+        from pathlib import Path
+        raw = json.loads(
+            (Path(__file__).parent / "fixtures" / "kalshi_game_markets.json").read_text(encoding="utf-8")
+        )[series][index]
+        return Market(id=raw["ticker"], title=raw["yes_sub_title"], status=raw["status"], raw=raw)
+
+    def test_real_moneyline_market_parses_with_exact_identity(self, provider):
+        event = provider.parse_game_event(self._market("KXNFLGAME", 0))  # ...ATLNO-NO
+        assert event.strict_identity is True
         assert event.market_type == "moneyline"
+        assert event.league == "NFL"
+        assert event.yes_team == "New Orleans Saints"
+        assert {event.home_team, event.away_team} == {"Atlanta Falcons", "New Orleans Saints"}
+        assert event.event_id == "KXNFLGAME-26OCT05ATLNO"
 
-    def test_parses_an_at_separated_title(self, provider):
-        market = Market(id="T1", title="Athletics @ Toronto Blue Jays", status="open")
-        event = provider.parse_game_event(market)
-        assert event.away_team == "Athletics"
-        assert event.home_team == "Toronto Blue Jays"
+    def test_old_guessed_title_formats_no_longer_parse(self, provider):
+        for title in ("Toronto Blue Jays vs Athletics", "Athletics @ Toronto Blue Jays"):
+            assert provider.parse_game_event(Market(id="T1", title=title, status="open")) is None
 
-    def test_unrecognized_title_returns_none(self, provider):
-        market = Market(id="T1", title="Will inflation exceed 5%?", status="open")
-        assert provider.parse_game_event(market) is None
+    def test_unrecognized_market_returns_none(self, provider):
+        assert provider.parse_game_event(Market(id="T1", title="Will inflation exceed 5%?", status="open")) is None
 
-    def test_extracts_event_start_time_from_raw_close_time(self, provider):
-        market = Market(
-            id="T1", title="Athletics @ Toronto Blue Jays", status="open",
-            raw={"close_time": "2026-09-12T23:00:00Z"},
-        )
-        event = provider.parse_game_event(market)
-        assert event.event_start_time is not None
+    def test_mlb_start_time_comes_from_ticker_not_close_time(self, provider):
+        event = provider.parse_game_event(self._market("KXMLBGAME", 0))  # ...26SEP262040AZSD
+        # 8:40 PM EDT Sep 26 == 00:40 UTC Sep 27 (close_time is days later and unused)
+        assert event.event_start_time.isoformat() == "2026-09-27T00:40:00+00:00"
 
-    def test_missing_date_field_is_none_not_a_crash(self, provider):
-        market = Market(id="T1", title="Athletics @ Toronto Blue Jays", status="open")
-        event = provider.parse_game_event(market)
-        assert event.event_start_time is None
 
 
 class TestEstimateFees:

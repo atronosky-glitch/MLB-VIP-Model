@@ -23,7 +23,7 @@ from typing import Any
 
 from database.db_manager import get_connection
 from src.execution import get_provider
-from src.execution.base import Market
+from src.execution.base import Market, PredictionMarketProvider
 from src.execution.evaluator import (
     ExecutionOpportunity, OpportunityEvaluator, RejectionReason,
     build_execution_signal, reject_without_signal,
@@ -234,6 +234,15 @@ def _inventory_report(only_providers: list[str] | None) -> int:
 
 # ── scan-opportunities ───────────────────────────────────────────────
 
+def candidate_game_markets(provider: Any) -> list:
+    """Game-level match candidates for *provider*: a real provider's own
+    get_game_markets() (Kalshi fetches only the verified game series);
+    anything else duck-typed falls back to a plain get_markets() page."""
+    if isinstance(provider, PredictionMarketProvider):
+        return provider.get_game_markets()
+    return provider.get_markets(limit=200)
+
+
 def _load_actionable_rows(config: Any) -> list[dict]:
     conn = get_connection(config.database_path)
     try:
@@ -309,7 +318,7 @@ def _scan_opportunities(
     provider_events: dict[str, list] = {}
     for name, provider in providers.items():
         try:
-            candidates = provider.get_markets(limit=200)
+            candidates = candidate_game_markets(provider)
         except Exception as exc:
             print(f"{name}: API_ERROR fetching markets ({type(exc).__name__}: {exc}), skipping this provider")
             continue

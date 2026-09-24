@@ -28,7 +28,9 @@ from typing import Any
 
 from database.db_manager import get_connection
 from src.execution import get_provider
-from src.execution.cli import _ALL_PROVIDERS, _enabled_providers, _load_actionable_rows
+from src.execution.cli import (
+    _ALL_PROVIDERS, _enabled_providers, _load_actionable_rows, candidate_game_markets,
+)
 from src.execution.evaluator import OpportunityEvaluator, build_execution_signal
 from src.execution.matching import build_recommendation_event, find_best_match, provider_event_from_market
 from src.execution.opportunity_store import persist_opportunity, persist_rejection
@@ -52,7 +54,7 @@ def _gather_qualified_signals(
     provider_events: dict[str, list] = {}
     for name, provider in providers.items():
         try:
-            candidates = provider.get_markets(limit=200)
+            candidates = candidate_game_markets(provider)
         except Exception as exc:
             print(f"{name}: API_ERROR fetching markets ({type(exc).__name__}: {exc}), skipping this provider")
             continue
