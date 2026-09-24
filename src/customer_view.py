@@ -24,7 +24,8 @@ from database.db_manager import (
     format_event_start_local, is_event_live, get_bet_links, get_autobet_executions,
 )
 from src.customer_accounts import (
-    Account, SignUpError, sign_up, log_in, create_session, get_account_by_session,
+    Account, RateLimitError, SignUpError, sign_up, log_in, create_session, get_account_by_session,
+    request_password_reset, reset_password,
     delete_session, request_email_verification, verify_email_token,
     get_settings as get_account_settings, save_settings as save_account_settings,
     MARKETING_CONSENT_TEXT,
@@ -732,19 +733,24 @@ def _save_bet_now_settings_on_change() -> None:
     try:
         state = st.session_state.get("bet_now_state")
         unit_usd = st.session_state.get("bet_now_unit_usd")
-        save_account_settings(
-            conn, account_id, (unit_usd or None), (None if state == "Not set" else state),
-        )
+        try:
+            save_account_settings(
+                conn, account_id, (unit_usd or None), (None if state == "Not set" else state),
+            )
+        except ValueError:
+            logger.info("Rejected an invalid Bet Now setting from the browser")   # validated server-side
     finally:
         conn.close()
 
 
-def _render_auth_ui() -> None:
-    """Sign-up / log-in forms, shown instead of the site whenever a
-    real account is required (MLB_CUSTOMER_FREE_ACCESS=false) and the
-    visitor isn't authorized yet."""
-    st.subheader("Sign in to continue")
-    tab_login, tab_signup = st.tabs(["Log In", "Sign Up"])
+def _render_auth_ui(heading: str | None = "Sign in to continue") -> None:
+    """Sign-up / log-in / forgot-password forms. Shown instead of the site
+    when a real account is required (MLB_CUSTOMER_FREE_ACCESS=false), and
+    inside an expander for anonymous visitors in free-access mode so account
+    creation is always reachable."""
+    if heading:
+        st.subheader(heading)
+    tab_login, tab_signup, tab_forgot = st.tabs(["Log In", "Sign Up", "Forgot password"])
 
     with tab_login:
         with st.form("login_form"):
@@ -754,24 +760,27 @@ def _render_auth_ui() -> None:
         if submitted:
             conn = get_connection()
             try:
-                account = log_in(conn, email, password)
+                try:
+                    account = log_in(conn, email, password)
+                except RateLimitError as exc:
+                    st.error(str(exc))
+                    account = None
+                    limited = True
+                else:
+                    limited = False
                 if account is None:
-                    st.error("Invalid email or password.")
+                    if not limited:
+                        st.error("Invalid email or password.")
                 else:
                     token = create_session(conn, account.account_id)
                     _set_session_cookie(token)
                     # Confirmed live 2026-09-15: extra_streamlit_components'
                     # cookie-set component call needs real wall-clock time
                     # to actually execute its JS in the browser before a
-                    # rerun tears the component down -- an immediate
-                    # st.rerun() here reliably wrote NOTHING to
-                    # document.cookie in testing, a known, documented
-                    # limitation of this library (not fixable by call
-                    # order alone). This session doesn't depend on the
-                    # cookie either way (see _current_account's
-                    # st.session_state-first lookup) -- this brief pause
-                    # is purely so the cookie is actually there for a
-                    # FUTURE reload/visit.
+                    # rerun tears the component down. This session does not
+                    # depend on the cookie (see _current_account's
+                    # st.session_state-first lookup) -- the pause is only so
+                    # the cookie exists for a FUTURE visit.
                     time.sleep(1)
                     st.session_state["_session_token"] = token
                     st.session_state["_current_account_id"] = account.account_id
@@ -796,22 +805,66 @@ def _render_auth_ui() -> None:
                 try:
                     try:
                         account = sign_up(conn, email, phone, password, consent)
-                    except SignUpError as exc:
+                    except (SignUpError, RateLimitError) as exc:
                         st.error(str(exc))
                     else:
                         token = create_session(conn, account.account_id)
                         _set_session_cookie(token)
-                        # See the matching comment in the log-in handler
-                        # above -- this pause is purely so the cookie
-                        # commits for a FUTURE reload; this session
-                        # already doesn't depend on it via session_state.
-                        time.sleep(1)
+                        time.sleep(1)   # see the log-in handler above
                         st.session_state["_session_token"] = token
                         st.session_state["_current_account_id"] = account.account_id
                         request_email_verification(conn, account, base_url=os.environ.get("SITE_BASE_URL"))
                         st.rerun()
                 finally:
                     conn.close()
+
+    with tab_forgot:
+        st.caption("Enter your email and we will send a reset link if an account exists.")
+        with st.form("forgot_form"):
+            forgot_email = st.text_input("Email", key="forgot_email")
+            sent = st.form_submit_button("Send reset link", use_container_width=True)
+        if sent:
+            conn = get_connection()
+            try:
+                request_password_reset(conn, forgot_email, base_url=os.environ.get("SITE_BASE_URL"))
+            except Exception:
+                logger.exception("Account recovery request failed")
+            finally:
+                conn.close()
+            # Same message whether or not the account exists.
+            st.info("If an account exists for that email, a reset link is on its way.")
+
+
+def _handle_password_reset_query_param() -> None:
+    """?reset=<token> landing from the reset email: shows a new-password form
+    and stops the page until it is completed or the param is dropped."""
+    token = st.query_params.get("reset")
+    if not token:
+        return
+    st.subheader("Choose a new password")
+    with st.form("reset_form"):
+        new_pw = st.text_input("New password", type="password", key="reset_new_pw")
+        confirm = st.text_input("Confirm new password", type="password", key="reset_confirm_pw")
+        go = st.form_submit_button("Set password", type="primary")
+    if go:
+        if new_pw != confirm:
+            st.error("Passwords don't match.")
+        else:
+            conn = get_connection()
+            try:
+                try:
+                    ok = reset_password(conn, token, new_pw)
+                except SignUpError as exc:
+                    st.error(str(exc))
+                    ok = None
+            finally:
+                conn.close()
+            if ok:
+                st.query_params.pop("reset", None)
+                st.success("Password updated. Please log in with your new password.")
+            elif ok is False:
+                st.error("That reset link is invalid or has expired.")
+    st.stop()
 
 
 def _render_verify_email_banner(account: "Account | None") -> None:
@@ -1761,6 +1814,7 @@ if _render_policy_page(st.query_params.get("page", "")):
     st.stop()
 
 _handle_email_verification_query_param()
+_handle_password_reset_query_param()
 
 current_account = _current_account()
 if current_account is not None:
@@ -1812,6 +1866,12 @@ if current_account is not None:
     if st.button("Log out", key="log_out_btn"):
         _log_out()
         st.rerun()
+else:
+    # Free-access mode never renders the auth form on its own, so a visitor
+    # would have no way to create an account (needed for Auto-Bet and My
+    # Performance). Always offer it.
+    with st.expander("🔐 Log in / create a free account (needed for Auto-Bet and My Performance)"):
+        _render_auth_ui(heading=None)
 
 if st.session_state.view_mode is not None:
     if st.button("← All Options", key="back_to_menu"):

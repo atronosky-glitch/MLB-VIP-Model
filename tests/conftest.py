@@ -872,10 +872,20 @@ def db_conn():
             marketing_consent      INTEGER NOT NULL DEFAULT 0,
             marketing_consent_at   TEXT,
             marketing_consent_version TEXT,
+            disabled               INTEGER NOT NULL DEFAULT 0,
+            password_reset_token_hash TEXT,
+            password_reset_expires_at TEXT,
             created_at             TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_accounts_email ON customer_accounts(email);
+        CREATE TABLE IF NOT EXISTS auth_rate_events (
+            event_id    TEXT PRIMARY KEY,
+            bucket      TEXT NOT NULL,
+            key         TEXT NOT NULL,
+            created_at  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_rate_events_lookup ON auth_rate_events(bucket, key, created_at);
         CREATE TABLE IF NOT EXISTS customer_sessions (
             session_token   TEXT PRIMARY KEY,
             account_id      TEXT NOT NULL,

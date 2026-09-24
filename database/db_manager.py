@@ -1800,6 +1800,24 @@ def init_db(db_path: str | None = None) -> None:
         )
     """)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_accounts_email ON customer_accounts(email)")
+    # Additive (2026-09-24 launch audit): disabled accounts, single-use
+    # password-reset tokens (only a SHA-256 of the token is stored), and a
+    # DB-backed auth rate-limit event log (survives restarts, shared by every
+    # instance of the customer service).
+    _add_columns_if_missing(conn, "customer_accounts", [
+        ("disabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("password_reset_token_hash", "TEXT"),
+        ("password_reset_expires_at", "TEXT"),
+    ])
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS auth_rate_events (
+            event_id    TEXT PRIMARY KEY,
+            bucket      TEXT NOT NULL,
+            key         TEXT NOT NULL,
+            created_at  TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_rate_events_lookup ON auth_rate_events(bucket, key, created_at)")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS customer_sessions (
