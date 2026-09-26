@@ -53,8 +53,8 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 :root {
-  --ink:#111827; --muted:#6b7280; --line:#e5e7eb; --panel:#f9fafb;
-  --accent:#111827; --accent-soft:#374151; --win:#16a34a; --loss:#dc2626; --ref:#9ca3af;
+  --ink:#111827; --muted:#4b5563; --line:#e5e7eb; --panel:#f9fafb;
+  --accent:#111827; --accent-soft:#374151; --win:#15803d; --loss:#dc2626; --ref:#9ca3af;
 }
 .stApp { background:#ffffff; color:var(--ink); }
 [data-testid="stHeader"] { background:rgba(255,255,255,.92); }
@@ -97,8 +97,8 @@ p,div,span,button { font-family:'Inter',sans-serif; }
 .btn-primary { background:var(--accent); color:#fff; font-weight:700; padding:.68rem 1.3rem; border-radius:6px; text-decoration:none; font-size:.9rem; display:inline-block; }
 .bet-now-row { display:flex; justify-content:flex-end; align-items:center; gap:.6rem; margin-top:.75rem; flex-wrap:wrap; }
 .bet-now-suggested { color:var(--muted); font-size:.82rem; }
-.bet-now-btn { background:var(--win); color:#fff !important; font-weight:800; padding:.55rem 1.1rem; border-radius:6px; text-decoration:none; font-size:.85rem; letter-spacing:.02em; display:inline-block; box-shadow:0 1px 3px rgba(22,163,74,.35); }
-.bet-now-btn:hover { background:#15803d; }
+.bet-now-btn { background:var(--win); color:#fff !important; font-weight:800; padding:.55rem 1.1rem; border-radius:6px; text-decoration:none; font-size:.85rem; letter-spacing:.02em; display:inline-block; box-shadow:0 1px 3px rgba(21,128,61,.45); }
+.bet-now-btn:hover { background:#166534; }
 .btn-secondary { background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:600; padding:.64rem 1.25rem; border-radius:6px; text-decoration:none; font-size:.9rem; display:inline-block; }
 .footer-band { border-top:1px solid var(--line); padding:1.6rem 0 .4rem; margin-top:.6rem; }
 .footer-label { color:var(--muted); font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; font-weight:600; }
@@ -237,7 +237,7 @@ p,div,span,button { font-family:'Inter',sans-serif; }
    radio's selected dot was still rendering in the shared theme's bright
    lime, unfixed. Replaced with the verified real selector (checked live:
    the filled dot is the 3rd nested div inside the selected option). */
-[data-testid="stRadioOption"][data-selected="true"] > div > div > div {
+[data-testid="stRadioOption"][data-selected="true"] > div > div > div:first-child > div {
   background-color:var(--accent) !important;
 }
 [data-testid="stSelectbox"] .react-aria-ComboBox > div[role="group"] {
@@ -248,6 +248,93 @@ p,div,span,button { font-family:'Inter',sans-serif; }
     background-color: #ffffff !important; color: var(--ink) !important;
 }
 [data-testid="stSelectboxVirtualDropdown"] [aria-selected="true"] { background-color: var(--panel) !important; }
+/* ── Visibility / accessibility pass (2026-09-26) ───────────────────────
+   Found live via computed styles + contrast scan on the rendered page:
+   - inactive Log In / Sign Up / Forgot password tabs were the shared dark
+     theme's near-white (1.06:1) on this page's white background;
+   - the account expander header kept the dark theme background under this
+     page's dark ink (1.07:1, unreadable, also on hover/open);
+   - password reveal icon was near-white on white;
+   - every st.caption (legal disclaimer, Privacy/Terms links, section
+     notes) rendered at opacity .6 (2.3:1);
+   - placeholder text inherited the dark theme's near-white;
+   - the unchecked consent box and input borders were too faint (<3:1).
+   Everything below targets >= 4.5:1 for text, >= 3:1 for control edges. */
+[data-testid="stTab"] p { color:var(--accent-soft) !important; font-weight:600 !important; }
+[data-testid="stTab"]:hover p { color:var(--ink) !important; }
+[data-testid="stTab"][data-selected="true"] p { color:var(--ink) !important; font-weight:700 !important; }
+[data-testid="stTabs"] [role="tablist"] { border-bottom:1px solid var(--line) !important; }
+[data-testid="stExpander"] details { border:1px solid var(--ink) !important; border-radius:8px !important; background:#ffffff !important; }
+[data-testid="stExpander"] summary, [data-testid="stExpander"] summary:hover,
+[data-testid="stExpander"] details[open] > summary, [data-testid="stExpander"] summary:focus {
+  background-color:#ffffff !important; color:var(--ink) !important;
+}
+[data-testid="stExpander"] summary:hover { background-color:var(--panel) !important; }
+[data-testid="stExpander"] summary *, [data-testid="stExpander"] summary p { color:var(--ink) !important; font-weight:600; }
+[data-testid="stTextInputRootElement"] button, [data-testid="stTextInputRootElement"] button * { color:var(--accent-soft) !important; }
+[data-testid="stTextInputRootElement"] input::placeholder, [data-testid="stNumberInput"] input::placeholder,
+[data-testid="stTextArea"] textarea::placeholder { color:#6b7280 !important; opacity:1 !important; }
+[data-testid="stNumberInput"] input, [data-testid="stNumberInputContainer"] { background-color:#ffffff !important; color:var(--ink) !important; }
+[data-testid="stCaptionContainer"] { opacity:1 !important; }
+[data-testid="stCaptionContainer"] a, .section-note a { color:var(--ink) !important; text-decoration:underline !important; }
+[data-testid="stCheckbox"] label > div:not([data-testid]) { border:2px solid var(--accent-soft) !important; }
+[data-testid="stTextInputRootElement"]:focus-within, [data-testid="stNumberInputContainer"]:focus-within {
+  box-shadow:0 0 0 3px rgba(17,24,39,.30) !important;
+}
+button:focus-visible, a:focus-visible, summary:focus-visible, [role="tab"]:focus-visible, input:focus-visible {
+  outline:3px solid #2563eb !important; outline-offset:2px !important;
+}
+/* Primary actions (Sign Up, Log In, Save, Connect, Auto-Bet) stand out from secondary ones. */
+[data-testid="stBaseButton-primaryFormSubmit"], [data-testid="stBaseButton-primary"] {
+  font-weight:700 !important; min-height:2.9rem; box-shadow:0 2px 6px rgba(17,24,39,.35) !important;
+  border:2px solid var(--accent) !important;
+}
+[data-testid="stBaseButton-primaryFormSubmit"] p, [data-testid="stBaseButton-primary"] p { color:#ffffff !important; }
+[data-testid="stBaseButton-primaryFormSubmit"]:active, [data-testid="stBaseButton-primary"]:active {
+  background-color:#000000 !important; transform:translateY(1px);
+}
+[data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-secondaryFormSubmit"] {
+  background-color:#ffffff !important; color:var(--ink) !important; border:2px solid var(--accent-soft) !important; font-weight:600 !important;
+}
+[data-testid="stBaseButton-secondaryFormSubmit"] p, [data-testid="stBaseButton-secondary"] p { color:var(--ink) !important; }
+/* Disabled: clearly inert, still readable (>= 4.5:1), never blending into the page. */
+[data-testid^="stBaseButton"]:disabled, [data-testid="stPopoverButton"]:disabled {
+  background-color:#e5e7eb !important; border:2px dashed #6b7280 !important; color:#374151 !important;
+  box-shadow:none !important; cursor:not-allowed !important; opacity:1 !important;
+}
+[data-testid^="stBaseButton"]:disabled p { color:#374151 !important; }
+/* Form-control edges (select / multiselect / popover trigger / number input) must be >= 3:1
+   against the white page; the site-wide --line hairline is only ~1.2:1. */
+[data-testid="stSelectbox"] .react-aria-ComboBox > div[role="group"],
+[data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+[data-testid="stPopoverButton"], [data-testid="stNumberInputContainer"] {
+  border:1px solid #6b7280 !important;
+}
+[data-testid="stSelectbox"] [data-testid="stSelectboxVirtualDropdown"] { border:1px solid #6b7280 !important; }
+input:focus-visible, textarea:focus-visible { outline:none !important; }
+[data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"],
+[data-testid="stNumberInputStepUp"] svg, [data-testid="stNumberInputStepDown"] svg { color:var(--ink) !important; fill:var(--ink) !important; }
+[data-testid="stTooltipIcon"], [data-testid="stTooltipIcon"] *,
+[data-testid="stSelectbox"] svg, [data-testid="stMultiSelect"] svg { color:var(--accent-soft) !important; fill:var(--accent-soft) !important; }
+/* Radio options (My Performance Mode/Platform/Range, EV period): unselected labels were the
+   dark theme's near-white on white (1.06:1) -- only the selected option was readable. */
+[data-testid="stRadioOption"] p, [data-testid="stRadioOption"] [data-testid="stMarkdownContainer"] {
+  color:var(--ink) !important; font-weight:600 !important; background-color:transparent !important;
+}
+[data-testid="stRadioOption"] > div > div > div:first-child {
+  background-color:#ffffff !important; border:2px solid var(--accent-soft) !important;
+}
+[data-testid="stRadioOption"] > div > div > div:first-child > div { background-color:transparent !important; }
+[data-testid="stRadioOption"][data-selected="true"] > div > div > div:first-child { border-color:var(--accent) !important; }
+/* st.toggle (e.g. LIVE execution): visible track edge + knob in both states. */
+[data-testid="stCheckbox"] label:has(input[role="switch"]) > div:not([data-testid]) {
+  background-color:#ffffff !important; border:2px solid var(--accent-soft) !important;
+}
+[data-testid="stCheckbox"] label:has(input[role="switch"]) > div:not([data-testid]) > div { background-color:var(--accent-soft) !important; }
+[data-testid="stCheckbox"] label:has(input[role="switch"]:checked) > div:not([data-testid]) { background-color:var(--accent) !important; }
+[data-testid="stCheckbox"] label:has(input[role="switch"]:checked) > div:not([data-testid]) > div { background-color:#ffffff !important; }
+.btn-secondary { border:2px solid var(--accent-soft); }
+.pill { color:var(--accent-soft); border-color:var(--accent-soft); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1175,7 +1262,7 @@ def _performance_cumulative_chart(series: list[dict]) -> None:
     df = pd.DataFrame(series)
     df["date"] = pd.to_datetime(df["date"])
     total = df["cumulative_pnl"].iloc[-1]
-    color = "#16a34a" if total >= 0 else "#dc2626"
+    color = "#15803d" if total >= 0 else "#dc2626"
     st.markdown(f"""
     <div class="results-panel">
       <div class="results-eyebrow">Cumulative Auto-Bet P&amp;L</div>
@@ -1656,7 +1743,7 @@ def _cumulative_chart(rows: list[dict], label: str) -> None:
     df["Cumulative"] = df["Profit"].cumsum()
     df["Date"] = pd.to_datetime(df["Date"])
     total = df["Cumulative"].iloc[-1]
-    color = "#16a34a" if total >= 0 else "#dc2626"
+    color = "#15803d" if total >= 0 else "#dc2626"
     st.markdown(f"""
     <div class="results-panel">
       <div class="results-eyebrow">{label} Track Record</div>
@@ -1866,7 +1953,7 @@ st.markdown(f"""
   </div>
 </div>
 <div class="hero">
-  <div class="eyebrow">MLB · NFL · WNBA · NCAAF</div>
+  <div class="eyebrow">MLB · NFL · WNBA</div>
   <h1>Multi-book odds analysis</h1>
   <p>Every price is screened against fair value and market quality before it's shown. Every result — win or loss — is tracked and published in full.</p>
   <span class="pill">{today} · {'FULL ACCESS' if authorized else 'PUBLIC VIEW'}</span>
@@ -2244,7 +2331,7 @@ _books_line = " &nbsp;·&nbsp; ".join(_books_seen) if _books_seen else "Books po
 st.markdown(f"""
 <div class="footer-band">
   <div class="footer-label">Leagues Covered &middot; Books Scanned &middot; Updated Automatically</div>
-  <div class="footer-books">MLB &nbsp;·&nbsp; NFL &nbsp;·&nbsp; WNBA &nbsp;·&nbsp; NCAAF &nbsp;&mdash;&nbsp; {_books_line}</div>
+  <div class="footer-books">MLB &nbsp;·&nbsp; NFL &nbsp;·&nbsp; WNBA &nbsp;&mdash;&nbsp; {_books_line}</div>
 </div>
 """, unsafe_allow_html=True)
 
