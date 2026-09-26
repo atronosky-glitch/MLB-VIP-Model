@@ -157,3 +157,20 @@ class TestRunnerAndSafety:
 
         monkeypatch.setattr(dbm, "get_connection", lambda *a, **k: _Keep(db_conn))
         assert pr.main(["--skip-network"]) == 1          # no worker heartbeat in a fresh test DB
+
+
+class TestOddsApiCreditsReporting:
+    """The credits figure must be the provider's header verbatim, for whichever key the process holds."""
+
+    @pytest.mark.parametrize("header", ["1431", "1", "0", "18569"])
+    def test_reports_header_value_verbatim(self, monkeypatch, header):
+        monkeypatch.setenv("THE_ODDS_API_KEY", "k" * 32)
+        monkeypatch.delenv("SPORTSODDS_API_KEY", raising=False)
+
+        def fake_get(url, **kwargs):
+            return SimpleNamespace(status_code=200, headers={"x-requests-remaining": header}, json=lambda: {})
+
+        import requests
+        monkeypatch.setattr(requests, "get", fake_get)
+        check = next(c for c in pr.check_providers(skip_network=False) if c.subsystem == "provider_odds_api")
+        assert check.message.endswith(f"credits remaining {header}")
