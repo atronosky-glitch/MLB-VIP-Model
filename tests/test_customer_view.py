@@ -534,3 +534,24 @@ def test_graded_cards_show_win_or_loss_result():
     assert 'result_label = "PROFIT" if won else "LOSS"' in source
     assert source.count('result_label = "PROFIT" if won else "LOSS"') == 2
     assert 'result_class = "result-win" if won else "result-loss"' in source
+
+
+def test_performance_dashboard_labels_record_as_settled_and_flags_pending_settlement():
+    """Found live 2026-09-27: an ACTIVE official pick whose game already
+    started (so it drops out of "upcoming") but has no WIN/LOSS/PUSH/VOID
+    settlement yet was invisible -- past the upcoming cutoff, absent from
+    settled -- so the plain "Record"/"ROI" metrics looked complete while
+    silently excluding it. The metric must say "Settled Record", and
+    load_customer_data must compute and the page must display a pending-
+    settlement count whenever one exists, without redesigning the section."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert 'cols[0].metric("Settled Record",' in source
+    assert 'cols[0].metric("Record",' not in source  # the old, ambiguous label is gone
+    assert '"pending_settlement_count"' in source
+    assert "pending_settlement_count = data.get(\"pending_settlement_count\", 0)" in source
+    assert "awaiting a final result" in source
+    # the count query only counts ACTIVE picks whose event has already
+    # started (or has no start time) and that are still unresolved --
+    # never something already visible in "upcoming".
+    assert "op.pick_status = 'ACTIVE'" in source
+    assert "hr.event_start_time < ?" in source

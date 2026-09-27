@@ -1551,6 +1551,24 @@ def load_customer_data(authorized: bool) -> dict:
         if authorized:
             _attach_bet_links(conn, upcoming_dicts, research_dicts, active_arbitrage, active_middles)
 
+        # An ACTIVE official pick whose event has already started (so it no
+        # longer shows in "upcoming") but that has no WIN/LOSS/PUSH/VOID
+        # settlement yet is otherwise invisible on this page -- it's past the
+        # "upcoming" cutoff and absent from "settled". Without this count the
+        # Performance Dashboard's Record/ROI numbers below look complete when
+        # they're actually excluding every pick still awaiting a final result
+        # (see docs/SESSION_HANDOFF.md 2026-09-27: found via a production
+        # settlement audit -- hundreds of picks were sitting exactly here).
+        pending_row = conn.execute("""
+            SELECT COUNT(*) AS n
+            FROM official_picks op
+            JOIN historical_recommendations hr ON hr.recommendation_id = op.recommendation_id
+            LEFT JOIN market_settlements ms ON ms.recommendation_id = hr.recommendation_id
+            WHERE op.pick_status = 'ACTIVE'
+              AND (ms.recommendation_id IS NULL OR ms.settlement_status IN ('UNRESOLVED', 'ungraded'))
+              AND (hr.event_start_time IS NULL OR hr.event_start_time < ?)
+        """, (now_iso,)).fetchone()
+
         return {
             "settled": [dict(r) for r in settled],
             "locked": [dict(r) for r in locked],
@@ -1560,6 +1578,7 @@ def load_customer_data(authorized: bool) -> dict:
             "graded_arbitrage": graded_arbitrage,
             "active_middles": active_middles,
             "graded_middles": graded_middles,
+            "pending_settlement_count": (pending_row["n"] if pending_row else 0) or 0,
         }
     finally:
         conn.close()
@@ -2159,13 +2178,19 @@ elif st.session_state.view_mode == "ev":
 
         st.markdown("#### Performance Dashboard")
         cols = st.columns(6)
-        cols[0].metric("Record", f"{summary['wins']}-{summary['losses']}-{summary['pushes']}")
+        cols[0].metric("Settled Record", f"{summary['wins']}-{summary['losses']}-{summary['pushes']}")
         cols[1].metric("Settled Picks", summary["settled"])
         cols[2].metric("Units", f"{summary['units_won']:+.2f}")
         cols[3].metric("ROI", f"{summary['roi']:.1%}" if summary["units_risked"] else "—")
         cols[4].metric("Avg CLV", f"{summary['avg_clv_probability']:+.2%}" if summary["avg_clv_probability"] is not None else "—")
         cols[5].metric("Beat Close %", f"{summary['pct_beating_close']:.1%}" if summary["pct_beating_close"] is not None else "—")
         st.caption(f"Average EV at recommendation: {summary['avg_ev_pct']:+.2f}%")
+        pending_settlement_count = data.get("pending_settlement_count", 0)
+        if pending_settlement_count:
+            st.caption(
+                f"⏳ {pending_settlement_count} additional official pick(s) have started and are still "
+                "awaiting a final result -- not included in the Settled Record above."
+            )
 
         with st.expander("Performance breakdown by sport / market / sportsbook / confidence / EV"):
             for field, label in [("sport", "Sport"), ("market_type", "Market"),
