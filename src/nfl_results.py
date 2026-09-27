@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
+import zoneinfo
 from datetime import datetime, timezone
 
 import requests
@@ -64,6 +65,16 @@ _TOUCHDOWN_CATEGORIES = ("rushing", "receiving", "kickReturns", "puntReturns")
 def normalize_name(value: str | None) -> str:
     value = (value or "").casefold()
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+# ESPN's scoreboard ``dates=`` parameter is keyed by the US Eastern game day, not
+# the UTC calendar date.  An evening game's UTC start_time already rolls into the
+# next day (e.g. 2026-09-18T02:00Z is the 9/17 Eastern slate), so grouping by the
+# UTC date asked ESPN for the wrong day and every such game failed to match.
+# Confirmed live 2026-09-26 (WNBA: 20 of 20 game events found under the Eastern
+# date, 0 of 20 under UTC).  Same fix MLB already has (src/mlb_results.py).
+_ESPN_SCHEDULE_TIMEZONE = zoneinfo.ZoneInfo("America/New_York")
+_GAME_MARKETS = ("game_moneyline", "game_spread_ou", "game_total_ou")
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -246,11 +257,12 @@ def ingest_results_for_recommendations(
     by_date: dict[str, list[dict]] = {}
     for rec in recommendations:
         base_market = (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn")
-        if base_market not in _SUPPORTED_BASE_MARKETS:
+        is_game_market = rec.get("market_type") in _GAME_MARKETS
+        if not is_game_market and base_market not in _SUPPORTED_BASE_MARKETS:
             continue
         parsed = _parse_time(rec.get("event_start_time"))
         if parsed:
-            by_date.setdefault(parsed.date().isoformat(), []).append(rec)
+            by_date.setdefault(parsed.astimezone(_ESPN_SCHEDULE_TIMEZONE).date().isoformat(), []).append(rec)
 
     stats = {
         "recommendations": len(recommendations), "games_final": 0,
@@ -269,11 +281,13 @@ def ingest_results_for_recommendations(
     reasons = stats["unresolved_reasons"]
     reasons["unsupported_or_research_market"] = sum(
         1 for rec in recommendations
-        if (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn") not in _SUPPORTED_BASE_MARKETS
+        if rec.get("market_type") not in _GAME_MARKETS
+        and (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn") not in _SUPPORTED_BASE_MARKETS
     )
     reasons["missing_start_time"] += sum(
         1 for rec in recommendations
-        if (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn") in _SUPPORTED_BASE_MARKETS
+        if (rec.get("market_type") in _GAME_MARKETS
+            or (rec.get("market_type") or "").removesuffix("_ou").removesuffix("_yn") in _SUPPORTED_BASE_MARKETS)
         and not rec.get("event_start_time")
     )
     stats["unresolved"] = reasons["unsupported_or_research_market"] + reasons["missing_start_time"]
@@ -345,6 +359,8 @@ def ingest_results_for_recommendations(
             )
 
         for rec in date_recs:
+            if rec.get("market_type") in _GAME_MARKETS:
+                continue  # settled from event_results directly, not a player fact
             summary = summaries.get(rec.get("event_id"))
             fact = extract_stat_fact(summary, rec) if summary else None
             if not fact:

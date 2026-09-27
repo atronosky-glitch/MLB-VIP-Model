@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import re
+import zoneinfo
 from datetime import datetime, timezone
 
 import requests
@@ -62,6 +63,16 @@ _SUPPORTED_BASE_MARKETS = frozenset(set(_SIMPLE_STAT_FIELDS) | set(_SPLIT_STAT_F
 def normalize_name(value: str | None) -> str:
     value = (value or "").casefold()
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+# ESPN's scoreboard ``dates=`` parameter is keyed by the US Eastern game day, not
+# the UTC calendar date.  An evening game's UTC start_time already rolls into the
+# next day (e.g. 2026-09-18T02:00Z is the 9/17 Eastern slate), so grouping by the
+# UTC date asked ESPN for the wrong day and every such game failed to match.
+# Confirmed live 2026-09-26 (WNBA: 20 of 20 game events found under the Eastern
+# date, 0 of 20 under UTC).  Same fix MLB already has (src/mlb_results.py).
+_ESPN_SCHEDULE_TIMEZONE = zoneinfo.ZoneInfo("America/New_York")
+_GAME_MARKETS = ("game_moneyline", "game_spread_ou", "game_total_ou")
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -228,7 +239,7 @@ def ingest_results_for_recommendations(
             continue
         parsed = _parse_time(rec.get("event_start_time"))
         if parsed:
-            by_date.setdefault(parsed.date().isoformat(), []).append(rec)
+            by_date.setdefault(parsed.astimezone(_ESPN_SCHEDULE_TIMEZONE).date().isoformat(), []).append(rec)
 
     stats = {
         "recommendations": len(recommendations), "games_final": 0,
