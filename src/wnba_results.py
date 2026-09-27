@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 import requests
 
 from database.db_manager import save_event_result, save_player_stat_result
+from src.name_normalization import normalize_player_name
 
 logger = logging.getLogger(__name__)
 
@@ -141,10 +142,10 @@ def _iter_athletes(summary: dict):
 
 def _find_player_stats(summary: dict, player_name: str) -> tuple[str, list, list] | None:
     """Return (athlete_id, labels, stats) for exactly one exact name match."""
-    target = normalize_name(player_name)
+    target = normalize_player_name(player_name)
     matches = []
     for athlete_id, name, labels, stats in _iter_athletes(summary):
-        if normalize_name(name) == target:
+        if normalize_player_name(name) == target:
             matches.append((athlete_id, labels, stats))
     if len(matches) != 1:
         return None

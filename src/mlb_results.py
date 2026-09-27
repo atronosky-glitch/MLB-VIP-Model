@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import requests
 
 from database.db_manager import save_event_result, save_player_stat_result
+from src.name_normalization import normalize_player_name
 
 logger = logging.getLogger(__name__)
 
@@ -162,8 +163,8 @@ def _iter_players(feed: dict):
 
 
 def _find_player(feed: dict, player_name: str) -> tuple[str, dict, dict] | None:
-    target = normalize_name(player_name)
-    matches = [item for item in _iter_players(feed) if normalize_name(item[1].get("fullName")) == target]
+    target = normalize_player_name(player_name)
+    matches = [item for item in _iter_players(feed) if normalize_player_name(item[1].get("fullName")) == target]
     return matches[0] if len(matches) == 1 else None
 
 
