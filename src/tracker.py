@@ -145,7 +145,7 @@ def get_official_picks(
 
     sql = f"""
         SELECT op.*, hr.player_name, hr.market_type, hr.market_form,
-               hr.side, hr.line, hr.sportsbook, hr.offered_american_odds,
+               hr.side, hr.line, hr.raw_line, hr.sportsbook, hr.offered_american_odds,
                hr.offered_decimal_odds, hr.ev_pct, hr.yn_implied_prob_adv,
                hr.n_consensus_books, hr.market_quality, hr.freshness_status,
                hr.rec_status, hr.matchup, hr.event_status, hr.event_start_time,

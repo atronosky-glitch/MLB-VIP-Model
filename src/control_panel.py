@@ -15,6 +15,7 @@ from database.connection import get_database_url
 from database.db_manager import get_connection, is_event_live
 from src.sportsbook_picker import render_sportsbook_picker
 from src.odds_api_client import TRACKED_BOOKMAKERS
+from src.spread_formatting import signed_spread_line_text
 import sys
 import threading
 import time
@@ -246,16 +247,26 @@ def _format_pick_side_line(rec: dict) -> str:
     matchup to find out which team it actually means. Resolve it to the
     real team name here instead, e.g. "Athletics ML" / "Athletics -1.5"
     rather than "Home" / "Home -1.5".
+
+    Spreads use the SIGNED raw_line (see src/spread_formatting.py) --
+    the old code here formatted the unsigned "line" with "{:+g}", which
+    always showed a "+", actively wrong (not just missing a sign) whenever
+    the side was favored. Found live 2026-09-27.
     """
     side_raw = (rec.get("side") or "").upper()
     line = rec.get("line")
+    spread_line_str = signed_spread_line_text(rec)
     if side_raw in ("HOME", "AWAY"):
         away, _, home = (rec.get("matchup") or "").partition(" @ ")
         team = (home if side_raw == "HOME" else away).strip()
         label = team or side_raw.title()
+        if spread_line_str is not None:
+            return f"{label} {spread_line_str}"
         return f"{label} {line:+g}" if line is not None else f"{label} ML"
 
     side = side_raw.title()
+    if spread_line_str is not None:
+        return f"{side} {spread_line_str}"
     if line is not None:
         return f"{side} {line}"
     labels = {
@@ -1033,7 +1044,7 @@ with tabs[1]:
         try:
             op_rows = conn.execute("""
                 SELECT op.*, hr.player_name, hr.market_type, hr.market_form,
-                       hr.side, hr.line, hr.sportsbook, hr.offered_american_odds,
+                       hr.side, hr.line, hr.raw_line, hr.sportsbook, hr.offered_american_odds,
                        hr.ev_pct, hr.yn_implied_prob_adv, hr.n_consensus_books,
                        hr.matchup, hr.event_status, hr.event_start_time,
                        hr.model_score, hr.score_explanation
@@ -1060,7 +1071,7 @@ with tabs[1]:
                     "Player": op.get("player_name", ""),
                     "Market": _format_market_type(op.get("market_type", "")),
                     "Side": op.get("side", ""),
-                    "Line": op.get("line", ""),
+                    "Line": signed_spread_line_text(op) or op.get("line", ""),
                     "Sportsbook": op.get("sportsbook", ""),
                     "Odds": op.get("offered_american_odds", ""),
                     "EV %": ev_d,
@@ -1329,7 +1340,7 @@ with tabs[3]:
         conn_clv = _open_dashboard_connection(db_path)
         try:
             best_clv_rows = conn_clv.execute("""
-                SELECT hr.player_name, hr.market_type, hr.side, hr.line,
+                SELECT hr.player_name, hr.market_type, hr.side, hr.line, hr.raw_line,
                        hr.sportsbook, hr.offered_american_odds,
                        cp.closing_sportsbook, cp.closing_american,
                        cp.clv_probability, hr.matchup, hr.league, op.outcome
@@ -1367,7 +1378,7 @@ with tabs[3]:
         conn_clv2 = _open_dashboard_connection(db_path)
         try:
             today_clv_rows = conn_clv2.execute("""
-                SELECT op.official_rank, hr.player_name, hr.market_type, hr.side, hr.line,
+                SELECT op.official_rank, hr.player_name, hr.market_type, hr.side, hr.line, hr.raw_line,
                        hr.sportsbook, hr.offered_american_odds, hr.matchup,
                        cp.closing_sportsbook, cp.closing_american, cp.clv_probability,
                        cp.clv_available, op.outcome

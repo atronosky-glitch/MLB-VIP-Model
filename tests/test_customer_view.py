@@ -555,3 +555,22 @@ def test_performance_dashboard_labels_record_as_settled_and_flags_pending_settle
     # never something already visible in "upcoming".
     assert "op.pick_status = 'ACTIVE'" in source
     assert "hr.event_start_time < ?" in source
+
+
+def test_side_line_label_uses_the_signed_spread_helper():
+    """Found live 2026-09-27: a spread pick rendered as "Away 6.5" -- the
+    signed value (favorite negative, underdog positive) was always stored
+    correctly in raw_line, just lost during formatting. _side_line_label
+    must prefer signed_spread_line_text() (src/spread_formatting.py) over
+    the plain unsigned "line" for spread markets. Static source check only
+    -- importing src.customer_view directly leaks st.form contexts into
+    later AppTests (see test_no_test_imports_the_customer_page_module_directly
+    in test_customer_view_auth.py)."""
+    source = (ROOT / "src" / "customer_view.py").read_text(encoding="utf-8")
+    assert "from src.spread_formatting import signed_spread_line_text" in source
+    assert "signed = signed_spread_line_text(pick)" in source
+    assert 'return f"{side} {signed}"' in source
+    # the three signed-spread SELECTs must actually fetch raw_line, or the
+    # helper above always has nothing to work with in production
+    assert source.count("hr.raw_line") == 2
+    assert ", raw_line, sportsbook," in source  # the research-picks query

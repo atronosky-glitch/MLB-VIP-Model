@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from src.spread_formatting import signed_spread_line_text
 
 # Discord character limit (with small safety margin)
 DISCORD_CHAR_LIMIT = 1900
@@ -66,6 +67,12 @@ def format_recommendation(rec: dict[str, Any]) -> str:
 
     line_val = rec.get("line")
     side = rec.get("side", "")
+    # See src/spread_formatting.py -- spread markets show the SIGNED line
+    # ("Line: +6.5 (AWAY)"/"Line: -6.5 (AWAY)"), never the unsigned
+    # magnitude alone. Every other market is unaffected.
+    signed = signed_spread_line_text(rec)
+    if signed is not None:
+        line_val = signed
     # 2026-09-21: "Period: game" showed on literally every message (every
     # current player-prop market is full-game; only CFB's 1Q/1H game
     # markets carry a genuinely different value) and read as meaningless

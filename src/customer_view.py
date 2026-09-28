@@ -41,6 +41,7 @@ import src.customer_polymarket as customer_polymarket
 from src.customer_performance import get_customer_performance
 from src.execution.customer_autobet import approve_pending_order, reject_pending_order
 from src.execution.live import customer_store as live_customer_store
+from src.spread_formatting import signed_spread_line_text
 
 SESSION_COOKIE_NAME = "mlb_vip_session"
 
@@ -693,6 +694,9 @@ def _settled_status(row: dict) -> str:
 def _side_line_label(pick: dict) -> str:
     side = (pick.get("side") or "").title()
     market = pick.get("market_type") or ""
+    signed = signed_spread_line_text(pick)
+    if signed is not None:
+        return f"{side} {signed}"
     if pick.get("line") is not None:
         return f"{side} {pick['line']}"
     if market == "batting_hits_yn":
@@ -1453,7 +1457,7 @@ def load_customer_data(authorized: bool) -> dict:
     baseline = get_performance_baseline(conn)
     try:
         settled = conn.execute("""
-            SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
+            SELECT hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line, hr.raw_line,
                    hr.sportsbook, hr.offered_american_odds, hr.ev_pct,
                    hr.model_score, hr.scan_timestamp, hr.event_start_time,
                    hr.sport, hr.league, hr.fair_american_odds,
@@ -1494,7 +1498,7 @@ def load_customer_data(authorized: bool) -> dict:
         if authorized:
             upcoming = conn.execute("""
                 SELECT hr.event_id, hr.player_id, hr.player_name, hr.matchup, hr.market_type, hr.side, hr.line,
-                       hr.sportsbook, hr.offered_american_odds, hr.offered_decimal_odds, hr.ev_pct,
+                       hr.raw_line, hr.sportsbook, hr.offered_american_odds, hr.offered_decimal_odds, hr.ev_pct,
                        hr.model_score, hr.scan_timestamp, hr.event_start_time,
                        hr.sport, hr.league, hr.fair_american_odds,
                        hr.confidence_score, hr.confidence_grade, hr.market_quality,
@@ -1512,7 +1516,7 @@ def load_customer_data(authorized: bool) -> dict:
         research = []
         if authorized:
             research = conn.execute("""
-                SELECT event_id, player_id, player_name, matchup, market_type, side, line, sportsbook,
+                SELECT event_id, player_id, player_name, matchup, market_type, side, line, raw_line, sportsbook,
                        offered_american_odds, offered_decimal_odds, ev_pct, yn_implied_prob_adv,
                        model_score, event_start_time, sport, league,
                        fair_american_odds, confidence_score, confidence_grade,
