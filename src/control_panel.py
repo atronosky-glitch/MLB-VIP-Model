@@ -1071,7 +1071,13 @@ with tabs[1]:
                     "Player": op.get("player_name", ""),
                     "Market": _format_market_type(op.get("market_type", "")),
                     "Side": op.get("side", ""),
-                    "Line": signed_spread_line_text(op) or op.get("line", ""),
+                    # Must be a single dtype for the whole column: mixing a formatted
+                    # spread string ("-1.5") with a raw float (4.5) in the same pandas
+                    # object column makes pyarrow try to coerce the column to float64
+                    # and crash on the string ("Could not convert '-1.5' ... to double")
+                    # -- found live 2026-09-28 rendering this exact table against real
+                    # production data (mixed spread + non-spread official picks).
+                    "Line": signed_spread_line_text(op) or ("" if op.get("line") is None else str(op["line"])),
                     "Sportsbook": op.get("sportsbook", ""),
                     "Odds": op.get("offered_american_odds", ""),
                     "EV %": ev_d,

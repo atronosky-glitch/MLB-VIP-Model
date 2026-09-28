@@ -186,6 +186,46 @@ class TestFormatPickSideLine:
         assert _format_pick_side_line(rec) == "Yes · 1+ hit"
 
 
+class TestOpTableLineColumnArrowCompatibility:
+    """Found live 2026-09-28: rendering the real Top Picks table (mixed spread
+    and non-spread official picks) crashed with pyarrow.lib.ArrowInvalid
+    ("Could not convert '-1.5' with type str: tried to convert to double").
+    The dashboard's op_table built its "Line" column as
+    ``signed_spread_line_text(op) or op.get("line", "")`` -- a STRING for
+    spread rows ("-1.5", from the 2026-09-27 sign fix) mixed with a raw FLOAT
+    for every other row, in the same pandas column. st.dataframe's
+    pandas->Arrow conversion infers one dtype for the whole column and fails
+    outright when a real float and a formatted string coexist. The fix
+    (mirrored here, since the real expression lives inline in the dashboard
+    page, not a standalone function) makes every cell in that column a
+    string, always."""
+
+    @staticmethod
+    def _line_cell(op: dict) -> str:
+        """Exact expression used for control_panel.py's op_table "Line" column."""
+        from src.spread_formatting import signed_spread_line_text
+        return signed_spread_line_text(op) or ("" if op.get("line") is None else str(op["line"]))
+
+    def test_spread_and_non_spread_rows_produce_a_single_dtype_column(self):
+        import pandas as pd
+        rows = [
+            {"market_type": "game_spread_ou", "side": "AWAY", "line": 6.5, "raw_line": -6.5},
+            {"market_type": "game_moneyline", "side": "HOME", "line": None, "raw_line": None},
+            {"market_type": "batting_totalBases_ou", "side": "OVER", "line": 4.5, "raw_line": 4.5},
+        ]
+        line_col = [self._line_cell(r) for r in rows]
+        assert line_col == ["-6.5", "", "4.5"]
+        assert all(isinstance(v, str) for v in line_col)
+        # This is what st.dataframe does internally; must not raise.
+        import pyarrow as pa
+        table = pa.Table.from_pandas(pd.DataFrame({"Line": line_col}))
+        assert table.num_rows == 3
+
+    def test_signed_spread_line_is_always_a_string_never_a_bare_float(self):
+        assert self._line_cell({"market_type": "game_spread_ou", "raw_line": 3.5}) == "+3.5"
+        assert self._line_cell({"market_type": "game_spread_ou", "raw_line": -3.5}) == "-3.5"
+
+
 # ==================================================================
 # Recommendation table transformation
 # ==================================================================
