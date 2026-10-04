@@ -41,6 +41,7 @@ import src.customer_polymarket as customer_polymarket
 from src.customer_performance import get_customer_performance
 from src.execution.customer_autobet import approve_pending_order, reject_pending_order
 from src.execution.live import customer_store as live_customer_store
+from src.pick_dedup import dedupe_picks
 from src.spread_formatting import signed_spread_line_text
 
 SESSION_COOKIE_NAME = "mlb_vip_session"
@@ -1525,7 +1526,7 @@ def load_customer_data(authorized: bool) -> dict:
                 WHERE date(scan_timestamp) = ?
                   AND COALESCE(recommendation_tier, 'RESEARCH_ONLY') <> 'OFFICIAL_TRACKED'
                 ORDER BY model_score DESC, ev_pct DESC
-                LIMIT 25
+                LIMIT 250
             """, (get_today_in_configured_timezone(),)).fetchall()
         active_arbitrage = []
         graded_arbitrage = []
@@ -1550,8 +1551,12 @@ def load_customer_data(authorized: bool) -> dict:
             ]
             graded_middles = get_graded_middle_opportunities(conn)
 
-        upcoming_dicts = [dict(r) for r in upcoming]
-        research_dicts = [dict(r) for r in research]
+        # Every scan of a bet is its own row, so the same bet can appear many times
+        # (see src/pick_dedup.py). Collapse to one card per bet BEFORE truncating the
+        # Full Board to 25 -- duplicates crashed the page with
+        # StreamlitDuplicateElementKey on 2026-10-04.
+        upcoming_dicts = dedupe_picks([dict(r) for r in upcoming])
+        research_dicts = dedupe_picks([dict(r) for r in research], limit=25)
         if authorized:
             _attach_bet_links(conn, upcoming_dicts, research_dicts, active_arbitrage, active_middles)
 
