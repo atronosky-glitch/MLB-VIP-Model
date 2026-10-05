@@ -933,7 +933,7 @@ def generate_learning_recommendations(conn) -> list[dict]:
         status = STATUS_OBSERVE if passes else STATUS_INSUFFICIENT_DATA
 
         rec = LearningRecommendation(
-            recommendation_id=str.uuid4(),
+            recommendation_id=str(uuid.uuid4()),
             category="mqs_weights",
             proposed_change="Increase MQS weight for market_quality component",
             current_value="see MarketQualityWeights",

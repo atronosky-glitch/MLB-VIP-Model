@@ -634,6 +634,54 @@ class TestLearningRecommendations:
         finally:
             dbm.DB_PATH = orig_path
 
+    def test_mqs_weight_branch_runs_without_crashing(self, tmp_path):
+        """Regression test for a real crash found live 2026-09-30:
+        generate_learning_recommendations()'s MQS-weight-analysis branch
+        built its recommendation_id via `str.uuid4()` (the str TYPE has no
+        such attribute) instead of `uuid.uuid4()`, raising AttributeError
+        every single time that branch executed. The bug was invisible to
+        the existing test_learning_recs_generate test above because
+        _seed_graded_db's every row shares one constant market_quality_score
+        (8.0), so the >= 7.0 "high" bucket got every row and the "< 7.0"
+        "low" bucket got zero -- the MIN_GRADED_PER_BUCKET gate on the low
+        side was never satisfied, so this branch's body never ran. This
+        test explicitly splits market_quality_score across both buckets so
+        the branch is guaranteed to execute."""
+        import database.db_manager as dbm
+        db_path = tmp_path / "test.db"
+        orig_path = dbm.DB_PATH
+        dbm.DB_PATH = db_path
+        init_db()
+        try:
+            conn = dbm.get_connection()
+            _seed_graded_db(conn, n=120)
+            # Split market_quality_score across the 7.0 boundary so both the
+            # high (>= 7.0) and low (< 7.0, > 0) buckets clear
+            # MIN_GRADED_PER_BUCKET (30) -- half the rows each way.
+            rows = conn.execute(
+                "SELECT recommendation_id FROM historical_recommendations ORDER BY recommendation_id"
+            ).fetchall()
+            for i, row in enumerate(rows):
+                new_mqs = 9.0 if i % 2 == 0 else 3.0
+                conn.execute(
+                    "UPDATE historical_recommendations SET market_quality_score = ? WHERE recommendation_id = ?",
+                    (new_mqs, dict(row)["recommendation_id"]),
+                )
+            conn.commit()
+
+            recs = generate_learning_recommendations(conn)  # must not raise
+
+            mqs_recs = [r for r in recs if r["category"] == "mqs_weights"]
+            assert mqs_recs, "MQS-weight branch did not produce a recommendation -- bucket split failed"
+            for r in mqs_recs:
+                # A real, well-formed UUID -- not the AttributeError the old
+                # `str.uuid4()` call would have raised before ever reaching here.
+                uuid.UUID(r["recommendation_id"])
+                assert r["status"] in (STATUS_INSUFFICIENT_DATA, STATUS_OBSERVE)
+            conn.close()
+        finally:
+            dbm.DB_PATH = orig_path
+
     def test_no_auto_production_changes_insufficient_data(self, tmp_path):
         """Cannot auto-change with insufficient data."""
         import database.db_manager as dbm
