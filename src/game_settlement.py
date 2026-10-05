@@ -45,7 +45,27 @@ GAME_MARKET_TYPES = frozenset({
     # other league (they'll simply never appear in another league's
     # recommendations).
     "game_team_total_away_ou", "game_team_total_home_ou",
+    # 2026-09-19 (CFB): 1st-quarter / 1st-half moneyline/spread/total --
+    # graded against the score THROUGH that period (see
+    # _score_through_period/database.db_manager.event_period_scores),
+    # never the final score. Only CFB registers these MarketConfigs
+    # today (src/sports/cfb.py); purely additive for every other league.
+    "game_moneyline_1q", "game_spread_1q_ou", "game_total_1q_ou",
+    "game_moneyline_1h", "game_spread_1h_ou", "game_total_1h_ou",
 })
+
+# market_type -> how many periods (quarters) to sum for that market's
+# own score -- 1st quarter is period 1 alone; 1st half is periods 1+2.
+# Deliberately a plain dict, not a guess-from-the-name parser: adding a
+# market this doesn't know needs an explicit entry, not a silently wrong
+# inferred value.
+_PERIOD_MARKET_THROUGH_PERIOD = {
+    "game_moneyline_1q": 1, "game_spread_1q_ou": 1, "game_total_1q_ou": 1,
+    "game_moneyline_1h": 2, "game_spread_1h_ou": 2, "game_total_1h_ou": 2,
+}
+
+# Market types graded against a period score rather than the final score.
+PERIOD_MARKET_TYPES = frozenset(_PERIOD_MARKET_THROUGH_PERIOD)
 
 # Status strings recognized as "the game will never produce a final score."
 # Verified field names: src/mlb_results.py reads MLB StatsAPI's
@@ -117,6 +137,23 @@ def grade_team_total(side: str, team_score: int | None, line: float | None) -> s
     return grade_ou(float(team_score), line, side)
 
 
+def _score_through_period(period_scores: dict, through_period: int) -> tuple[int | None, int | None]:
+    """Sum away/home scores for periods 1..through_period (inclusive).
+    Returns (None, None) if ANY period in that range is missing -- never
+    partially sums (e.g. a 1st-half total computed from only period 1's
+    score, with period 2 not yet recorded, would be a real, silently
+    wrong number, not just an incomplete one)."""
+    away_total = 0
+    home_total = 0
+    for period in range(1, through_period + 1):
+        entry = period_scores.get(period)
+        if not entry or entry.get("away_score") is None or entry.get("home_score") is None:
+            return None, None
+        away_total += entry["away_score"]
+        home_total += entry["home_score"]
+    return away_total, home_total
+
+
 def classify_event_status(final_status: str | None) -> str:
     """Return "final", "void", or "pending" for a raw event_results.final_status.
 
@@ -132,7 +169,9 @@ def classify_event_status(final_status: str | None) -> str:
     return "pending"
 
 
-def grade_game_recommendation(rec: dict, event_result: dict | None) -> tuple[str, dict]:
+def grade_game_recommendation(
+    rec: dict, event_result: dict | None, period_scores: dict | None = None,
+) -> tuple[str, dict]:
     """Grade one game-level recommendation against its event_results row.
 
     Returns (settlement_status, detail) where detail carries the
@@ -142,6 +181,16 @@ def grade_game_recommendation(rec: dict, event_result: dict | None) -> tuple[str
     *rec* must carry: market_type, side, line, raw_line, event_id.
     *event_result* is the row from database.db_manager (or None if the
     event isn't in event_results yet — game not final, still pending).
+    *period_scores* is database.db_manager.get_event_period_scores'
+    return value ({period: {"away_score", "home_score"}}) — only needed
+    for 1st-quarter/1st-half market types (see
+    _PERIOD_MARKET_THROUGH_PERIOD); every other market type ignores it.
+    A 1Q/1H recommendation settles at the same time the WHOLE game goes
+    final (this module gates on event_result's final_status the same as
+    every other game market, not on the period alone finishing) — CFB's
+    result ingestion only captures period scores once a game is
+    confirmed final in the first place (see src/cfb_results.py), so this
+    is the real, current behavior, not an arbitrary added delay.
     """
     market_type = rec.get("market_type", "")
     if market_type not in GAME_MARKET_TYPES:
@@ -156,8 +205,17 @@ def grade_game_recommendation(rec: dict, event_result: dict | None) -> tuple[str
     if status_class == "pending":
         return SETTLEMENT_UNRESOLVED, {"reason": f"game status not yet final: {event_result.get('final_status')!r}"}
 
-    away_score = event_result.get("away_score")
-    home_score = event_result.get("home_score")
+    through_period = _PERIOD_MARKET_THROUGH_PERIOD.get(market_type)
+    if through_period is not None:
+        away_score, home_score = _score_through_period(period_scores or {}, through_period)
+        if away_score is None or home_score is None:
+            return SETTLEMENT_UNRESOLVED, {"reason": f"period scores through period {through_period} not yet available"}
+        score_label = f"score through period {through_period}"
+    else:
+        away_score = event_result.get("away_score")
+        home_score = event_result.get("home_score")
+        score_label = "final score"
+
     side = (rec.get("side") or "").upper()
 
     if side in ("AWAY", "HOME"):
@@ -168,14 +226,23 @@ def grade_game_recommendation(rec: dict, event_result: dict | None) -> tuple[str
 
     detail = {
         "away_score": away_score, "home_score": home_score,
-        "reason": f"final score {away_score}-{home_score}",
+        "reason": f"{score_label} {away_score}-{home_score}",
     }
 
+    if market_type in ("game_moneyline_1q", "game_moneyline_1h"):
+        # A tied quarter/half is common (7-7 after one quarter), and whether a two-way
+        # period moneyline is refunded, lost or settled as a draw differs by sportsbook.
+        # Unprovable here, so a tie is flagged for manual review, never guessed as a PUSH.
+        if side_score is not None and side_score == opponent_score:
+            return SETTLEMENT_NEEDS_REVIEW, {
+                **detail, "reason": f"{score_label} tied {away_score}-{home_score}: two-way period moneyline rules vary by book",
+            }
+        return grade_moneyline(side, side_score, opponent_score), detail
     if market_type == "game_moneyline":
         return grade_moneyline(side, side_score, opponent_score), detail
-    if market_type in ("game_spread_ou", "game_runline_ou"):
+    if market_type in ("game_spread_ou", "game_runline_ou", "game_spread_1q_ou", "game_spread_1h_ou"):
         return grade_spread(side, side_score, opponent_score, rec.get("raw_line")), detail
-    if market_type == "game_total_ou":
+    if market_type in ("game_total_ou", "game_total_1q_ou", "game_total_1h_ou"):
         return grade_total(side, away_score, home_score, rec.get("line")), detail
     if market_type == "game_team_total_away_ou":
         return grade_team_total(side, away_score, rec.get("line")), detail

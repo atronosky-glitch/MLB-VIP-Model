@@ -19,16 +19,24 @@ from __future__ import annotations
 
 import logging
 import re
+import zoneinfo
 from datetime import datetime, timezone
 
 import requests
 
-from database.db_manager import save_event_result
+from database.db_manager import save_event_period_score, save_event_result
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/college-football"
 RESULT_SOURCE = "ESPN CFB"
+
+# ESPN's scoreboard ``dates=`` parameter is keyed by the US Eastern game day, not the
+# UTC calendar date (confirmed live 2026-10-05: 7 Saturday-night games whose UTC start
+# is 10-04 are listed under dates=20261003 and none under 20261004). Grouping by the
+# raw UTC date asked ESPN for the wrong day for every evening game. Same fix as
+# src/nfl_results.py and src/wnba_results.py.
+_ESPN_SCHEDULE_TIMEZONE = zoneinfo.ZoneInfo("America/New_York")
 
 _VOID_STATUS_NAMES = frozenset({
     "STATUS_POSTPONED", "STATUS_CANCELED", "STATUS_CANCELLED", "STATUS_SUSPENDED",
@@ -103,6 +111,27 @@ def _match_scoreboard_event(
     return matches[0] if len(matches) == 1 else None
 
 
+def _period_scores(competitors: list[dict]) -> list[tuple[int, int, int]]:
+    """[(period, away_points, home_points)] from ESPN's per-competitor ``linescores``.
+
+    Verified live 2026-10-05 (Vanderbilt at Georgia, final 14-38): each competitor carries
+    ``linescores: [{"value": 7.0, "displayValue": "7", "period": 1}, ...]`` and the per-quarter
+    values sum to the final score. A period is returned ONLY when BOTH teams have a numeric
+    value for it, so a half-populated response can never produce a partial score.
+    """
+    by_side: dict[str, dict[int, int]] = {"away": {}, "home": {}}
+    for c in competitors:
+        side = c.get("homeAway")
+        if side not in by_side:
+            continue
+        for line in c.get("linescores") or []:
+            period, value = line.get("period"), line.get("value")
+            if isinstance(period, int) and isinstance(value, (int, float)):
+                by_side[side][period] = int(value)
+    shared = sorted(set(by_side["away"]) & set(by_side["home"]))
+    return [(p, by_side["away"][p], by_side["home"][p]) for p in shared]
+
+
 def ingest_results_for_recommendations(
     conn, recommendations: list[dict], client: ESPNCFBClient | None = None,
 ) -> dict:
@@ -125,7 +154,7 @@ def ingest_results_for_recommendations(
     for rec in recommendations:
         parsed = _parse_time(rec.get("event_start_time"))
         if parsed:
-            by_date.setdefault(parsed.date().isoformat(), []).append(rec)
+            by_date.setdefault(parsed.astimezone(_ESPN_SCHEDULE_TIMEZONE).date().isoformat(), []).append(rec)
 
     stats = {
         "recommendations": len(recommendations), "games_final": 0,
@@ -197,5 +226,12 @@ def ingest_results_for_recommendations(
                 away_score=away_score, home_score=home_score, result_source=RESULT_SOURCE,
             )
             stats["games_final"] += 1
+            # Per-quarter scores, for the 1st-quarter / 1st-half markets (see
+            # src/game_settlement.py). Saved only for a game ESPN reports as completed.
+            for period, period_away, period_home in _period_scores(competitors):
+                save_event_period_score(
+                    conn, event_id, period,
+                    away_score=period_away, home_score=period_home, result_source=RESULT_SOURCE,
+                )
 
     return stats

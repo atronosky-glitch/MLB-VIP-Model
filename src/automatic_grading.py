@@ -13,6 +13,7 @@ from database.db_manager import (
     DB,
     capture_closing_prices,
     get_unsettled_recommendations,
+    get_event_period_scores,
     get_event_result,
     get_player_stat_result,
     record_grading_completed,
@@ -20,7 +21,9 @@ from database.db_manager import (
     settle_recommendation,
 )
 from src.grading import GRADER_VERSION, SETTLEMENT_UNRESOLVED, grade_ou
-from src.game_settlement import GAME_MARKET_TYPES, classify_event_status, grade_game_recommendation
+from src.game_settlement import (
+    GAME_MARKET_TYPES, PERIOD_MARKET_TYPES, classify_event_status, grade_game_recommendation,
+)
 from src.tracker import compute_variable_stake
 
 logger = logging.getLogger(__name__)
@@ -165,7 +168,13 @@ def grade_available_game_recommendations(conn: DB, event_id: str | None = None) 
               "needs_review": 0, "errors": 0}
     for rec in recommendations:
         event_result = get_event_result(conn, rec.get("event_id"))
-        status, detail = grade_game_recommendation(rec, event_result)
+        # 1st-quarter / 1st-half markets grade against the score through that period, which lives
+        # in event_period_scores, not event_results. Every other market ignores it.
+        period_scores = (
+            get_event_period_scores(conn, rec.get("event_id"))
+            if rec.get("market_type") in PERIOD_MARKET_TYPES else None
+        )
+        status, detail = grade_game_recommendation(rec, event_result, period_scores)
         if status == SETTLEMENT_UNRESOLVED:
             result["unresolved"] += 1
             continue

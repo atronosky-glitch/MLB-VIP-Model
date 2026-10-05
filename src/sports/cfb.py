@@ -137,13 +137,140 @@ GAME_TEAM_TOTAL_HOME = MarketConfig(
     game_level=True,
 )
 
+# 1st Quarter / 1st Half markets (2026-09-19, operator request).
+# Liquidity checked live before adding these (not assumed) — for the 10
+# real games sampled the same day: 1Q and 1H moneyline/spread/total all
+# had 6 books on the main line across most/all games. 2nd/3rd/4th quarter
+# and 2nd half markets were checked too and found meaningfully thinner
+# (1-4 books) -- deliberately NOT registered here, same "only markets
+# with real observed liquidity" discipline src/sports/nfl.py's own
+# module docstring already established (and had already flagged exactly
+# these period markets as "in the provider catalog... not yet wired in,
+# pending a liquidity check" -- this is that check, done for CFB).
+# Team totals per-quarter/half were checked too and found thin (1 book)
+# -- not registered; only the full-game team totals above are.
+#
+# Settlement needs the score AT THE END of the relevant period, not the
+# final score -- see database.db_manager.event_period_scores and
+# src/game_settlement.py's period-aware grading. ESPN's CFB scoreboard
+# already returns per-quarter linescores on the same call src/cfb_results.py
+# already makes (confirmed live 2026-09-19), so no extra data source or
+# API cost is needed to settle these.
+GAME_1Q_MONEYLINE = MarketConfig(
+    cli_name="moneyline_1q",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_moneyline_1q",
+    market_type_yn=None,
+    display_name="1st Quarter Moneyline",
+    short_label="1Q ML",
+    period="1q",
+    scanner_title="NCAAF 1ST QUARTER MONEYLINE EDGE SCANNER",
+    allowed_sides_ou=("away", "home"),
+    bet_type="ml",
+    supports_yn=False,
+    game_level=True,
+    internal_side_map={"AWAY": "over", "HOME": "under"},
+    group_sides=("AWAY", "HOME"),
+)
+
+GAME_1Q_SPREAD = MarketConfig(
+    cli_name="spread_1q",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_spread_1q_ou",
+    market_type_yn=None,
+    display_name="1st Quarter Spread",
+    short_label="1Q SP",
+    period="1q",
+    scanner_title="NCAAF 1ST QUARTER SPREAD EDGE SCANNER",
+    allowed_sides_ou=("away", "home"),
+    bet_type="sp",
+    supports_yn=False,
+    game_level=True,
+    internal_side_map={"AWAY": "over", "HOME": "under"},
+    group_sides=("AWAY", "HOME"),
+)
+
+GAME_1Q_TOTAL = MarketConfig(
+    cli_name="total_1q",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_total_1q_ou",
+    market_type_yn=None,
+    display_name="1st Quarter Total",
+    short_label="1Q Tot",
+    period="1q",
+    scanner_title="NCAAF 1ST QUARTER TOTAL EDGE SCANNER",
+    entity=("all",),
+    supports_yn=False,
+    game_level=True,
+)
+
+GAME_1H_MONEYLINE = MarketConfig(
+    cli_name="moneyline_1h",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_moneyline_1h",
+    market_type_yn=None,
+    display_name="1st Half Moneyline",
+    short_label="1H ML",
+    period="1h",
+    scanner_title="NCAAF 1ST HALF MONEYLINE EDGE SCANNER",
+    allowed_sides_ou=("away", "home"),
+    bet_type="ml",
+    supports_yn=False,
+    game_level=True,
+    internal_side_map={"AWAY": "over", "HOME": "under"},
+    group_sides=("AWAY", "HOME"),
+)
+
+GAME_1H_SPREAD = MarketConfig(
+    cli_name="spread_1h",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_spread_1h_ou",
+    market_type_yn=None,
+    display_name="1st Half Spread",
+    short_label="1H SP",
+    period="1h",
+    scanner_title="NCAAF 1ST HALF SPREAD EDGE SCANNER",
+    allowed_sides_ou=("away", "home"),
+    bet_type="sp",
+    supports_yn=False,
+    game_level=True,
+    internal_side_map={"AWAY": "over", "HOME": "under"},
+    group_sides=("AWAY", "HOME"),
+)
+
+GAME_1H_TOTAL = MarketConfig(
+    cli_name="total_1h",
+    odd_id_stat_prefix="points",
+    market_type_ou="game_total_1h_ou",
+    market_type_yn=None,
+    display_name="1st Half Total",
+    short_label="1H Tot",
+    period="1h",
+    scanner_title="NCAAF 1ST HALF TOTAL EDGE SCANNER",
+    entity=("all",),
+    supports_yn=False,
+    game_level=True,
+)
+
 MARKET_REGISTRY: list[MarketConfig] = [
     GAME_MONEYLINE,
     GAME_SPREAD,
     GAME_TOTAL,
     GAME_TEAM_TOTAL_AWAY,
     GAME_TEAM_TOTAL_HOME,
+    GAME_1Q_MONEYLINE,
+    GAME_1Q_SPREAD,
+    GAME_1Q_TOTAL,
+    GAME_1H_MONEYLINE,
+    GAME_1H_SPREAD,
+    GAME_1H_TOTAL,
 ]
+
+# Checked live 2026-09-19, deliberately NOT registered (thin liquidity):
+# 2nd/3rd/4th quarter and 2nd half moneyline/spread/total (1-4 books
+# across a 10-game sample -- below this platform's MIN_COMPARISON_BOOKS
+# bar most of the time), and per-quarter/half team totals (1 book).
+# Revisit if book coverage improves.
 
 
 def get_market_registry() -> list[MarketConfig]:

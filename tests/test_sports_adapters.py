@@ -85,8 +85,9 @@ class TestSportsRegistry:
         assert report["MLB"]["n_markets"] > 0
         assert report["NFL"]["n_markets"] > 0
         # game-level only, no player props (see src/sports/cfb.py) --
-        # moneyline/spread/total/away-team-total/home-team-total.
-        assert report["NCAAF"]["n_markets"] == 5
+        # moneyline/spread/total/away-team-total/home-team-total (5 full-game markets)
+        # plus 1st-quarter and 1st-half moneyline/spread/total (6 period markets) = 11.
+        assert report["NCAAF"]["n_markets"] == 11
         assert all(m["game_level"] for m in report["NCAAF"]["markets"])
         for entry in report["NFL"]["markets"]:
             assert {"cli_name", "display_name", "supports_ou", "supports_yn", "game_level"} <= entry.keys()
