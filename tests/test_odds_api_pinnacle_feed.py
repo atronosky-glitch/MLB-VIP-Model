@@ -178,6 +178,21 @@ class TestSportKeyAndPropMarketMapResolution:
     def test_unknown_league_returns_none(self):
         assert _sport_key_for_league("NOT_A_REAL_LEAGUE") is None
 
+    def test_ncaaf_is_configured_for_pinnacle_game_odds(self):
+        """2026-10-14: CFB had 0% Pinnacle coverage ("league_not_configured") until this was added."""
+        assert _sport_key_for_league("NCAAF") == "americanfootball_ncaaf"
+        games = _parse_game_odds_response(
+            [_game_odds_event(home="Middle Tennessee Blue Raiders", away="Delaware Blue Hens")], "NCAAF")
+        assert {g.market_type for g in games} == {"game_moneyline", "game_spread_ou", "game_total_ou"}
+
+    def test_ncaaf_client_fetches_instead_of_reporting_not_configured(self, monkeypatch):
+        client = OddsAPIPinnacleClient()
+        monkeypatch.setattr(client._client, "get_odds", mock.Mock(return_value=([_game_odds_event()], False)))
+        result = client.get_game_odds("NCAAF")
+        assert result
+        assert client.last_fetch_status["NCAAF"] != STATUS_LEAGUE_NOT_CONFIGURED
+        assert client._client.get_odds.call_args.kwargs["sport_key"] == "americanfootball_ncaaf"
+
     def test_prop_market_maps_reuse_each_league_s_existing_parser_mapping(self):
         from src.mlb_props_parser import _PROP_MARKET_TYPE as mlb_map
         assert _prop_market_type_map_for_league("MLB") == mlb_map

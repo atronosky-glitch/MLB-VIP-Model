@@ -554,3 +554,12 @@ Entries are dated. New entries are appended.
 - **Decision**: (1) New `OFFICIAL_ALLOW_LOO_FALLBACK = False` (`src/prop_config.py`): `official_picks.py` Gate 9 no longer qualifies picks through the leave-one-out consensus fallback when Pinnacle is missing. The fallback analysis still runs and feeds research/Full Board. (2) Customer record reset uses the existing `performance_baseline` epoch (`database/db_manager.reset_performance_baseline`, `src/performance_reset.py`); nothing is deleted, the EV page discloses the reset date and shows an all-time record. (3) Auto-Bet and My Performance are hidden on the customer site behind `MLB_CUSTOMER_AUTOBET_VISIBLE` (default off). (4) Creator codes are attribution only (`src/referrals.py`).
 - **Reason**: Read-only production data (235 settled official picks) showed -7.4% ROI against a claimed +8.1% average EV and negative closing-line value; the loss was concentrated in consensus-only picks (157 picks, about -30u, OVER props won 26.3% vs 32.0% modeled, 2-book consensus 7% vs 17%), consistent with winner's-curse selection on noisy fair-price estimates and longshot bias. Pinnacle-referenced picks (28) were +17.6u but that sample cannot prove an edge.
 - **Consequence**: Far fewer official picks; the customer pitch must be transparency, not proven profitability, until a few hundred settled Pinnacle-referenced picks show positive CLV. A reset must always keep the all-time record visible.
+
+---
+
+## Pinnacle coverage: add NCAAF, poll small slates faster; do not raise frequency broadly
+
+- **Date**: 2026-10-14
+- **Decision**: NCAAF game markets are now looked up on Pinnacle via The Odds API; the props-scan throttle halves (floor 20 min) when <= 4 games are in the window. No broad increase in polling frequency.
+- **Reason**: Production data: Pinnacle game odds were already fetched on every scan; the real gap was CFB being unconfigured (0 references) and Pinnacle not listing most prop markets. The Odds API credit budget is slightly over pace, and props cost ~8 credits per event per fetch, so doubling cadence on full slates would exhaust the quota (which previously stopped all picks for days).
+- **Consequence**: CFB game spreads/totals/moneylines can qualify as official again when they clear the Pinnacle EV/edge thresholds. More Pinnacle prop coverage requires a different data source (e.g. the direct pinnapi feed, currently contributing nothing) or a larger Odds API plan.

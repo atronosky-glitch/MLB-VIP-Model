@@ -345,6 +345,11 @@ PINNACLE_GAME_MARKET_TYPES_BY_LEAGUE = {
     "MLB": {"moneyline": "game_moneyline", "spread": "game_runline_ou", "total": "game_total_ou"},
     "NFL": {"moneyline": "game_moneyline", "spread": "game_spread_ou", "total": "game_total_ou"},
     "WNBA": {"moneyline": "game_moneyline", "spread": "game_spread_ou", "total": "game_total_ou"},
+    # NCAAF added 2026-10-14: production scans showed pinnacle_game_odds_status="league_not_configured" for every
+    # CFB scan (0 Pinnacle references across ~380 game groups), which made CFB picks impossible once official
+    # picks required Pinnacle. Verified live that Pinnacle posts NCAAF h2h/spreads/totals via The Odds API
+    # (59 of 62 events, 3 credits per call). The 1Q/1H CFB markets are not covered by this feed.
+    "NCAAF": {"moneyline": "game_moneyline", "spread": "game_spread_ou", "total": "game_total_ou"},
 }
 
 # ── Confidence score weights ───────────────────────────────────────

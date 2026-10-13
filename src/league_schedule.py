@@ -245,6 +245,13 @@ MLB_PROPS_THROTTLE_MINUTES = 60
 NFL_PROPS_WINDOW_MINUTES = 240
 NFL_PROPS_THROTTLE_MINUTES = 60
 
+# Small slates are cheap to poll more often (props cost ~8 credits per EVENT per fetch), and they are exactly
+# when a stale soft-book line or a late-posted Pinnacle prop matters. With at most this many games inside the
+# window the throttle is halved (never below SMALL_SLATE_MIN_THROTTLE_MINUTES); full slates keep the normal
+# throttle so the monthly credit budget is not blown. Added 2026-10-14.
+SMALL_SLATE_MAX_GAMES = 4
+SMALL_SLATE_MIN_THROTTLE_MINUTES = 20
+
 
 def _should_fetch_player_props(
     now: datetime, game_times: list[datetime], last_fetch: datetime | None,
@@ -281,6 +288,9 @@ def _should_fetch_player_props(
         )
     if credits_remaining is not None and credits_remaining <= reserve:
         return ScheduleDecision(False, f"only {credits_remaining} credits remaining, reserve is {reserve}")
+    in_window = [gt for gt in upcoming if (gt - now).total_seconds() / 60 <= window_minutes]
+    if len(in_window) <= SMALL_SLATE_MAX_GAMES:
+        throttle_minutes = max(SMALL_SLATE_MIN_THROTTLE_MINUTES, throttle_minutes // 2)
     if last_fetch is not None:
         elapsed = (now - last_fetch).total_seconds() / 60
         if elapsed < throttle_minutes:

@@ -348,7 +348,7 @@ class TestWNBAProps:
         now = datetime(2026, 8, 19, 22, 30, tzinfo=UTC)
         game = datetime(2026, 8, 19, 23, 30, tzinfo=UTC)
         last = now - timedelta(minutes=20)
-        d = wnba_should_fetch_props(now, [game], last_fetch=last, credits_remaining=5000)
+        d = wnba_should_fetch_props(now, [game] * 5, last_fetch=last, credits_remaining=5000)   # full slate
         assert d.should_run is False
 
     def test_tightened_throttle_allows_35_minutes(self):
@@ -400,13 +400,31 @@ class TestMLBAndNFLProps:
     def test_mlb_throttled_to_once_per_60_minutes(self):
         now = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
         game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
+        slate = [game] * 6      # a full slate keeps the normal 60-minute throttle
         last = now - timedelta(minutes=45)
-        d = mlb_should_fetch_props(now, [game], last_fetch=last, credits_remaining=5000)
+        d = mlb_should_fetch_props(now, slate, last_fetch=last, credits_remaining=5000)
         assert d.should_run is False
         allows = mlb_should_fetch_props(
-            now, [game], last_fetch=now - timedelta(minutes=65), credits_remaining=5000,
+            now, slate, last_fetch=now - timedelta(minutes=65), credits_remaining=5000,
         )
         assert allows.should_run is True
+
+    def test_small_slates_are_polled_twice_as_often(self):
+        """2026-10-14: with <= 4 games in the window the throttle halves (cheap, and when stale lines matter)."""
+        now = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
+        assert mlb_should_fetch_props(now, [game], last_fetch=now - timedelta(minutes=35), credits_remaining=5000).should_run
+        assert not mlb_should_fetch_props(now, [game], last_fetch=now - timedelta(minutes=20), credits_remaining=5000).should_run
+        assert not mlb_should_fetch_props(now, [game] * 5, last_fetch=now - timedelta(minutes=35), credits_remaining=5000).should_run
+        assert mlb_should_fetch_props(now, [game] * 4, last_fetch=now - timedelta(minutes=35), credits_remaining=5000).should_run
+
+    def test_small_slate_never_polls_faster_than_the_floor_and_still_respects_the_reserve(self):
+        from src.league_schedule import SMALL_SLATE_MIN_THROTTLE_MINUTES
+        now = datetime(2026, 8, 19, 21, 0, tzinfo=UTC)
+        game = datetime(2026, 8, 19, 22, 0, tzinfo=UTC)
+        assert not mlb_should_fetch_props(
+            now, [game], last_fetch=now - timedelta(minutes=SMALL_SLATE_MIN_THROTTLE_MINUTES - 1), credits_remaining=5000).should_run
+        assert not mlb_should_fetch_props(now, [game], last_fetch=None, credits_remaining=10).should_run
 
     def test_nfl_window_is_4h(self):
         now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
@@ -422,7 +440,7 @@ class TestMLBAndNFLProps:
         now = datetime(2026, 9, 14, 14, 0, tzinfo=UTC)
         game = datetime(2026, 9, 14, 17, 0, tzinfo=UTC)
         last = now - timedelta(minutes=45)
-        d = nfl_should_fetch_props(now, [game], last_fetch=last, credits_remaining=5000)
+        d = nfl_should_fetch_props(now, [game] * 6, last_fetch=last, credits_remaining=5000)   # full slate
         assert d.should_run is False
 
     def test_mlb_and_nfl_use_the_same_shared_reserve_default(self):
