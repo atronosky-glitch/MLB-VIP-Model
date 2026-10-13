@@ -125,6 +125,11 @@ services:
       # this is set.
       - key: POLYMARKET_CREDENTIAL_ENCRYPTION_KEY
         sync: false
+      # Weather Edge (docs/WEATHER_EDGE.md): shows the Weather Edge page on the
+      # customer site when "true". Declared sync: false (not a fixed value) so
+      # deploys never override the operator's choice; the code default is OFF.
+      - key: WEATHER_EDGE_ENABLED
+        sync: false
       # Deliberately NOT declared here: MLB_CUSTOMER_FREE_ACCESS. Leaving
       # it undeclared keeps today's code default ("true" -- full access,
       # no account required) in effect until the operator explicitly
@@ -189,6 +194,16 @@ services:
       # exactly -- this worker's customer-autobet-scan job
       # (src/execution/customer_autobet.py) decrypts each customer's
       # stored Polymarket credentials to execute on their behalf.
+      # Weather Edge (docs/WEATHER_EDGE.md): analysis + paper trading only, off by
+      # default. Open-Meteo's free tier is non-commercial; set the commercial key
+      # below (or keep this off) for a paid product. The Discord webhook is a
+      # dedicated channel, separate from the sports alert webhooks.
+      - key: WEATHER_EDGE_ENABLED
+        sync: false
+      - key: WEATHER_EDGE_DISCORD_WEBHOOK_URL
+        sync: false
+      - key: WEATHER_EDGE_OPENMETEO_KEY
+        sync: false
       - key: POLYMARKET_CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: DATABASE_URL

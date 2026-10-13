@@ -995,6 +995,10 @@ def db_conn():
         );
     """)
 
+    # Weather Edge tables (single source of truth: the same DDL constant init_db uses)
+    from src.weather_edge.store import WEATHER_SCHEMA_SQL
+    cursor.executescript(WEATHER_SCHEMA_SQL)
+
     # Restore globals
     dbm.DB_PATH = _orig_path
     dbm.get_connection = _orig_get_conn

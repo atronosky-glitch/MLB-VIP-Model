@@ -889,6 +889,7 @@ tabs = st.tabs([
     ":material/balance: Arbitrage",
     ":material/compress: Middling",
     ":material/bolt: Live Execution",
+    ":material/thunderstorm: Weather Edge",
 ])
 
 # ==================================================================
@@ -3048,6 +3049,16 @@ with tabs[11]:
         render_live_execution_tab(config, db_path)
     except Exception as e:
         st.error(f"Live Execution tab unavailable: {e}")
+
+# ==================================================================
+# Tab 13: Weather Edge (weather prediction markets: analysis, paper trading, alerts only)
+# ==================================================================
+with tabs[12]:
+    try:
+        from src.weather_edge.ui import render_weather_edge
+        render_weather_edge(lambda: _open_dashboard_connection(db_path), editable=True, key_prefix="we_cp")
+    except Exception as e:
+        st.error(f"Weather Edge tab unavailable: {e}")
 
 # ── Footer ─────────────────────────────────────────────────────────
 st.divider()

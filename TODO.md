@@ -2,6 +2,7 @@
 
 ## Completed
 
+- [x] Weather Edge module (2026-10-12): Kalshi + Polymarket daily high/low temperature markets, ensemble forecasts, calibration, executable-price EV, paper trading, alerts, settlement, performance, labeled-simulated backtest, UI, worker jobs, docs (`docs/WEATHER_EDGE.md`), 197 tests. Awaiting deploy authorization.
 - [x] Kalshi exact contract mapping (real-payload verified, fail-closed), evaluator YES-probability fix, and real-execution-economics My Performance (fills/fees/partial/unfilled/open/refund-pending, gross-vs-net labeling) + read-only Kalshi fill reconciliation (2026-09-23) — see PROJECT_STATUS.md
 - [x] Permanent AI onboarding context — added `AI_CONTEXT.md` and required the ordered onboarding read sequence in `AGENTS.md`; no runtime or model logic changed
 - [x] Refactor threshold configuration to use module import (no longer importing by name)
@@ -200,3 +201,13 @@
 - [ ] Advanced analytics (correlation analysis, portfolio optimization)
 - [ ] Add further leagues (NBA, NHL, NCAAF, NCAAB, MLS) — all confirmed available on the current SportsGameOdds account per `/leagues`; same verify-then-register pattern as NFL
 - [ ] Long-term intelligence architecture (independent predictive models, automated retraining, champion/challenger, calibration, line-movement prediction, BET NOW vs WAIT, middle detection) — explicitly deferred per operator's 2026-08-20 "architecture readiness, not build now" instruction; the data this would train on is now being captured (see Priority 5 audit in `docs/SESSION_HANDOFF.md`)
+
+## Weather Edge follow-ups (opened 2026-10-12)
+
+- [ ] Deploy (needs the user's explicit authorization), then run `python -m src.weather_edge.cli backfill-calibration --days 120` in production; signals stay blocked until stations reach >= 30 settled samples.
+- [ ] Decide Open-Meteo licensing before enabling for a paid product (free tier is non-commercial; `WEATHER_EDGE_OPENMETEO_KEY` switches to the commercial host).
+- [ ] Create a dedicated Discord channel and set `WEATHER_EDGE_DISCORD_WEBHOOK_URL` (secret); set `WEATHER_EDGE_USER_AGENT` with a contact address.
+- [ ] After ~2-4 weeks of recorded predictions, review the Performance tab (Brier vs market, reliability table) before trusting any edge; run `backtest` for a sanity check.
+- [ ] Polymarket: own settlement/calibration history is needed before it can raise signals; US trading is restricted by the platform (informational only).
+- [ ] Not modeled yet: rain / snow / monthly precipitation / hurricane / Celsius markets (listed as "not modeled").
+- [ ] Any live-order integration must be a separate, explicitly disabled-by-default module with permission checks (none exists).

@@ -1352,6 +1352,11 @@ def init_db(db_path: str | None = None) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_decisions_rec ON risk_decisions(recommendation_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_decisions_created ON risk_decisions(created_at)")
 
+    # Weather Edge (weather prediction-market analysis): additive tables only, analysis/alerts/paper
+    # trading -- no order placement. See src/weather_edge/store.py and docs/WEATHER_EDGE.md.
+    from src.weather_edge.store import create_schema as _create_weather_edge_schema
+    _create_weather_edge_schema(conn)
+
     # Prediction-market execution layer, Stage 4 (human-approved live
     # execution): every table below is part of the real-money path, but
     # no order is ever placed without a valid, unexpired, single-use

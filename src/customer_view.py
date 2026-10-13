@@ -2012,7 +2012,9 @@ if st.session_state.view_mode is not None:
 if st.session_state.view_mode is None:
     st.subheader("What do you want to see?")
     st.caption("Independent ways to use this model. Pick one.")
-    menu_cols = st.columns(5 if current_account is not None else 3)
+    from src.weather_edge.config import WeatherEdgeConfig as _WxConfig
+    _wx = 1 if _WxConfig.from_env().enabled else 0
+    menu_cols = st.columns((5 if current_account is not None else 3) + _wx)
 
     with menu_cols[0]:
         with st.container(border=True):
@@ -2050,8 +2052,20 @@ if st.session_state.view_mode is None:
                 st.session_state.view_mode = "middling"
                 st.rerun()
 
-    if current_account is not None:
+    if _wx:
         with menu_cols[3]:
+            with st.container(border=True):
+                st.markdown("### 🌦️ Weather Edge")
+                st.markdown(
+                    "Temperature markets on Kalshi and Polymarket, priced against live weather-model "
+                    "forecasts and the real order book, after fees. Estimates, not guarantees."
+                )
+                if st.button("View Weather Edge →", key="choose_weather", use_container_width=True, type="primary"):
+                    st.session_state.view_mode = "weather"
+                    st.rerun()
+
+    if current_account is not None:
+        with menu_cols[3 + _wx]:
             with st.container(border=True):
                 st.markdown("### 🤖 Auto-Bet")
                 st.markdown(
@@ -2077,7 +2091,7 @@ if st.session_state.view_mode is None:
                     st.session_state.view_mode = "autobet"
                     st.rerun()
 
-        with menu_cols[4]:
+        with menu_cols[4 + _wx]:
             with st.container(border=True):
                 st.markdown("### 📈 My Performance")
                 st.markdown(
@@ -2327,6 +2341,13 @@ elif st.session_state.view_mode == "middling":
             with st.expander(f"View all {len(graded_mid_sorted)} settled middle opportunities", expanded=False):
                 for opp in graded_mid_sorted:
                     _render_graded_middle_card(opp)
+
+# ==================================================================
+# Weather Edge (read-only analysis page; no orders)
+# ==================================================================
+elif st.session_state.view_mode == "weather":
+    from src.weather_edge.ui import render_weather_edge
+    render_weather_edge(get_connection, editable=False, key_prefix="we_cv")
 
 # ==================================================================
 # Auto-Bet -- Kalshi + Polymarket (account required)

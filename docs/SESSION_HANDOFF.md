@@ -2,6 +2,16 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-10-12 — Weather Edge module (built, tested, NOT committed/pushed/deployed)
+
+**Read `docs/WEATHER_EDGE.md` first.** New package `src/weather_edge/` (registry, models, fees, probability, ev, http, kalshi_source, polymarket_source, forecast, calibration, matching, store, scanner, settlement, performance, backtest, alerts, config, cli, ui_data, ui). Hooks into existing code (all additive): `database/db_manager.py::init_db` (calls `store.create_schema`), `tests/conftest.py` (executes `WEATHER_SCHEMA_SQL`), `src/worker.py` (jobs `weather-edge-scan`/`weather-edge-settle`, scheduled only when enabled), `src/customer_view.py` (menu entry + `weather` view mode, only when `WEATHER_EDGE_ENABLED`), `src/control_panel.py` (13th tab, editable watchlist), `render.yaml` (env vars declared `sync: false`).
+
+State: working tree has the new files plus those edits, nothing committed (the user did not ask for a commit). Full suite run 2026-10-12: 4174 passed on the final re-run (3977 before + 197 new). A live read-only check against the real APIs succeeded (Kalshi 468 / Polymarket 572 modeled temperature contracts; ensemble + NWS + observation bundle for KHOU).
+
+Gotchas learned: Kalshi public endpoints 429 under bursts (client paces at 0.4 s and retries); Polymarket text has double-encoded degree signs and Celsius markets (never read as F); Polymarket CLOB books are unsorted; the Gamma `condition_ids` lookup returned nothing for closed markets, so settlement fetches events by slug; UMA `resolved` + a clean 1/0 `outcomePrices` is the settlement signal. Nothing can signal before `backfill-calibration` provides >= 30 settled samples per bucket (deliberate).
+
+Next: the user authorizes push/deploy; run calibration backfill in production; set `WEATHER_EDGE_USER_AGENT`, an optional Discord webhook, decide Open-Meteo licensing; watch the Performance tab for weeks before trusting anything. See TODO.md "Weather Edge follow-ups".
+
 ## Session: 2026-09-24 — Final production-readiness audit (fixes committed locally, NOT yet pushed)
 
 Read `docs/LAUNCH_READINESS_AUDIT.md` first: it has the system map, every finding with severity, the sports/job/Render/env matrices, the backup runbook, evidence from read-only production queries, and the manual action list. Nothing was pushed by this audit; no real order was placed; live flags untouched; `src/game_settlement.py` and `src/sports/cfb.py` remain unstaged (uncommitted CFB WIP that alone breaks `tests/test_sports_adapters.py::test_market_capability_report_structure` — committed HEAD passes 26/26).

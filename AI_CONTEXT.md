@@ -152,6 +152,15 @@ separate from `customer_view.py`), Pinnacle sharp-reference pricing for
 NFL (unverified), and NFL/WNBA production scheduling cadence (both are
 built and tested but nothing runs either on a cron/schedule yet).
 
+## Weather Edge (separate, sports-independent module)
+
+`src/weather_edge/` analyzes daily high/low temperature markets on Kalshi and Polymarket
+(analysis, alerts and paper trading only; no orders, no trading credentials; default OFF via
+`WEATHER_EDGE_ENABLED`). It does not use SportsGameOdds/The Odds API and shares only the DB, the
+worker scheduler, Discord delivery code and `src/execution/orderbook_math`. Read
+`docs/WEATHER_EDGE.md` before touching it (verified provider facts, settlement-source caveats,
+calibration rules, env vars, deployment steps, limitations).
+
 ## Data Provider / Cost Policy
 
 Operator directive (2026-08-19): keep costs low, but data quality matters

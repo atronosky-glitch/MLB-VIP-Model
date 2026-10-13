@@ -74,6 +74,7 @@ MLB_PROPS_SCHEDULE_CHECK_INTERVAL_MINUTES = 20
 # ingested (no API cost), so this can run more often than the
 # credit-metered scans above without any budget concern.
 ARB_MIDDLE_SCAN_INTERVAL_MINUTES = 15
+WEATHER_EDGE_SETTLE_INTERVAL_MINUTES = 360
 # Per-customer Polymarket Auto-Bet (2026-09-21): re-evaluates today's
 # already-computed Stage 2B opportunities (no extra API cost) against
 # every connected, Auto-Bet-enabled customer's own credentials/risk
@@ -448,6 +449,40 @@ def _run_customer_autobet_scan(config) -> dict:
         logger.exception("Customer Auto-Bet pass failed")
         return {"status": "failed"}
     return {"status": "success", **result}
+
+
+def _run_weather_edge_scan(conn: DB, config) -> dict:
+    """Weather Edge market scan (analysis + paper trading + optional Discord alert only).
+
+    Off unless WEATHER_EDGE_ENABLED is set: Open-Meteo's free tier is non-commercial, so an
+    operator must opt in deliberately. Uses public read-only provider endpoints; no credentials."""
+    from src.weather_edge.config import WeatherEdgeConfig
+    from src.weather_edge.scanner import run_scan
+
+    cfg = WeatherEdgeConfig.from_env()
+    if not cfg.enabled:
+        return {"status": "skipped", "reason": "WEATHER_EDGE_ENABLED is not set"}
+    try:
+        summary = run_scan(conn, cfg)
+    except Exception:
+        logger.exception("Weather Edge scan failed")
+        return {"status": "failed"}
+    return {"status": "success" if summary.status != "failed" else "failed", "scan_id": summary.scan_id,
+            "signals": summary.signals, "contracts_modeled": summary.contracts_modeled}
+
+
+def _run_weather_edge_settle(conn: DB, config) -> dict:
+    from src.weather_edge.config import WeatherEdgeConfig
+    from src.weather_edge.settlement import run_settlement
+
+    if not WeatherEdgeConfig.from_env().enabled:
+        return {"status": "skipped", "reason": "WEATHER_EDGE_ENABLED is not set"}
+    try:
+        out = run_settlement(conn, datetime.now(timezone.utc))
+    except Exception:
+        logger.exception("Weather Edge settlement failed")
+        return {"status": "failed"}
+    return {"status": "success", **{k: v for k, v in out.items() if k != "errors"}}
 
 
 def _release_undeliverable_claims(conn: DB, config, results: dict[str, dict]) -> None:
@@ -834,6 +869,8 @@ def _execute_job(job_type: str, conn: DB, config, event_id: str | None = None) -
         "mlb-props-scan": lambda: _run_mlb_props_scan(config),
         "nfl-props-scan": lambda: _run_nfl_props_scan(config),
         "arb-middle-scan": lambda: _run_arb_middle_scan(conn, config),
+        "weather-edge-scan": lambda: _run_weather_edge_scan(conn, config),
+        "weather-edge-settle": lambda: _run_weather_edge_settle(conn, config),
         "customer-autobet-scan": lambda: _run_customer_autobet_scan(config),
         "grading": lambda: _run_grading(conn, config),
         "backup": lambda: _run_backup(config),
@@ -1552,6 +1589,8 @@ def run_worker_persistent(config) -> None:
     last_wnba_check = 0
     last_mlb_props_check = 0
     last_arb_middle_check = 0
+    last_weather_edge_check = 0
+    last_weather_edge_settle_check = 0
     last_customer_autobet_check = 0
     last_backup_minute = -1
     last_maintenance_day = ""
@@ -1649,6 +1688,22 @@ def run_worker_persistent(config) -> None:
                 if job_id:
                     logger.info("Scheduled arbitrage/middle scan: %s", job_id[:8])
                 last_arb_middle_check = now
+
+            # Weather Edge: public weather-market data, no credentials. Both jobs are no-ops
+            # (status "skipped") unless WEATHER_EDGE_ENABLED is set, so scheduling is harmless.
+            from src.weather_edge.config import WeatherEdgeConfig as _WeatherEdgeConfig
+            _we_cfg = _WeatherEdgeConfig.from_env()
+            if _we_cfg.enabled:
+                if now - last_weather_edge_check >= _we_cfg.scan_interval_minutes * 60:
+                    job_id = _create_job_if_not_queued(conn, "weather-edge-scan")
+                    if job_id:
+                        logger.info("Scheduled Weather Edge scan: %s", job_id[:8])
+                    last_weather_edge_check = now
+                if now - last_weather_edge_settle_check >= WEATHER_EDGE_SETTLE_INTERVAL_MINUTES * 60:
+                    job_id = _create_job_if_not_queued(conn, "weather-edge-settle")
+                    if job_id:
+                        logger.info("Scheduled Weather Edge settlement: %s", job_id[:8])
+                    last_weather_edge_settle_check = now
 
             # Per-customer Polymarket Auto-Bet: reuses whatever the
             # execution-layer scan already computes, zero extra API
