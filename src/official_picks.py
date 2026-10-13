@@ -234,6 +234,7 @@ def classify_recommendation(
             loo_fallback = (
                 rec.get("pinnacle_found") is False
                 and getattr(cfg, "PINNACLE_FALLBACK_TO_MARKET_MEDIAN", True)
+                and getattr(cfg, "OFFICIAL_ALLOW_LOO_FALLBACK", False)
             )
             if not loo_fallback:
                 disq.append("Pinnacle approval required for official status")

@@ -126,7 +126,7 @@ class TestBrowserSuppliedIdentityIsNeverTrusted:
 
     def test_only_known_non_identity_query_params_are_read(self):
         params = set(re.findall(r'st\.query_params\.(?:get|pop)\(\s*"([^"]+)"', self.SRC))
-        assert params <= {"access", "verify", "reset", "page"}
+        assert params <= {"access", "verify", "reset", "page", "ref"}   # ref = creator attribution code, never identity
         assert not any(p in params for p in ("account", "account_id", "user", "user_id", "email"))
 
     def test_account_identity_only_comes_from_the_server_side_session(self):

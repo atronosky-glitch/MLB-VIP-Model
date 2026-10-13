@@ -890,6 +890,7 @@ tabs = st.tabs([
     ":material/compress: Middling",
     ":material/bolt: Live Execution",
     ":material/thunderstorm: Weather Edge",
+    ":material/group: Creators",
 ])
 
 # ==================================================================
@@ -3059,6 +3060,20 @@ with tabs[12]:
         render_weather_edge(lambda: _open_dashboard_connection(db_path), editable=True, key_prefix="we_cp")
     except Exception as e:
         st.error(f"Weather Edge tab unavailable: {e}")
+
+# ==================================================================
+# Tab 14: Creators (referral-code attribution; no billing)
+# ==================================================================
+with tabs[13]:
+    try:
+        from src.referrals import render_creators_admin
+        _cr_conn = _open_dashboard_connection(db_path)
+        try:
+            render_creators_admin(_cr_conn, st)
+        finally:
+            _cr_conn.close()
+    except Exception as e:
+        st.error(f"Creators tab unavailable: {e}")
 
 # ── Footer ─────────────────────────────────────────────────────────
 st.divider()

@@ -20,7 +20,8 @@ import pandas as pd
 import streamlit as st
 
 from database.db_manager import (
-    get_connection, init_db, get_performance_baseline, get_today_in_configured_timezone,
+    get_connection, init_db, get_performance_baseline, get_performance_baseline_info, get_all_time_record,
+    get_today_in_configured_timezone,
     format_event_start_local, is_event_live, get_bet_links, get_autobet_executions,
 )
 from src.customer_accounts import (
@@ -887,6 +888,7 @@ def _render_auth_ui(heading: str | None = "Sign in to continue") -> None:
             phone = st.text_input("Phone (optional)", key="signup_phone")
             password = st.text_input("Password", type="password", key="signup_password")
             password_confirm = st.text_input("Confirm password", type="password", key="signup_password_confirm")
+            ref_code = st.text_input("Creator code (optional)", value=st.session_state.get("ref_code", ""), key="signup_ref_code")
             consent = st.checkbox(MARKETING_CONSENT_TEXT, value=False, key="signup_consent")
             st.caption("See our [Privacy Policy](?page=privacy) and [Terms of Service](?page=terms).")
             submitted = st.form_submit_button("Sign Up", type="primary", use_container_width=True)
@@ -897,7 +899,7 @@ def _render_auth_ui(heading: str | None = "Sign in to continue") -> None:
                 conn = get_connection()
                 try:
                     try:
-                        account = sign_up(conn, email, phone, password, consent)
+                        account = sign_up(conn, email, phone, password, consent, referral_code=ref_code)
                     except (SignUpError, RateLimitError) as exc:
                         st.error(str(exc))
                     else:
@@ -1449,6 +1451,23 @@ _log_backend_once()
 
 
 @st.cache_data(ttl=30, show_spinner=False)
+def _render_record_epoch_notice(data: dict) -> None:
+    """After a deliberate record reset, say so and keep the earlier record one click away, so a fresh
+    start can never be mistaken for the full history."""
+    base = data.get("baseline") or {}
+    if not base or base.get("reason") in (None, "production_baseline"):
+        return
+    since = str(base.get("baseline_at", ""))[:10]
+    st.info(f"Record shown since {since} ({base['reason']}). Earlier results are kept in full below.")
+    at = data.get("all_time") or {}
+    with st.expander("All-time record (including before this date)"):
+        if not at.get("picks"):
+            st.write("No earlier settled picks.")
+            return
+        roi = "n/a" if at.get("roi_pct") is None else f"{at['roi_pct']:+.1f}%"
+        st.write(f"{at['wins']}-{at['losses']} over {at['picks']} settled picks · {at['units']:+.2f} units · ROI {roi}")
+
+
 def load_customer_data(authorized: bool) -> dict:
     """Load only fields allowed for the request's entitlement level."""
     init_db()
@@ -1588,6 +1607,8 @@ def load_customer_data(authorized: bool) -> dict:
             "active_middles": active_middles,
             "graded_middles": graded_middles,
             "pending_settlement_count": (pending_row["n"] if pending_row else 0) or 0,
+            "baseline": get_performance_baseline_info(conn),
+            "all_time": get_all_time_record(conn),
         }
     finally:
         conn.close()
@@ -1969,6 +1990,19 @@ except Exception:
     st.error("The model data is temporarily unavailable. Please check back shortly.")
     st.stop()
 
+# Auto-Bet / My Performance are not customer-ready: hidden here by default (the operator dashboard and
+# the worker are unaffected). Set MLB_CUSTOMER_AUTOBET_VISIBLE=true to show them again.
+_AUTOBET_VISIBLE = os.environ.get("MLB_CUSTOMER_AUTOBET_VISIBLE", "").strip().lower() in ("1", "true", "yes", "on")
+
+# Creator link (?ref=CODE): remembered for this visit and prefilled at signup (attribution only).
+try:
+    from src.referrals import normalize_code as _normalize_ref
+    _ref_param = st.query_params.get("ref")
+    if _ref_param and _normalize_ref(_ref_param) and "ref_code" not in st.session_state:
+        st.session_state["ref_code"] = _normalize_ref(_ref_param)
+except Exception:
+    logger.exception("Referral code capture failed")
+
 if "view_mode" not in st.session_state:
     st.session_state.view_mode = None
 
@@ -1997,7 +2031,7 @@ else:
     # Free-access mode never renders the auth form on its own, so a visitor
     # would have no way to create an account (needed for Auto-Bet and My
     # Performance). Always offer it.
-    with st.expander("🔐 Log in / create a free account (needed for Auto-Bet and My Performance)"):
+    with st.expander("🔐 Log in / create a free account" + (" (needed for Auto-Bet and My Performance)" if _AUTOBET_VISIBLE else "")):
         _render_auth_ui(heading=None)
 
 if st.session_state.view_mode is not None:
@@ -2014,7 +2048,8 @@ if st.session_state.view_mode is None:
     st.caption("Independent ways to use this model. Pick one.")
     from src.weather_edge.config import WeatherEdgeConfig as _WxConfig
     _wx = 1 if _WxConfig.from_env().enabled else 0
-    menu_cols = st.columns((5 if current_account is not None else 3) + _wx)
+    _ab = current_account is not None and _AUTOBET_VISIBLE
+    menu_cols = st.columns(3 + _wx + (2 if _ab else 0))
 
     with menu_cols[0]:
         with st.container(border=True):
@@ -2064,7 +2099,7 @@ if st.session_state.view_mode is None:
                     st.session_state.view_mode = "weather"
                     st.rerun()
 
-    if current_account is not None:
+    if _ab:
         with menu_cols[3 + _wx]:
             with st.container(border=True):
                 st.markdown("### 🤖 Auto-Bet")
@@ -2139,6 +2174,7 @@ elif st.session_state.view_mode == "ev":
     st.divider()
     st.subheader("Verified Track Record — Past Picks")
     st.caption("Settled Top Picks only. Winners and losses are included equally; no results are manually selected or hidden.")
+    _render_record_epoch_notice(data)
     if data["settled"]:
         with st.expander("Filter settled picks", expanded=False):
             settled_filters = render_pick_filters(data["settled"], "settled")
@@ -2353,7 +2389,9 @@ elif st.session_state.view_mode == "weather":
 # Auto-Bet -- Kalshi + Polymarket (account required)
 # ==================================================================
 elif st.session_state.view_mode == "autobet":
-    if current_account is None:
+    if not _AUTOBET_VISIBLE:
+        st.info("This feature is not available on the customer site yet.")
+    elif current_account is None:
         st.warning("Log in to manage Auto-Bet.")
     else:
         _render_polymarket_autobet(current_account)
@@ -2362,7 +2400,9 @@ elif st.session_state.view_mode == "autobet":
 # My Performance (account required, strictly private)
 # ==================================================================
 elif st.session_state.view_mode == "performance":
-    if current_account is None:
+    if not _AUTOBET_VISIBLE:
+        st.info("This feature is not available on the customer site yet.")
+    elif current_account is None:
         st.warning("Log in to view My Performance.")
     else:
         _render_my_performance(current_account)

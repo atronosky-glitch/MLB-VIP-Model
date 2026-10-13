@@ -32,6 +32,7 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(dbm, "DB_PATH", path)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("MLB_CUSTOMER_FREE_ACCESS", "true")
+    monkeypatch.setenv("MLB_CUSTOMER_AUTOBET_VISIBLE", "true")     # these tests exercise the feature itself
     monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
     init_db(str(path))
 
@@ -238,6 +239,58 @@ class TestCustomerCanUseTheModel:
         metrics = {m.label: m.value for m in at.metric}
         assert metrics.get("Filled Bets") == "0"
         assert "No Auto-Bet activity" in _text(at)
+
+
+class TestRecordReset:
+    def test_reset_is_non_destructive_and_disclosed_with_an_all_time_record(self, site):
+        from database.db_manager import (get_all_time_record, get_connection, get_performance_baseline_info,
+                                         reset_performance_baseline)
+        _seed_pick(site, "old-win", player="Old Winner", settled="WIN")
+        _seed_pick(site, "old-loss", player="Old Loser", settled="LOSS")
+        conn = get_connection()
+        before = conn.execute("SELECT COUNT(*) AS n FROM official_picks").fetchone()["n"]
+        reset_performance_baseline(conn, "Pinnacle-only picks", "2999-01-01T00:00:00+00:00")   # future epoch: hides both
+        assert conn.execute("SELECT COUNT(*) AS n FROM official_picks").fetchone()["n"] == before    # nothing deleted
+        assert get_performance_baseline_info(conn)["reason"] == "Pinnacle-only picks"
+        assert get_all_time_record(conn)["picks"] == 2          # history still counted
+        conn.close()
+        import streamlit as st
+        st.cache_data.clear()
+        at = _open()
+        _button(at, "View EV Picks →").click()
+        at.run()
+        assert not at.exception
+        text = _text(at)
+        assert "Record shown since 2999-01-01 (Pinnacle-only picks)" in text and "Old Winner" not in text
+        assert any("All-time record" in e.label for e in at.expander)
+
+    def test_default_baseline_shows_no_reset_notice(self, site):
+        at = _open()
+        _button(at, "View EV Picks →").click()
+        at.run()
+        assert "Record shown since" not in _text(at)
+
+
+class TestAutoBetHiddenByDefault:
+    def test_logged_in_customer_does_not_see_auto_bet_or_my_performance_by_default(self, site, monkeypatch):
+        monkeypatch.delenv("MLB_CUSTOMER_AUTOBET_VISIBLE", raising=False)
+        at = _open()
+        _sign_up(at)
+        labels = {b.label for b in at.button}
+        assert "Manage Auto-Bet →" not in labels and "View My Performance →" not in labels
+        assert "Log out" in labels and "View EV Picks →" in labels
+        assert not any("Auto-Bet" in str(m.value) for m in at.markdown if "###" in str(m.value))
+
+    def test_direct_navigation_to_the_hidden_views_shows_a_neutral_message(self, site, monkeypatch):
+        monkeypatch.delenv("MLB_CUSTOMER_AUTOBET_VISIBLE", raising=False)
+        at = _open()
+        _sign_up(at)
+        for mode in ("autobet", "performance"):
+            at.session_state["view_mode"] = mode
+            at.run()
+            assert not at.exception
+            assert any("not available on the customer site" in i.value for i in at.info)
+            assert not any(m.label in ("Kalshi", "Polymarket") for m in at.metric)
 
 
 class TestIsolationAndAdmin:

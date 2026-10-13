@@ -2,6 +2,7 @@
 
 ## Completed
 
+- [x] 2026-10-13: Pinnacle-only official picks, non-destructive record reset tool + disclosure, Auto-Bet hidden on the customer site, creator-code attribution, marketing playbook, Weather Edge merged.
 - [x] Weather Edge module (2026-10-12): Kalshi + Polymarket daily high/low temperature markets, ensemble forecasts, calibration, executable-price EV, paper trading, alerts, settlement, performance, labeled-simulated backtest, UI, worker jobs, docs (`docs/WEATHER_EDGE.md`), 197 tests. Awaiting deploy authorization.
 - [x] Kalshi exact contract mapping (real-payload verified, fail-closed), evaluator YES-probability fix, and real-execution-economics My Performance (fills/fees/partial/unfilled/open/refund-pending, gross-vs-net labeling) + read-only Kalshi fill reconciliation (2026-09-23) — see PROJECT_STATUS.md
 - [x] Permanent AI onboarding context — added `AI_CONTEXT.md` and required the ordered onboarding read sequence in `AGENTS.md`; no runtime or model logic changed
@@ -211,3 +212,11 @@
 - [ ] Polymarket: own settlement/calibration history is needed before it can raise signals; US trading is restricted by the platform (informational only).
 - [ ] Not modeled yet: rain / snow / monthly precipitation / hurricane / Celsius markets (listed as "not modeled").
 - [ ] Any live-order integration must be a separate, explicitly disabled-by-default module with permission checks (none exists).
+
+## After the 2026-10-13 changes
+
+- [ ] Watch pick volume: Pinnacle-only means ~1 official pick every 2-3 days; check Pinnacle feed coverage/quota (`pinnacle_found` rate) and consider widening Pinnacle coverage rather than relaxing the gate.
+- [ ] Re-evaluate in 4-8 weeks: closing-line value and ROI of Pinnacle-referenced picks (28 picks so far is far too few to prove an edge).
+- [ ] Review the "Full Board"/research list: it still shows consensus-only plays; consider labeling them clearly as unverified.
+- [ ] Billing (e.g. Stripe) + paid tier before any creator revenue share; until then pay creators manually and in writing.
+- [ ] SendGrid sender-domain authentication, legal review of Privacy/Terms/consent, Postgres backup restore test, SGO key rotation, repo privacy.

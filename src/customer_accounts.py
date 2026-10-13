@@ -190,6 +190,7 @@ def _validate_phone(phone: str) -> str | None:
 
 def sign_up(
     conn, email: str, phone: str | None, password: str, marketing_consent: bool,
+    referral_code: str | None = None,
 ) -> Account:
     """Create a new account. Raises SignUpError (safe to show the
     customer) for any rejected input -- never a generic exception that
@@ -218,15 +219,18 @@ def sign_up(
     now = datetime.now(timezone.utc).isoformat()
     consent_at = now if marketing_consent else None
     consent_version = MARKETING_CONSENT_VERSION if marketing_consent else None
+    # An unknown/inactive/garbled code is silently ignored: it must never block a signup.
+    from src.referrals import resolve_code
+    referral = resolve_code(conn, referral_code)
 
     try:
         conn.execute(
             """INSERT INTO customer_accounts
                    (account_id, email, phone, password_hash, marketing_consent,
-                    marketing_consent_at, marketing_consent_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    marketing_consent_at, marketing_consent_version, referral_code)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (account_id, email, phone or None, password_hash, int(marketing_consent),
-             consent_at, consent_version),
+             consent_at, consent_version, referral),
         )
         conn.commit()
     except Exception:

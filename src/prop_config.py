@@ -155,6 +155,12 @@ REQUIRE_PINNACLE_FOR_OFFICIAL = True
 # If True, groups without Pinnacle fall back to the existing LOO
 # market-median consensus (unchanged behaviour).
 PINNACLE_FALLBACK_TO_MARKET_MEDIAN = True
+# Official-tier use of the LOO fallback (2026-10-13). The fallback still runs for display/research, but
+# production data (157 fallback official picks since August: 31-109 style record, about -30u, avg fair
+# probability 8 points above the actual win rate on OVER props, closing-line value negative) showed
+# consensus-only "EV" has no demonstrable edge, while Pinnacle-referenced picks were profitable.
+# Official/customer picks therefore require a Pinnacle-approved reference unless this is set to True.
+OFFICIAL_ALLOW_LOO_FALLBACK = False
 # Minimum EV for a Pinnacle-approved pick (decimal, 0.04 = 4%).
 MIN_PINNACLE_EV = 0.04
 # Minimum probability edge vs Pinnacle no-vig (decimal, 0.025 = 2.5%).

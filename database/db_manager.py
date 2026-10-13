@@ -1813,7 +1813,19 @@ def init_db(db_path: str | None = None) -> None:
         ("disabled", "INTEGER NOT NULL DEFAULT 0"),
         ("password_reset_token_hash", "TEXT"),
         ("password_reset_expires_at", "TEXT"),
+        ("referral_code", "TEXT"),
     ])
+    # Creator / referral codes (src/referrals.py): attribution only -- no billing exists yet.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS creator_codes (
+            code          TEXT PRIMARY KEY,
+            creator_name  TEXT NOT NULL,
+            active        INTEGER NOT NULL DEFAULT 1,
+            note          TEXT,
+            created_at    TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_customer_accounts_referral ON customer_accounts(referral_code)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS auth_rate_events (
             event_id    TEXT PRIMARY KEY,
@@ -3961,6 +3973,44 @@ def get_performance_baseline(conn: DB) -> str | None:
         "SELECT baseline_at FROM performance_baseline WHERE baseline_id = 1"
     ).fetchone()
     return row["baseline_at"] if row else None
+
+
+def get_performance_baseline_info(conn: DB) -> dict:
+    """Baseline epoch plus the reason it was set (``{}`` when none)."""
+    row = conn.execute(
+        "SELECT baseline_at, reason FROM performance_baseline WHERE baseline_id = 1"
+    ).fetchone()
+    return {"baseline_at": row["baseline_at"], "reason": row["reason"]} if row else {}
+
+
+def reset_performance_baseline(conn: DB, reason: str, when_iso: str | None = None) -> str:
+    """Start a fresh customer-facing record. NON-destructive: no pick or result is deleted or edited,
+    the customer site just counts from the new epoch and discloses the earlier record. Returns the new epoch."""
+    when_iso = when_iso or datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO performance_baseline (baseline_id, baseline_at, reason) VALUES (1, ?, ?)
+           ON CONFLICT (baseline_id) DO UPDATE SET baseline_at = excluded.baseline_at, reason = excluded.reason""",
+        (when_iso, reason),
+    )
+    conn.commit()
+    return when_iso
+
+
+def get_all_time_record(conn: DB) -> dict:
+    """Every settled official pick ever, ignoring the baseline (so a reset can never hide history)."""
+    rows = conn.execute(
+        """SELECT ms.settlement_status AS status, bu.profit_units AS pu, bu.risk_units AS ru
+           FROM official_picks op
+           JOIN market_settlements ms ON ms.recommendation_id = op.recommendation_id
+           LEFT JOIN bet_units bu ON bu.recommendation_id = op.recommendation_id
+           WHERE op.pick_status = 'ACTIVE' AND ms.settlement_status IN ('WIN', 'LOSS', 'PUSH')"""
+    ).fetchall()
+    wins = sum(1 for r in rows if r["status"] == "WIN")
+    losses = sum(1 for r in rows if r["status"] == "LOSS")
+    units = sum((r["pu"] or 0.0) for r in rows)
+    risk = sum((r["ru"] or 0.0) for r in rows)
+    return {"picks": len(rows), "wins": wins, "losses": losses, "units": units,
+            "roi_pct": (units / risk * 100.0) if risk else None}
 
 
 def get_today_in_configured_timezone() -> str:

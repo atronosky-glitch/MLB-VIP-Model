@@ -2,6 +2,12 @@
 
 > Future OpenCode session: read `AI_CONTEXT.md`, `PROJECT_STATUS.md`, `docs/SESSION_HANDOFF.md`, and `TODO.md` in that order before modifying code.
 
+## Session: 2026-10-13 — EV-pick diagnosis and fix, record reset tool, Auto-Bet hidden, creator codes, marketing playbook
+
+Diagnosis (production, read-only via `PROD_DATABASE_URL`; helper kept out of the repo): see PROJECT_STATUS 2026-10-13 entry and `docs/DECISIONS.md`. The code change is one flag (`OFFICIAL_ALLOW_LOO_FALLBACK`) plus tests updated in `tests/test_phase15_official_picks.py`. The record reset is a separate manual step: `python -m src.performance_reset --reason "Pinnacle-only picks" --apply` against production (dry run by default). Auto-Bet/My Performance hidden on the customer site (`MLB_CUSTOMER_AUTOBET_VISIBLE`); creators tab + `?ref=` attribution added; `docs/MARKETING_PLAYBOOK.md` written. The Weather Edge branch is merged to main in this session (default OFF).
+
+Gotchas: `tests/conftest.py` hand-mirrors `customer_accounts` (now has `referral_code`) and `creator_codes`; the Bash tool chokes on very long heredocs with mixed quotes (write scripts to files); `tests/test_pinnacle_feed.py::test_client_returns_none_on_fetch_failure` is order-dependent (module rate-limit state) when run in a `-k` subset, passes alone and in the full run.
+
 ## Session: 2026-10-12 — Weather Edge module (built, tested, NOT committed/pushed/deployed)
 
 **Read `docs/WEATHER_EDGE.md` first.** New package `src/weather_edge/` (registry, models, fees, probability, ev, http, kalshi_source, polymarket_source, forecast, calibration, matching, store, scanner, settlement, performance, backtest, alerts, config, cli, ui_data, ui). Hooks into existing code (all additive): `database/db_manager.py::init_db` (calls `store.create_schema`), `tests/conftest.py` (executes `WEATHER_SCHEMA_SQL`), `src/worker.py` (jobs `weather-edge-scan`/`weather-edge-settle`, scheduled only when enabled), `src/customer_view.py` (menu entry + `weather` view mode, only when `WEATHER_EDGE_ENABLED`), `src/control_panel.py` (13th tab, editable watchlist), `render.yaml` (env vars declared `sync: false`).

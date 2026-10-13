@@ -875,10 +875,18 @@ def db_conn():
             disabled               INTEGER NOT NULL DEFAULT 0,
             password_reset_token_hash TEXT,
             password_reset_expires_at TEXT,
+            referral_code          TEXT,
             created_at             TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_accounts_email ON customer_accounts(email);
+        CREATE TABLE IF NOT EXISTS creator_codes (
+            code          TEXT PRIMARY KEY,
+            creator_name  TEXT NOT NULL,
+            active        INTEGER NOT NULL DEFAULT 1,
+            note          TEXT,
+            created_at    TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS auth_rate_events (
             event_id    TEXT PRIMARY KEY,
             bucket      TEXT NOT NULL,

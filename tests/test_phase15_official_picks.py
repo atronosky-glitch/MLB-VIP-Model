@@ -193,21 +193,29 @@ class TestPinnacleOfficialGate:
         finally:
             cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = orig
 
-    def test_no_pinnacle_uses_explicit_loo_fallback(self):
+    def test_no_pinnacle_is_not_official_by_default(self):
+        """2026-10-13: consensus-only (LOO) picks lost money in production, so official status needs Pinnacle."""
+        assert cfg.OFFICIAL_ALLOW_LOO_FALLBACK is False
         old_require = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
-        old_fallback = cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN
         cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
-        cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN = True
         try:
-            q = classify_recommendation(self._strong_rec(
-                pinnacle_found=False, pinnacle_approved=None,
-            ))
-            assert q.tier == TIER_OFFICIAL
-            assert q.passed is True
-            assert any("LOO fallback" in reason for reason in q.reasons)
+            q = classify_recommendation(self._strong_rec(pinnacle_found=False, pinnacle_approved=None))
+            assert q.tier == TIER_DISCOVERY and q.passed is False
+            assert any("Pinnacle approval required" in r for r in q.disqualification_reasons)
         finally:
             cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = old_require
-            cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN = old_fallback
+
+    def test_loo_fallback_can_still_be_enabled_explicitly(self):
+        old = (cfg.REQUIRE_PINNACLE_FOR_OFFICIAL, cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN, cfg.OFFICIAL_ALLOW_LOO_FALLBACK)
+        cfg.REQUIRE_PINNACLE_FOR_OFFICIAL = True
+        cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN = True
+        cfg.OFFICIAL_ALLOW_LOO_FALLBACK = True
+        try:
+            q = classify_recommendation(self._strong_rec(pinnacle_found=False, pinnacle_approved=None))
+            assert q.tier == TIER_OFFICIAL and q.passed is True
+            assert any("LOO fallback" in reason for reason in q.reasons)
+        finally:
+            (cfg.REQUIRE_PINNACLE_FOR_OFFICIAL, cfg.PINNACLE_FALLBACK_TO_MARKET_MEDIAN, cfg.OFFICIAL_ALLOW_LOO_FALLBACK) = old
 
     def test_one_sided_or_mismatched_pinnacle_still_blocks(self):
         old_require = cfg.REQUIRE_PINNACLE_FOR_OFFICIAL
