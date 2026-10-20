@@ -183,7 +183,7 @@ def _repair_mojibake(text: str) -> str:
         return text
 
 
-def normalize_name(text: str) -> str:
+def _normalize_text(text: str) -> str:
     """Lowercase, strip diacritics and collapse whitespace."""
     text = _repair_mojibake(text or "")
     text = unicodedata.normalize("NFKD", text)
@@ -191,9 +191,20 @@ def normalize_name(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+# Periods and apostrophes (straight and typographic) are spelled inconsistently across providers for the same player:
+# Pinnacle "JT Ginn" vs sportsbook "J.T. Ginn", "AJ Brown" vs "A.J. Brown", "DAndre Swift" vs "D'Andre Swift".
+# They are removed (not replaced by a space), so "j.t." becomes "jt". Hyphens and suffix words are left untouched.
+_PLAYER_NAME_PUNCTUATION = {ord(c): None for c in ".'" + chr(0x2019) + chr(0x2018) + chr(0x02BC)}
+
+
+def normalize_name(text: str) -> str:
+    """Lowercase, strip diacritics and the punctuation in _PLAYER_NAME_PUNCTUATION, and collapse whitespace."""
+    return " ".join(_normalize_text(text).translate(_PLAYER_NAME_PUNCTUATION).split())
+
+
 def normalize_team_name(text: str) -> str:
-    """Team names may be 'Royals' on one side and 'Kansas City Royals' on the other."""
-    return normalize_name(text)
+    """Team names may be 'Royals' on one side and 'Kansas City Royals' on the other. Punctuation is left as-is."""
+    return _normalize_text(text)
 
 
 def _token_overlap(a: str, b: str) -> float:
