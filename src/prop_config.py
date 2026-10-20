@@ -309,7 +309,22 @@ PINNACLE_PROP_UNITS_BY_LEAGUE = {
         "Assists": "player_assists_ou",
         "Threes Made": "player_threes_ou",
     },
-    "NFL": {},
+    # NFL (2026-10-16): this map was empty, so src/odds_api_pinnacle_feed.py::_parse_props_response silently
+    # discarded EVERY Pinnacle NFL prop outcome even though The Odds API returns them (live capture
+    # 2026-10-14: 68 outcomes for the four markets below, 0 kept). No pinnapi.com (direct feed) special_units
+    # names for NFL have ever been verified -- pinnapi has posted no NFL props -- so the keys here are NOT
+    # pinnapi names. They are the exact The Odds API market keys of src/nfl_props_parser.py::_PROP_MARKET_TYPE,
+    # used purely as the internal join label between the Pinnacle parser and match_pinnacle(). That keeps them
+    # from ever colliding with a real pinnapi unit string (pinnapi uses CamelCase such as "TotalBases"), so the
+    # direct feed's NFL behaviour is unchanged (it still recognises nothing). Only the four markets the NFL
+    # sportsbook-side parser already supports are listed; Pinnacle's other NFL props are intentionally absent.
+    # tests/test_pinnacle_nfl_unit_map.py pins this map to nfl_props_parser._PROP_MARKET_TYPE.
+    "NFL": {
+        "player_pass_yds": "passing_yards_ou",
+        "player_rush_yds": "rushing_yards_ou",
+        "player_receptions": "receiving_receptions_ou",
+        "player_reception_yds": "receiving_yards_ou",
+    },
 }
 
 # league -> {pinnapi special_units -> the real suffix pinnapi appends to

@@ -1,0 +1,49 @@
+{
+  "_note": "Abbreviated from a live The Odds API per-event response (bookmakers=pinnacle) captured 2026-10-14 ~20:53 UTC for Seattle Seahawks @ Denver Broncos. Shape, market keys, outcome labels, descriptions, points and prices are as observed; the real response held 68 outcomes and was trimmed to one or two players per market. No credentials are present.",
+  "id": "855f58fad5f0f14b239f4f63df27998b",
+  "sport_key": "americanfootball_nfl",
+  "commence_time": "2026-10-16T00:15:00Z",
+  "home_team": "Denver Broncos",
+  "away_team": "Seattle Seahawks",
+  "bookmakers": [
+    {
+      "key": "pinnacle",
+      "title": "Pinnacle",
+      "last_update": "2026-10-14T20:53:51Z",
+      "markets": [
+        {
+          "key": "player_pass_yds",
+          "last_update": "2026-10-14T20:53:51Z",
+          "outcomes": [
+            {"name": "Over", "description": "Bo Nix", "price": -102, "point": 200.5},
+            {"name": "Under", "description": "Bo Nix", "price": -123, "point": 200.5}
+          ]
+        },
+        {
+          "key": "player_reception_yds",
+          "last_update": "2026-10-14T20:53:51Z",
+          "outcomes": [
+            {"name": "Over", "description": "AJ Barner", "price": -118, "point": 23.5},
+            {"name": "Under", "description": "AJ Barner", "price": -106, "point": 23.5}
+          ]
+        },
+        {
+          "key": "player_receptions",
+          "last_update": "2026-10-14T20:53:51Z",
+          "outcomes": [
+            {"name": "Over", "description": "AJ Barner", "price": -125, "point": 2.5},
+            {"name": "Under", "description": "AJ Barner", "price": 100, "point": 2.5}
+          ]
+        },
+        {
+          "key": "player_rush_yds",
+          "last_update": "2026-10-14T20:53:51Z",
+          "outcomes": [
+            {"name": "Over", "description": "Bo Nix", "price": -103, "point": 15.5},
+            {"name": "Under", "description": "Bo Nix", "price": -122, "point": 15.5}
+          ]
+        }
+      ]
+    }
+  ]
+}
