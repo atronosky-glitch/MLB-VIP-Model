@@ -298,7 +298,7 @@ def fetch_game_odds_via_odds_api(
     any other data gap this codebase treats as "nothing found" rather
     than guessed.
     """
-    from src.odds_api_client import OddsAPIClient, TRACKED_BOOKMAKERS
+    from src.odds_api_client import fetch_fallback_game_odds
     from src.cfb_odds_parser import parse_cfb_game_odds
     from src.odds_api_credits import credit_budget_check, GAME_ODDS_COST
     from datetime import datetime, timedelta, timezone
@@ -318,13 +318,10 @@ def fetch_game_odds_via_odds_api(
                 f"exhausted: {reason}"
             )
 
-    client = OddsAPIClient()
-    now = datetime.now(timezone.utc)
-    games, from_cache = client.get_odds(
-        sport_key=ODDS_API_SPORT_KEY, bookmakers=TRACKED_BOOKMAKERS, markets="h2h,spreads,totals",
-        commence_time_from=(now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        commence_time_to=(now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    )
+    # Shared fetch: the same -6h/+42h near-term window as before (bucketed, so the pipeline's two fallback
+    # calls in one run share a single request), an explicit 2-minute cache lifetime, same bookmakers/markets.
+    # See src.odds_api_client.fetch_fallback_game_odds.
+    games, from_cache, client = fetch_fallback_game_odds(ODDS_API_SPORT_KEY)
     if conn is not None:
         from src.odds_api_credits import record_client_quota
         try:
@@ -353,4 +350,7 @@ def fetch_game_odds_via_odds_api(
         for g in games
     ]
 
-    return parsed.odds_rows, parsed.audit_rows, normalized_events, from_cache
+    # The 4th value feeds the scanner's data_source / research_only labels, which mean "stale cached data". A shared
+    # cache hit is at most FALLBACK_GAME_ODDS_TTL_SECONDS old, i.e. live data, so it is reported as live; the true
+    # cache_hit is still what record_client_quota wrote above.
+    return parsed.odds_rows, parsed.audit_rows, normalized_events, False

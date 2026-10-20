@@ -247,7 +247,7 @@ def fetch_game_odds_via_odds_api(
     Same return shape as ``src.sports.mlb.fetch_game_odds_via_odds_api()``
     / ``src.sports.wnba.fetch_and_parse()``.
     """
-    from src.odds_api_client import OddsAPIClient, TRACKED_BOOKMAKERS
+    from src.odds_api_client import fetch_fallback_game_odds
     from src.nfl_odds_parser import parse_nfl_game_odds
     from src.odds_api_credits import credit_budget_check, GAME_ODDS_COST
     from datetime import datetime, timedelta, timezone
@@ -272,18 +272,10 @@ def fetch_game_odds_via_odds_api(
                 f"exhausted: {reason}"
             )
 
-    client = OddsAPIClient()
-    # Same -6h/+42h near-term window the SportsGameOdds path uses — real,
-    # necessary fix, not defensive paranoia: verified live 2026-08-22 that
-    # an unbounded call here returns the entire season (272 games,
-    # Sept 2026 through Jan 2027), not "the near-term slate" a daily
-    # pick-generation run needs.
-    now = datetime.now(timezone.utc)
-    games, from_cache = client.get_odds(
-        sport_key=ODDS_API_SPORT_KEY, bookmakers=TRACKED_BOOKMAKERS, markets="h2h,spreads,totals",
-        commence_time_from=(now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        commence_time_to=(now + timedelta(hours=42)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    )
+    # Shared fetch: the same -6h/+42h near-term window as before (bucketed, so the pipeline's two fallback
+    # calls in one run share a single request), an explicit 2-minute cache lifetime, same bookmakers/markets.
+    # See src.odds_api_client.fetch_fallback_game_odds.
+    games, from_cache, client = fetch_fallback_game_odds(ODDS_API_SPORT_KEY)
     if conn is not None:
         from src.odds_api_credits import record_client_quota
         try:
@@ -312,7 +304,10 @@ def fetch_game_odds_via_odds_api(
         for g in games
     ]
 
-    return parsed.odds_rows, parsed.audit_rows, normalized_events, from_cache
+    # The 4th value feeds the scanner's data_source / research_only labels, which mean "stale cached data". A shared
+    # cache hit is at most FALLBACK_GAME_ODDS_TTL_SECONDS old, i.e. live data, so it is reported as live; the true
+    # cache_hit is still what record_client_quota wrote above.
+    return parsed.odds_rows, parsed.audit_rows, normalized_events, False
 
 
 def fetch_player_props_via_odds_api(

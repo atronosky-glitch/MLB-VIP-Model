@@ -26,10 +26,15 @@ key is only required when a WNBA fetch is actually attempted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
+import tempfile
+import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -113,6 +118,71 @@ TRACKED_BOOKMAKERS = (
 # be stale -- both call sites (src/worker.py::_discover_wnba_game_times,
 # src/sports/wnba.py::fetch_and_parse_props) pass this explicitly.
 EVENTS_CACHE_TTL_SECONDS = 300
+
+
+# ---------------------------------------------------------------------------
+# Shared whole-sport fallback game-odds fetch (added 2026-10-17)
+#
+# With SportsGameOdds returning 429, every MLB/NFL/CFB pipeline run called the Odds API fallback TWICE, about one
+# second apart: once from daily_pipeline._stage_fetch_events (which only uses the event list for save_game) and
+# once from player_prop_scanner.run_scan (which uses the odds). Both asked for the identical whole-sport slate, but
+# the request window was built from now() to the second (so the disk-cache key differed) and the client had no
+# max_cache_age, so the cache never hit. Production records (2026-10-01..17): 607 of 1,237 real fallback calls
+# were such second calls, 3,642 of 7,422 fallback credits.
+#
+# fetch_fallback_game_odds() makes the key stable and gives it an explicit, short lifetime:
+#   * the window is bucketed to FALLBACK_WINDOW_BUCKET_SECONDS and is always a SUPERSET of [now-6h, now+42h];
+#   * a cached response is reused for at most FALLBACK_GAME_ODDS_TTL_SECONDS (file mtime), never longer;
+#   * the cache key still contains sport, markets, bookmakers, odds format and both window ends, so any materially
+#     different request is a different key;
+#   * the fetch is serialised in-process so two threads asking at once make one request.
+# A cache hit is reported as from_cache=True (callers record it as cache_hit=1, with no provider quota headers).
+# ---------------------------------------------------------------------------
+FALLBACK_GAME_ODDS_TTL_SECONDS = 120
+FALLBACK_WINDOW_BUCKET_SECONDS = 300
+FALLBACK_WINDOW_HOURS_BACK = 6
+FALLBACK_WINDOW_HOURS_AHEAD = 42
+FALLBACK_GAME_ODDS_MARKETS = "h2h,spreads,totals"
+FALLBACK_GAME_ODDS_CACHE_DIR = "data/_odds_api_cache"
+_FALLBACK_FETCH_LOCK = threading.Lock()
+
+
+def fallback_game_odds_window(now: datetime | None = None) -> tuple[str, str]:
+    """(commenceTimeFrom, commenceTimeTo) for the near-term slate, normalised so every caller inside the same
+    FALLBACK_WINDOW_BUCKET_SECONDS bucket gets the identical pair.
+
+    from = bucket_start - 6h and to = bucket_start + bucket + 42h, so the window always CONTAINS the exact
+    [now - 6h, now + 42h] window the callers used before (it is at most one bucket wider on each side); a game
+    that was inside the old window is never excluded.
+    """
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    bucket = FALLBACK_WINDOW_BUCKET_SECONDS
+    bucket_start = math.floor(now.timestamp() / bucket) * bucket
+    start = datetime.fromtimestamp(bucket_start, tz=timezone.utc)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        (start - timedelta(hours=FALLBACK_WINDOW_HOURS_BACK)).strftime(fmt),
+        (start + timedelta(seconds=bucket, hours=FALLBACK_WINDOW_HOURS_AHEAD)).strftime(fmt),
+    )
+
+
+def fetch_fallback_game_odds(
+    sport_key: str, *, now: datetime | None = None, client: "OddsAPIClient | None" = None,
+) -> tuple[list, bool, "OddsAPIClient"]:
+    """Whole-sport h2h/spreads/totals odds for the TRACKED_BOOKMAKERS roster over the near-term window.
+
+    Returns ``(games, from_cache, client)``; the client is returned so the caller can record its quota headers
+    (empty on a cache hit, so a hit is never recorded as a provider request). Budget gating stays with the caller.
+    """
+    if client is None:
+        client = OddsAPIClient(cache_dir=FALLBACK_GAME_ODDS_CACHE_DIR, max_cache_age=FALLBACK_GAME_ODDS_TTL_SECONDS)
+    commence_from, commence_to = fallback_game_odds_window(now)
+    with _FALLBACK_FETCH_LOCK:
+        games, from_cache = client.get_odds(
+            sport_key=sport_key, bookmakers=TRACKED_BOOKMAKERS, markets=FALLBACK_GAME_ODDS_MARKETS,
+            commence_time_from=commence_from, commence_time_to=commence_to,
+        )
+    return games, from_cache, client
 
 
 class OddsAPIKeyError(RuntimeError):
@@ -264,21 +334,28 @@ class OddsAPIClient:
         safe = "_".join(parts).replace("?", "")
         for ch in ("&", ":", "/", "\\", "*", '"', "<", ">", "|"):
             safe = safe.replace(ch, "_")
-        safe = safe[:200]
+        if len(safe) > 200:
+            # Plain truncation dropped every parameter after the first ~200 characters. With the 12-book roster in
+            # `bookmakers` that silently removed markets, oddsFormat and the window end from the cache key, so
+            # materially different requests could collide. Keep a readable prefix plus a hash of the FULL key.
+            digest = hashlib.sha256(safe.encode("utf-8")).hexdigest()[:16]
+            safe = f"{safe[:160]}_{digest}"
         return self.cache_dir / f"{safe}.json"
 
     def _get(self, endpoint: str, params: dict | None = None):
         cache_path = self._cache_path(endpoint, params)
 
         if cache_path.exists():
+            fresh = True
             if self.max_cache_age is not None:
-                cache_age = time.time() - cache_path.stat().st_mtime
-                if cache_age <= self.max_cache_age:
+                fresh = (time.time() - cache_path.stat().st_mtime) <= self.max_cache_age
+            if fresh:
+                try:
                     with open(cache_path, encoding="utf-8") as fh:
                         return json.load(fh), True
-            else:
-                with open(cache_path, encoding="utf-8") as fh:
-                    return json.load(fh), True
+                except (OSError, ValueError):
+                    # A concurrent writer's half-written file (or a corrupt one) is a miss, never an error.
+                    logger.warning("Ignoring unreadable Odds API cache file %s", cache_path.name)
 
         elapsed = time.monotonic() - self._last_api_call
         if elapsed < self.MIN_API_INTERVAL:
@@ -299,10 +376,30 @@ class OddsAPIClient:
         resp.raise_for_status()
         data = resp.json()
 
-        with open(cache_path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, default=str)
+        self._write_cache_atomically(cache_path, data)
 
         return data, False
+
+    @staticmethod
+    def _write_cache_atomically(cache_path: Path, data) -> None:
+        """Write to a temp file in the same directory, then os.replace, so a concurrent reader (another job or
+        process sharing this cache directory) never sees a partially written file."""
+        fd, tmp_name = tempfile.mkstemp(dir=str(cache_path.parent), prefix=cache_path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, default=str)
+            try:
+                os.replace(tmp_name, cache_path)
+            except OSError:
+                # Windows can refuse to replace a file another process has open; fall back to a direct write.
+                with open(cache_path, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2, default=str)
+        finally:
+            if os.path.exists(tmp_name):
+                try:
+                    os.remove(tmp_name)
+                except OSError:
+                    pass
 
     def _request_with_retry(self, url: str, params: dict, max_retries: int = 3, timeout: int = 30):
         retry_statuses = {429, 500, 502, 503, 504}
